@@ -1,0 +1,324 @@
+// WikiMyLife — schema di persistenza.
+//
+// Riproduce la sezione 6 di wikimylife-schema.md. Ogni scostamento e' marcato
+// [Dn] e motivato per esteso in docs/deviazioni-schema.md.
+//
+// Niente preview feature `postgresqlExtensions`: l'estensione pgvector viene
+// abilitata da una migration scritta a mano
+// (20260902090000_enable_pgvector), che ha il timestamp piu' basso perche'
+// `migrate dev` ricostruisce l'intera storia in uno shadow database e senza
+// l'estensione la init morirebbe con `type "vector" does not exist`.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enum
+// ---------------------------------------------------------------------------
+
+enum Scope {
+  PERSONALE
+  LAVORO
+  CLIENTE
+}
+
+enum Visibility {
+  PRIVATA
+  CONDIVISA_TEAM
+  PUBBLICA
+}
+
+/// Ciclo di vita della SCHEDA.
+/// [D1] `ESTRAZIONE_FALLITA` e' citato nella §5 ("un solo retry poi stato
+/// ESTRAZIONE_FALLITA") ma manca dall'enum della §6.
+enum CardStatus {
+  BOZZA_AUDIO
+  IN_ELABORAZIONE
+  DA_RIVEDERE
+  COMPLETA
+  ARCHIVIATA
+  ESTRAZIONE_FALLITA
+}
+
+/// [D2] Ciclo di vita dell'ELABORAZIONE, disgiunto da quello della scheda.
+/// Postgres rifiuta a livello di tipo l'assegnazione incrociata: un
+/// `card_status` non entra in una colonna `recording_status`.
+enum RecordingStatus {
+  BOZZA_AUDIO
+  IN_ELABORAZIONE
+  ESTRAZIONE_FALLITA
+  ESTRATTO
+}
+
+enum PrereqType {
+  DOCUMENTO
+  CREDENZIALE
+  DENARO
+  TEMPO
+  PERSONA
+  STRUMENTO
+  ALTRO
+}
+
+enum Severity {
+  BLOCCANTE
+  FASTIDIO
+  NOTA
+}
+
+enum RefType {
+  PERSONA
+  URL
+  TELEFONO
+  UFFICIO
+  SISTEMA
+}
+
+enum Outcome {
+  FUNZIONATO
+  CAMBIATA
+  FALLITA
+}
+
+// ---------------------------------------------------------------------------
+// Modelli
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String @id @default(cuid())
+  email        String @unique
+  /// [D4] Autenticazione email + password con argon2id.
+  passwordHash String
+  locale       String @default("it-IT")
+
+  procedures    Procedure[]
+  recordings    Recording[]
+  /// [D6] Lato inverso di `Tag.userId`, che nella spec e' uno scalare orfano.
+  tags          Tag[]
+  /// [D5]
+  refreshTokens RefreshToken[]
+
+  createdAt DateTime @default(now())
+}
+
+/// [D5] Refresh token opachi con rotazione, famiglia e reuse detection.
+/// Il valore in chiaro non tocca mai il database: si conserva sha256(token).
+/// Non argon2: l'input ha gia' 256 bit di entropia, non e' una password.
+model RefreshToken {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String @unique
+  /// Tutti i token discendenti da un login condividono la famiglia: il riuso di
+  /// un anello gia' ruotato uccide l'intera catena.
+  familyId  String
+
+  issuedAt  DateTime  @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  replacedById String?       @unique
+  replacedBy   RefreshToken? @relation("TokenRotation", fields: [replacedById], references: [id])
+  replaces     RefreshToken? @relation("TokenRotation")
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([expiresAt])
+}
+
+model Recording {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  audioUrl  String
+  /// [D7] Il client dichiara il mime type, il server non lo da' per scontato:
+  /// MediaRecorder produce webm/opus, un recorder iOS produce m4a.
+  mimeType  String
+  /// [D7]
+  sizeBytes Int?
+
+  durationMs      Int
+  recordedAt      DateTime
+  capturedOffline Boolean  @default(false)
+  /// [D7] §2 lo elenca fra i metadati di cattura: e' la lingua attesa dallo STT.
+  deviceLocale    String?
+
+  latitude   Float?
+  longitude  Float?
+  placeLabel String?
+
+  /// [D2] Lo stato dell'elaborazione vive qui, non sulla Procedure: cosi' un
+  /// audio puo' esistere senza scheda e la §1 ("lo stadio 1 non fallisce mai")
+  /// e' vera per costruzione.
+  status RecordingStatus @default(BOZZA_AUDIO)
+
+  transcript       String?   @db.Text
+  transcriptSource String?
+  transcribedAt    DateTime?
+
+  rawExtraction   Json?
+  extractionModel String?
+  extractedAt     DateTime?
+
+  /// [D3] La §1 dice "con l'errore registrato" ma non lo modella.
+  lastErrorCode    String?
+  lastErrorMessage String?   @db.Text
+  lastErrorAt      DateTime?
+  retryCount       Int       @default(0)
+
+  procedureId String?
+  procedure   Procedure? @relation(fields: [procedureId], references: [id])
+
+  /// [D7]
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, recordedAt])
+  /// [D3] Serve al polling del worker: "dammi i prossimi N da elaborare".
+  @@index([status])
+}
+
+model Procedure {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  titolo        String
+  trigger       String?
+  esito         String?
+  validitaEsito String?
+
+  durataStimataMin Int?
+  costoTotaleCent  Int?
+
+  luogoNome      String?
+  luogoDettaglio String?
+  latitude       Float?
+  longitude      Float?
+
+  scope       Scope      @default(PERSONALE)
+  clientLabel String?
+  visibility  Visibility @default(PRIVATA)
+  status      CardStatus @default(BOZZA_AUDIO)
+
+  ultimaVerifica        DateTime?
+  volteEseguita         Int       @default(1)
+  contieneDatiSensibili Boolean   @default(false)
+
+  forkedFromId String?
+  forkedFrom   Procedure?  @relation("Fork", fields: [forkedFromId], references: [id])
+  forks        Procedure[] @relation("Fork")
+
+  /// pgvector, su titolo + trigger + tag (§7). `Unsupported` significa che
+  /// questa colonna e' invisibile al client tipizzato: si legge e si scrive
+  /// solo in SQL grezzo, con il vettore passato come parametro bindato e
+  /// castato `::vector`, mai concatenato.
+  embedding Unsupported("vector(1536)")?
+
+  steps       Step[]
+  prereqs     Prerequisite[]
+  pitfalls    Pitfall[]
+  costs       Cost[]
+  refs        Reference[]
+  attachments Attachment[]
+  executions  Execution[]
+  recordings  Recording[]
+  tags        TagOnProcedure[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([userId, updatedAt])
+}
+
+model Step {
+  id               String    @id @default(cuid())
+  procedureId      String
+  procedure        Procedure @relation(fields: [procedureId], references: [id], onDelete: Cascade)
+  ordine           Int
+  azione           String
+  dettaglio        String?
+  durataStimataMin Int?
+
+  @@unique([procedureId, ordine])
+}
+
+model Prerequisite {
+  id           String     @id @default(cuid())
+  procedureId  String
+  procedure    Procedure  @relation(fields: [procedureId], references: [id], onDelete: Cascade)
+  descrizione  String
+  tipo         PrereqType @default(ALTRO)
+  obbligatorio Boolean    @default(true)
+}
+
+model Pitfall {
+  id          String    @id @default(cuid())
+  procedureId String
+  procedure   Procedure @relation(fields: [procedureId], references: [id], onDelete: Cascade)
+  descrizione String
+  gravita     Severity  @default(NOTA)
+}
+
+model Cost {
+  id          String    @id @default(cuid())
+  procedureId String
+  procedure   Procedure @relation(fields: [procedureId], references: [id], onDelete: Cascade)
+  descrizione String
+  importoCent Int
+  valuta      String    @default("EUR")
+}
+
+model Reference {
+  id          String    @id @default(cuid())
+  procedureId String
+  procedure   Procedure @relation(fields: [procedureId], references: [id], onDelete: Cascade)
+  tipo        RefType
+  valore      String
+}
+
+model Attachment {
+  id          String    @id @default(cuid())
+  procedureId String
+  procedure   Procedure @relation(fields: [procedureId], references: [id], onDelete: Cascade)
+  url         String
+  mimeType    String
+  didascalia  String?
+}
+
+model Execution {
+  id          String    @id @default(cuid())
+  procedureId String
+  procedure   Procedure @relation(fields: [procedureId], references: [id], onDelete: Cascade)
+  eseguitaIl  DateTime  @default(now())
+  esito       Outcome
+  nota        String?
+}
+
+model Tag {
+  id         String           @id @default(cuid())
+  userId     String
+  /// [D6]
+  user       User             @relation(fields: [userId], references: [id])
+  nome       String
+  procedures TagOnProcedure[]
+
+  @@unique([userId, nome])
+}
+
+model TagOnProcedure {
+  procedureId String
+  tagId       String
+  procedure   Procedure @relation(fields: [procedureId], references: [id], onDelete: Cascade)
+  tag         Tag       @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([procedureId, tagId])
+}
