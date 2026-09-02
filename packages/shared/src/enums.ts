@@ -61,6 +61,7 @@ export const recordingStatusValues = [
   "IN_ELABORAZIONE",
   "ESTRAZIONE_FALLITA",
   "ESTRATTO",
+  "DUPLICATO_SOSPETTO",
 ] as const;
 export type RecordingStatus = (typeof recordingStatusValues)[number];
 export const RecordingStatus = {
@@ -68,6 +69,12 @@ export const RecordingStatus = {
   IN_ELABORAZIONE: "IN_ELABORAZIONE",
   ESTRAZIONE_FALLITA: "ESTRAZIONE_FALLITA",
   ESTRATTO: "ESTRATTO",
+  /**
+   * [D9] Estrazione riuscita, validazione superata, scheda deliberatamente NON
+   * creata: la §5 impone di proporre l'aggiornamento di quella esistente. E'
+   * uno stato terminale in attesa di una decisione umana, non un fallimento.
+   */
+  DUPLICATO_SOSPETTO: "DUPLICATO_SOSPETTO",
 } as const satisfies Record<RecordingStatus, RecordingStatus>;
 
 export const prereqTypeValues = [

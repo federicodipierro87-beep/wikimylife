@@ -54,6 +54,10 @@ enum RecordingStatus {
   IN_ELABORAZIONE
   ESTRAZIONE_FALLITA
   ESTRATTO
+  /// [D9] L'estrazione e' riuscita e la validazione pure, ma la §5 vieta di
+  /// creare la scheda: somiglia troppo a una gia' esistente. Stato terminale
+  /// che aspetta una decisione umana, non un errore.
+  DUPLICATO_SOSPETTO
 }
 
 enum PrereqType {
@@ -177,6 +181,19 @@ model Recording {
   procedureId String?
   procedure   Procedure? @relation(fields: [procedureId], references: [id])
 
+  /// [D9] Il suggerimento di deduplicazione della §5.
+  ///
+  /// Vive qui e non sulla Procedure perche' la Procedure, in questo caso, per
+  /// definizione NON esiste: la §5 dice di non crearla. La risposta all'upload
+  /// e' 202 e asincrona, quindi il suggerimento deve poter essere ritrovato da
+  /// chi fa polling su `GET /api/recordings/:id` — che e' esattamente questa
+  /// riga.
+  duplicateOfId       String?
+  duplicateOf         Procedure? @relation("DuplicateOf", fields: [duplicateOfId], references: [id])
+  /// Similarita' coseno con `duplicateOf`, conservata per mostrare all'utente
+  /// quanto e' forte il sospetto invece di un si'/no opaco.
+  duplicateSimilarity Float?
+
   /// [D7]
   updatedAt DateTime @updatedAt
 
@@ -230,6 +247,8 @@ model Procedure {
   attachments Attachment[]
   executions  Execution[]
   recordings  Recording[]
+  /// [D9] Lato inverso di `Recording.duplicateOfId`.
+  duplicateCandidates Recording[] @relation("DuplicateOf")
   tags        TagOnProcedure[]
 
   createdAt DateTime @default(now())

@@ -25,6 +25,7 @@ silenzio è una colonna che fra sei mesi nessuno saprà spiegare.
 | [D6](#d6) | `Tag.user` (relazione inversa) | correzione di uno scalare orfano |
 | [D7](#d7) | `Recording.mimeType/sizeBytes/deviceLocale/updatedAt` | requisiti del testo assenti dallo schema |
 | [D8](#d8) | tre campi `nullable` in più nel contratto §4.1 | lettura del preambolo della §4 |
+| [D9](#d9) | `RecordingStatus` += `DUPLICATO_SOSPETTO`, `Recording.duplicateOfId` + `duplicateSimilarity` | conseguenza della dedup §5 in Fase 2 |
 
 Tutto il resto è invariato: `Procedure` (incluso `status @default(BOZZA_AUDIO)`), `Step`,
 `Prerequisite`, `Pitfall`, `Cost`, `Reference`, `Attachment`, `Execution`, `Tag`,
@@ -271,6 +272,56 @@ Non è pigrizia: confondere i due livelli renderebbe impossibile fare esattament
 specifica chiede, cioè **salvare in `DA_RIVEDERE` un JSON formalmente valido ma incompleto**. Se Zod
 rifiutasse un'estrazione con i passi numerati `1, 2, 4`, quell'estrazione andrebbe persa invece di
 finire davanti all'utente con un suggerimento gentile.
+
+---
+
+## D9 — `RecordingStatus.DUPLICATO_SOSPETTO` e `Recording.duplicateOfId` / `duplicateSimilarity`
+
+**Cosa.** Un quinto valore nell'enum `RecordingStatus` e due colonne sul `Recording`:
+
+```prisma
+duplicateOfId       String?
+duplicateOf         Procedure? @relation("DuplicateOf", fields: [duplicateOfId], references: [id])
+duplicateSimilarity Float?
+```
+
+**Perché.** La §5 chiude con una richiesta che nella §6 non ha nessun posto dove atterrare:
+
+> deduplicazione: se esiste già una procedura dello stesso utente con titolo molto simile
+> (similarità coseno sugli embedding > 0.85), proponi **aggiorna quella esistente** invece di
+> crearne una nuova
+
+«Proponi» implica che la proposta sopravviva alla richiesta che l'ha generata. E qui sta il problema:
+l'upload risponde `202` e l'elaborazione è asincrona, quindi **non c'è nessuna risposta HTTP in cui
+mettere il suggerimento**. Quando la pipeline scopre il duplicato, il client se n'è andato da un
+pezzo. Il suggerimento deve essere una riga, non un valore di ritorno.
+
+**Perché sul `Recording` e non sulla `Procedure`.** Perché la `Procedure` in questo caso, per
+definizione, *non esiste*: la §5 dice di non crearla. Modellare il suggerimento come una scheda
+fantasma in stato «proposta» significherebbe creare esattamente il duplicato che la regola vieta, con
+in più il rischio che qualcuno dimentichi di filtrarlo e se lo ritrovi nei risultati di ricerca. Il
+`Recording`, invece, esiste già, è la risorsa su cui il client fa polling
+(`GET /api/recordings/:id`) ed è dove vive tutto il resto del ciclo di elaborazione per la [D2].
+
+**Perché uno stato nuovo e non `ESTRATTO`.** `ESTRATTO` significa «esiste la scheda»: è la coppia
+`status = ESTRATTO` + `procedureId != null` a rendere vera l'invariante. Riusarlo qui produrrebbe un
+`ESTRATTO` con `procedureId = null`, indistinguibile a colpo d'occhio dalla registrazione orfana in
+`ESTRAZIONE_FALLITA`. E `ESTRAZIONE_FALLITA` sarebbe una bugia: qui non ha fallito niente — la
+trascrizione è buona, il JSON è conforme, la validazione è passata. È l'unico caso in cui la pipeline
+si ferma *perché ha funzionato*, e merita un nome proprio.
+
+**Perché conservare la similarità.** Un booleano costringerebbe l'interfaccia a dire «forse è un
+duplicato» e basta. Con il numero si può dire *quanto*, e soprattutto si può capire a posteriori se
+la soglia di 0.85 è tarata bene: senza il valore misurato, cambiarla sarebbe una scommessa.
+
+`ON DELETE SET NULL` sulla foreign key: cancellare la procedura suggerita non deve portarsi via la
+registrazione, che contiene l'audio e la trascrizione originali — gli unici dati non riproducibili
+di tutta la catena.
+
+**Cosa resta scoperto.** Non c'è ancora una rotta per *accettare* il suggerimento (fondere la nuova
+estrazione nella scheda esistente e aggiungere una riga a `Execution`). È lavoro di Fase 3, insieme
+alla modifica delle procedure: qui la §5 chiede solo di non creare il duplicato e di lasciar decidere
+l'utente, e per decidere basta poter vedere.
 
 ---
 
