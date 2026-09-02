@@ -58,6 +58,15 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
 
+  TRANSCRIPTION_MODEL: z.string().default("whisper-1"),
+  /**
+   * Il nome del modello NON e' la versione del prompt. Questo cambia quando
+   * cambia il listino di Anthropic; `extraction.v1` cambia quando cambiano le
+   * istruzioni. `Recording.extractionModel` conserva entrambi, perche' per
+   * riprocessare lo storico serve sapere quale coppia ha prodotto una scheda.
+   */
+  EXTRACTION_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
+
   EMBEDDING_MODEL: z.string().default("text-embedding-3-small"),
   /**
    * Deve combaciare con `vector(1536)` della migration. Non e' negoziabile a
@@ -91,6 +100,8 @@ export interface AppConfig {
     readonly embedding: Env["EMBEDDING_PROVIDER"];
     readonly openaiApiKey: string | undefined;
     readonly anthropicApiKey: string | undefined;
+    readonly transcriptionModel: string;
+    readonly extractionModel: string;
     readonly embeddingModel: string;
     readonly embeddingDimensions: number;
     readonly storageDir: string;
@@ -123,6 +134,8 @@ function toConfig(env: Env): AppConfig {
       embedding: env.EMBEDDING_PROVIDER,
       openaiApiKey: env.OPENAI_API_KEY,
       anthropicApiKey: env.ANTHROPIC_API_KEY,
+      transcriptionModel: env.TRANSCRIPTION_MODEL,
+      extractionModel: env.EXTRACTION_MODEL,
       embeddingModel: env.EMBEDDING_MODEL,
       embeddingDimensions: env.EMBEDDING_DIMENSIONS,
       storageDir: env.STORAGE_DIR,
