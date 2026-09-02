@@ -17,6 +17,7 @@ export * from "./adapters/uploadQueue.js";
 export * from "./adapters/secureStorage.js";
 
 export * from "./api/schemas.js";
+export * from "./api/recordings.js";
 export * from "./api/client.js";
 
 export * from "./util/deterministicVector.js";

@@ -23,6 +23,11 @@ export const errorCodeValues = [
   "NOT_FOUND",
   "CONFLICT",
 
+  // Caricamento dell'audio (§1). Distinti da VALIDATION_FAILED perche' il
+  // rimedio e' diverso: qui non si corregge un campo, si manda un altro file.
+  "PAYLOAD_TOO_LARGE",
+  "UNSUPPORTED_MEDIA_TYPE",
+
   // Infrastruttura
   "RATE_LIMITED",
   "SERVICE_UNAVAILABLE",
@@ -42,6 +47,8 @@ export const ErrorCode = {
   TOKEN_REUSED: "TOKEN_REUSED",
   NOT_FOUND: "NOT_FOUND",
   CONFLICT: "CONFLICT",
+  PAYLOAD_TOO_LARGE: "PAYLOAD_TOO_LARGE",
+  UNSUPPORTED_MEDIA_TYPE: "UNSUPPORTED_MEDIA_TYPE",
   RATE_LIMITED: "RATE_LIMITED",
   SERVICE_UNAVAILABLE: "SERVICE_UNAVAILABLE",
   INTERNAL_ERROR: "INTERNAL_ERROR",

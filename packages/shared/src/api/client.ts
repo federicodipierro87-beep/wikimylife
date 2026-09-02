@@ -3,6 +3,12 @@ import { AUTH_STORAGE_KEYS, type SecureStorageAdapter } from "../adapters/secure
 import { errorBodySchema, type ValidationIssue } from "../errors/body.js";
 import { ErrorCode, type ErrorCode as ErrorCodeType } from "../errors/codes.js";
 import {
+  RECORDING_UPLOAD_FIELDS,
+  recordingStateSchema,
+  type CaptureMetadataInput,
+  type RecordingState,
+} from "./recordings.js";
+import {
   authSessionSchema,
   healthResponseSchema,
   logoutResponseSchema,
@@ -61,6 +67,12 @@ interface RequestOptions<T> {
   readonly method: "GET" | "POST" | "PATCH" | "DELETE";
   readonly path: string;
   readonly body?: unknown;
+  /**
+   * Alternativa a `body` per l'upload dell'audio. Il `Content-Type` NON si
+   * imposta a mano: solo il runtime conosce il boundary che ha generato, e
+   * scriverlo a mano produce un multipart che nessun parser sa leggere.
+   */
+  readonly form?: FormData | undefined;
   readonly schema: z.ZodType<T>;
   readonly auth: boolean;
 }
@@ -81,6 +93,20 @@ export interface ApiClient {
   logout(): Promise<void>;
   getAccessToken(): string | null;
   restoreSession(): Promise<PublicUser | null>;
+
+  /**
+   * Carica l'audio. Risponde appena i byte sono al sicuro, non a elaborazione
+   * finita: lo stato tornato e' `BOZZA_AUDIO`, l'avanzamento si segue con
+   * `getRecording`.
+   */
+  createRecording(input: {
+    readonly audio: Blob;
+    readonly metadata: CaptureMetadataInput;
+    readonly filename?: string | undefined;
+  }): Promise<RecordingState>;
+  getRecording(id: string): Promise<RecordingState>;
+  /** Rimette in coda dalla trascrizione. */
+  retryRecording(id: string): Promise<RecordingState>;
 }
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
@@ -138,7 +164,11 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     const init: RequestInit = {
       method: opts.method,
       headers,
-      ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
+      ...(opts.form !== undefined
+        ? { body: opts.form }
+        : opts.body === undefined
+          ? {}
+          : { body: JSON.stringify(opts.body) }),
     };
 
     const response = await doFetch(joinUrl(baseUrl, opts.path), init);
@@ -300,6 +330,57 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         await clear();
         return null;
       }
+    },
+
+    createRecording(input: {
+      audio: Blob;
+      metadata: CaptureMetadataInput;
+      filename?: string | undefined;
+    }): Promise<RecordingState> {
+      const form = new FormData();
+      // I metadati come JSON in una parte sola: vedi captureMetadataSchema per
+      // il motivo (in un multipart ogni campo e' una stringa, e "false" e' vero).
+      form.append(RECORDING_UPLOAD_FIELDS.metadata, JSON.stringify(input.metadata));
+      form.append(
+        RECORDING_UPLOAD_FIELDS.audio,
+        input.audio,
+        input.filename ?? "registrazione",
+      );
+
+      return send(
+        {
+          method: "POST",
+          path: "/api/recordings",
+          form,
+          schema: recordingStateSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    getRecording(id: string): Promise<RecordingState> {
+      return send(
+        {
+          method: "GET",
+          path: `/api/recordings/${encodeURIComponent(id)}`,
+          schema: recordingStateSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    retryRecording(id: string): Promise<RecordingState> {
+      return send(
+        {
+          method: "POST",
+          path: `/api/recordings/${encodeURIComponent(id)}/retry`,
+          schema: recordingStateSchema,
+          auth: true,
+        },
+        true,
+      );
     },
   };
 }
