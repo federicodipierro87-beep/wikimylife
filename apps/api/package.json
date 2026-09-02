@@ -1,0 +1,54 @@
+{
+  "name": "@wikimylife/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/composition.js",
+  "types": "./dist/composition.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/composition.d.ts",
+      "default": "./dist/composition.js"
+    },
+    "./config": {
+      "types": "./dist/config/env.d.ts",
+      "default": "./dist/config/env.js"
+    },
+    "./logger": {
+      "types": "./dist/logger.d.ts",
+      "default": "./dist/logger.js"
+    },
+    "./db": {
+      "types": "./dist/db/client.d.ts",
+      "default": "./dist/db/client.js"
+    },
+    "./app": {
+      "types": "./dist/app.d.ts",
+      "default": "./dist/app.js"
+    },
+    "./composition": {
+      "types": "./dist/composition.d.ts",
+      "default": "./dist/composition.js"
+    },
+    "./infra": {
+      "types": "./dist/infra/index.d.ts",
+      "default": "./dist/infra/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "@prisma/client": "^6.2.1",
+    "@wikimylife/shared": "*",
+    "express": "^5.0.1",
+    "jose": "^5.9.6",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0"
+  }
+}
