@@ -15,7 +15,7 @@
     "build": "tsc -b",
     "clean": "tsc -b --clean",
     "typecheck": "tsc -b && tsc -p prisma && tsc -p tsconfig.tests.json",
-    "dev": "concurrently -n shared,api,web -c blue,green,magenta \"npm run dev:shared\" \"npm run dev:api\" \"npm run dev:web\"",
+    "dev": "concurrently -n shared,api,worker,web -c blue,green,yellow,magenta \"npm run dev:shared\" \"npm run dev:api\" \"npm run dev:worker\" \"npm run dev:web\"",
     "dev:shared": "tsc -b packages/shared --watch --preserveWatchOutput",
     "dev:api": "npm run dev --workspace @wikimylife/api",
     "dev:web": "npm run dev --workspace @wikimylife/web",

@@ -3,10 +3,15 @@
 Trasforma note vocali in schede-procedura riutilizzabili: registri come hai fatto
 una cosa, e la prossima volta la ritrovi scritta.
 
-Questa è la **Fase 1 — Fondamenta**: monorepo, schema dati, pgvector, seed,
-`packages/shared` e autenticazione JWT completa. Non c'è ancora nessuna
-trascrizione né estrazione reale — i provider hanno implementazioni fake che
-rispettano le stesse interfacce che useranno quelle vere.
+Siamo alla **Fase 2 — Pipeline di ingestione**: si carica un vocale e ne esce una
+scheda. Sopra le fondamenta della Fase 1 (monorepo, schema dati, pgvector, seed,
+`packages/shared`, autenticazione JWT) ci sono ora l'upload multipart, il worker,
+la validazione deterministica della §5 e la deduplicazione per similarità coseno.
+
+I provider di trascrizione, estrazione ed embedding hanno **due implementazioni
+ciascuno**: quella reale (Whisper, Claude, `text-embedding-3-small`) e una fake
+deterministica. Con i default di `.env.example` la pipeline gira per intero senza
+una sola chiave API.
 
 La specifica autoritativa è [`wikimylife-schema.md`](./wikimylife-schema.md).
 Ogni scostamento dalla sezione 6 è marcato `[Dn]` e motivato in
@@ -32,12 +37,17 @@ npm run db:migrate
 npm run db:seed
 ```
 
-Poi, in due terminali:
+Poi, in tre terminali:
 
 ```powershell
-npm run dev:api    # http://localhost:3000
-npm run dev:web    # http://localhost:5173
+npm run dev:api      # http://localhost:3000
+npm run dev:worker   # nessuna porta: interroga il database ogni 5 secondi
+npm run dev:web      # http://localhost:5173
 ```
+
+Senza il worker l'upload funziona lo stesso — risponde `202` e la registrazione
+resta in `BOZZA_AUDIO` finché qualcuno non la elabora. È il comportamento
+previsto, non un guasto.
 
 > **PowerShell**: `curl` è un alias di `Invoke-WebRequest` e non si comporta come
 > curl. Negli esempi qui sotto si usa `curl.exe`.
@@ -50,8 +60,8 @@ npm run dev:web    # http://localhost:5173
 ## Com'è fatto
 
 ```
-apps/api        Express 5 + Prisma. L'unico processo che parla col database.
-apps/worker     Scheletro. In Fase 2 farà trascrizione ed estrazione.
+apps/api        Express 5 + Prisma. Riceve l'audio e risponde subito.
+apps/worker     Secondo processo: trascrive, estrae, valida, persiste.
 apps/web        Vite + React. Consuma packages/shared senza alias né polyfill.
 packages/shared Codice isomorfo: contratti Zod, enum, interfacce, client API.
 prisma/         Schema, migration, seed.
@@ -81,8 +91,69 @@ se compare un terzo lettore, e vieta anche `any` esplicito su tutto il repo.
 **3. Lo `userId` non è mai un parametro opzionale.** La firma è
 `updateProcedure(userId, id, patch)`, il `WHERE` è sempre composto, mai un
 `findUnique` seguito da un `if`. Una risorsa di qualcun altro risponde **404**,
-non 403: un 403 confermerebbe che quell'id esiste. È scritto qui perché in Fase 2
-arrivano le rotte delle procedure ed è lì che si sbaglia.
+non 403: un 403 confermerebbe che quell'id esiste. Vale anche per `/retry`: la
+registrazione di un altro utente non si riprocessa, e non lo si viene a sapere.
+
+---
+
+## La pipeline di ingestione
+
+```
+POST /api/recordings           multipart: audio + metadati di cattura
+                               → 202 { id, status: "BOZZA_AUDIO" }
+GET  /api/recordings/:id       stato di avanzamento
+POST /api/recordings/:id/retry riprocessa dalla trascrizione → 202
+```
+
+L'API non elabora niente: salva i byte, scrive la riga, risponde. Il resto lo fa
+il worker, che gira su `npm run dev:worker`.
+
+**L'audio si salva prima di ogni altra cosa.** Prima i byte sullo storage, poi la
+riga nel database — nell'ordine inverso una registrazione potrebbe puntare a un
+file che non esiste. Se la trascrizione o l'estrazione cadono, la riga torna in
+`BOZZA_AUDIO` con l'errore registrato e il worker la riprende da solo al giro
+successivo: l'audio non si perde mai.
+
+**La coda è una tabella, anzi: è una colonna.** `Recording.status` con il suo
+indice `[D3]`. Niente Redis, e nemmeno una tabella `Job` — sarebbe un secondo
+stato da tenere allineato al primo, che serve comunque per rispondere a
+`GET /api/recordings/:id`. `claimNext` è un compare-and-swap
+(`UPDATE ... WHERE status = 'BOZZA_AUDIO'` e si guarda il conteggio), quindi due
+worker in parallelo non si pestano e scalare a due repliche non richiede di
+toccare una riga di codice.
+
+```
+BOZZA_AUDIO ──claim──> IN_ELABORAZIONE ──┬──> ESTRATTO            crea la Procedure
+     ▲                                   ├──> DUPLICATO_SOSPETTO  [D9] non crea niente
+     │                                   └──> ESTRAZIONE_FALLITA  dopo 2 tentativi
+     └──── errore STT, o POST /retry ────────────────────────────────┘
+```
+
+**La validazione della §5 è codice, non un secondo giro di LLM.**
+`services/validation/extractionValidation.ts`: passi rinumerati se l'ordine non è
+contiguo, titolo entro 80 caratteri, importi non negativi, confidenza,
+riconoscimento di `NOTA_SEMPLICE`. Ogni problema diventa una issue con un codice;
+se nessuna è bloccante la scheda nasce comunque, in `DA_RIVEDERE`. È il
+comportamento richiesto: meglio una scheda incompleta da correggere che un vocale
+buttato via.
+
+**La deduplicazione confronta gli embedding, non le parole.** Se la similarità
+coseno con una procedura *dello stesso utente* supera **0.85**, il worker non
+crea un duplicato: mette la registrazione in `DUPLICATO_SOSPETTO` con
+`duplicateOfId` e la similarità, ed espone comunque l'estrazione. La decisione è
+dell'utente, e `POST /retry` cancella il suggerimento e rimette in coda.
+
+**Il prompt vive in un file versionato.** `prompts/extraction.v1.ts` contiene la
+§4.2 alla lettera — `tests/unit/extractionPrompt.test.ts` rilegge il blocco dalla
+specifica e li confronta carattere per carattere, invece di tenerne una seconda
+copia che divergerebbe in silenzio. In `Recording.extractionModel` finisce la
+coppia `modello (versione del prompt)`, per esempio
+`claude-sonnet-4-5-20250929 (extraction.v1)`: per riprocessare lo storico serve
+sapere quale delle due è cambiata.
+
+La trascrizione grezza si conserva sempre, anche quando l'estrazione riesce, e
+`rawExtraction` contiene l'output integrale del modello — anche i campi che il
+codice non usa, come `domandeSuggerite`.
 
 ---
 
@@ -195,13 +266,66 @@ curl.exe http://localhost:3000/api/auth/me
 #   → 401 UNAUTHORIZED
 ```
 
-L'ultima parte è il comportamento più importante della fase. Quando un refresh
+L'ultima parte è il comportamento più importante della Fase 1. Quando un refresh
 token già ruotato viene ripresentato, il server non può sapere chi sia il ladro:
 se il token rubato arriva dopo la rotazione legittima ha una copia l'attaccante,
 se arriva prima ce l'ha l'utente. In entrambi i casi la catena in circolazione è
 compromessa, quindi si revoca l'intera famiglia e si costringe a rifare login.
 Revocare solo il token riusato lascerebbe all'attaccante una catena valida per
 trenta giorni.
+
+### Un vocale che diventa una scheda, a mano
+
+Servono due terminali: `npm run dev:api` e `npm run dev:worker`. Con i provider
+`fake` non serve nessuna chiave — la trascrizione è deterministica e l'estrazione
+restituisce una procedura di prova.
+
+```powershell
+$token = "<accessToken del login qui sopra>"
+
+# Un file audio qualunque: con i provider fake il contenuto non viene letto.
+[IO.File]::WriteAllBytes("$PWD\voce.webm", [byte[]](0x1a,0x45,0xdf,0xa3,1,2,3,4))
+
+# I metadati §2 in un file, per non litigare con le virgolette di PowerShell.
+# Obbligatori: recordedAt, durationMs, mimeType. Il resto ha un default.
+[IO.File]::WriteAllText("$PWD\meta.json",
+  '{"recordedAt":"2026-03-01T10:00:00.000Z","durationMs":42000,"mimeType":"audio/webm"}')
+
+curl.exe -X POST http://localhost:3000/api/recordings `
+  -H "authorization: Bearer $token" `
+  -F "metadata=<meta.json" `
+  -F "audio=@voce.webm;type=audio/webm"
+#   → 202 {"id":"...","status":"BOZZA_AUDIO","procedureId":null,...}
+
+# Il worker la prende entro cinque secondi. Poi:
+curl.exe http://localhost:3000/api/recordings/<id> -H "authorization: Bearer $token"
+#   → status: "ESTRATTO", procedureId valorizzato, transcript presente
+```
+
+Ricarica **lo stesso vocale una seconda volta**: la seconda registrazione finisce
+in `DUPLICATO_SOSPETTO` con `duplicateOfId` uguale alla prima procedura e
+`duplicateSimilarity` a 1, e nel database resta una sola `Procedure`.
+
+```sql
+SELECT status, "procedureId", "duplicateOfId", round("duplicateSimilarity"::numeric, 3)
+FROM "Recording" ORDER BY "createdAt";
+SELECT count(*) FROM "Procedure";
+```
+
+Poi rimettila in coda e guarda cosa succede — il suggerimento sparisce, la
+registrazione torna elaborabile, e alla fine è di nuovo un duplicato:
+
+```powershell
+curl.exe -X POST http://localhost:3000/api/recordings/<id-della-seconda>/retry `
+  -H "authorization: Bearer $token"
+```
+
+E la proprietà, con l'access token di un **altro** utente:
+
+```powershell
+curl.exe http://localhost:3000/api/recordings/<id> -H "authorization: Bearer $altroToken"
+#   → 404 NOT_FOUND — identico a un id inesistente
+```
 
 ---
 
@@ -220,13 +344,24 @@ il primo contributo di chiunque comincerebbe con mezz'ora di setup.
 **unit** copre il contratto Zod (casi negativi con verifica del *path* della
 issue, non solo del fallimento), le guardie sull'isomorfismo, i token, il
 servizio di autenticazione con un repository in memoria, l'error handler, il
-client API e i provider fake.
+client API e i provider fake. Della Fase 2: la validazione della §5 caso per caso
+(JSON malformato, ordine non contiguo, confidenza bassa, importi negativi,
+`NOTA_SEMPLICE`), il prompt confrontato carattere per carattere con la specifica,
+e la pipeline con un repository in memoria — compreso il duplicato rilevato.
 
 **integration** applica le migration su `DATABASE_URL_TEST`, poi verifica lo
 schema fisico contro il catalogo di Postgres, esegue il seed vero e ricontrolla
-le invarianti, e prova l'autenticazione end-to-end su HTTP reale — l'app gira su
-una porta effimera e ci si parla con `fetch`, che è il motivo per cui `supertest`
-non è fra le dipendenze.
+le invarianti, e prova autenticazione e ingestione end-to-end su HTTP reale —
+l'app gira su una porta effimera e ci si parla con `fetch`, che è il motivo per
+cui `supertest` non è fra le dipendenze.
+
+L'end-to-end delle registrazioni carica un multipart vero e poi esegue
+`ingestionService.processNext()` in-process, sulle **stesse istanze** che servono
+le richieste HTTP: un secondo `compose()` per i test avrebbe programmato provider
+fake che nessuna richiesta usa. Tre cose si possono verificare solo lì: che
+`Response.formData()` regga un corpo multipart vero, che il `<=>` di pgvector
+serva davvero la deduplicazione, e che `@@unique([procedureId, ordine])` non
+esploda sui passi rinumerati.
 
 `DATABASE_URL_TEST` non ha un valore di default, di proposito: i test fanno
 `TRUNCATE`, e un default che puntasse al database di sviluppo lo svuoterebbe in
@@ -273,6 +408,17 @@ Non installate, e il perché:
   stanno in tabelle figlie: serve una colonna `searchText` mantenuta
   dall'applicazione. Il design SQL definitivo è già scritto in
   `docs/deviazioni-schema.md`, si applica in Fase 3.
+- **Il suggerimento di duplicato si può solo scartare.** `POST /retry` cancella il
+  suggerimento e riprocessa, ma "aggiorna quella esistente invece di crearne una
+  nuova" richiede la rotta di modifica delle procedure, che è Fase 3.
+- **Le schede non si leggono ancora via API.** `GET /api/recordings/:id` dice come
+  è andata e dà il `procedureId`; per vedere la scheda serve Prisma Studio. Le
+  rotte delle procedure sono Fase 3.
+- **Nessun limite al numero di retry.** `retryCount` si incrementa e basta: un
+  audio irrecuperabile può essere riprocessato all'infinito, a spese di chi paga
+  le chiamate ai modelli.
+- **La redazione dei dati sensibili (§9) non c'è.** `contieneDatiSensibili` viene
+  rilevato e salvato, ma non produce ancora nessun comportamento.
 
 ---
 
@@ -282,7 +428,7 @@ Non installate, e il perché:
 |---|---|
 | `npm run build` | `tsc -b` su tutti i progetti |
 | `npm run typecheck` | build + seed + test, senza emettere |
-| `npm run dev` | shared in watch, api e web insieme |
+| `npm run dev` | shared in watch, api, worker e web insieme |
 | `npm run dev:api` / `dev:web` / `dev:worker` | uno alla volta |
 | `npm run db:migrate` | applica le migration e rigenera il client |
 | `npm run db:migrate:create` | genera una migration **senza applicarla** |
