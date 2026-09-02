@@ -2,14 +2,19 @@ import type { EmbeddingProvider, ExtractionProvider, StorageProvider, Transcript
 import type { PrismaClient } from "@prisma/client";
 import type { Express } from "express";
 import { createApp } from "./app.js";
-import type { AppConfig } from "./config/env.js";
+import { ConfigError, type AppConfig } from "./config/env.js";
 import { createPrismaClient, isDatabaseReachable } from "./db/client.js";
 import { createRequireAuth } from "./http/middleware/requireAuth.js";
 import { Argon2PasswordHasher } from "./infra/Argon2PasswordHasher.js";
 import { JoseTokenIssuer } from "./infra/JoseTokenIssuer.js";
 import { PrismaAuthRepository } from "./infra/PrismaAuthRepository.js";
+import { PrismaRecordingRepository } from "./infra/PrismaRecordingRepository.js";
 import { SystemClock } from "./infra/SystemClock.js";
 import { createLogger, type Logger } from "./logger.js";
+import { AnthropicExtractionProvider } from "./providers/AnthropicExtractionProvider.js";
+import { LocalFileStorageProvider } from "./providers/LocalFileStorageProvider.js";
+import { OpenAiEmbeddingProvider } from "./providers/OpenAiEmbeddingProvider.js";
+import { OpenAiTranscriptionProvider } from "./providers/OpenAiTranscriptionProvider.js";
 import {
   FakeEmbeddingProvider,
   FakeExtractionProvider,
@@ -17,6 +22,11 @@ import {
   FakeTranscriptionProvider,
 } from "./providers/fake/index.js";
 import { createAuthService, type AuthService } from "./services/auth.service.js";
+import { createIngestionService, type IngestionService } from "./services/ingestion.service.js";
+import {
+  createRecordingsService,
+  type RecordingsService,
+} from "./services/recordings.service.js";
 
 /**
  * L'unico file che conosce le classi concrete.
@@ -40,25 +50,69 @@ export interface Composition {
   readonly logger: Logger;
   readonly prisma: PrismaClient;
   readonly authService: AuthService;
+  readonly recordingsService: RecordingsService;
+  /**
+   * Esposto anche se l'app HTTP non lo usa: e' il worker a chiamarlo, e i test
+   * end-to-end lo eseguono in-process subito dopo l'upload invece di aspettare
+   * un giro di polling di un secondo processo.
+   */
+  readonly ingestionService: IngestionService;
   readonly providers: Providers;
   readonly app: Express;
   shutdown(): Promise<void>;
 }
 
-function buildProviders(config: AppConfig): Providers {
-  // Fase 1: solo implementazioni fake. Le vere arrivano in Fase 2 e si
-  // agganciano qui, senza che nessun servizio se ne accorga.
-  const embedding = new FakeEmbeddingProvider({
-    model: config.providers.embeddingModel,
-    dimensions: config.providers.embeddingDimensions,
-  });
+/**
+ * Una chiave assente e' un errore di configurazione, non un caso da gestire.
+ *
+ * Fallire qui significa che il processo non parte; il ramo alternativo —
+ * lasciar partire l'API e scoprirlo al primo vocale — trasformerebbe una
+ * variabile dimenticata in un `Recording` fallito per un utente vero. Il
+ * fallback silenzioso al fake sarebbe anche peggio: schede finte in un
+ * database vero, indistinguibili da quelle buone.
+ */
+function requireKey(value: string | undefined, name: string, provider: string): string {
+  if (value === undefined || value.trim() === "") {
+    throw new ConfigError(`${name} e' obbligatoria quando il provider e' "${provider}"`);
+  }
+  return value;
+}
 
-  return {
-    transcription: new FakeTranscriptionProvider(),
-    extraction: new FakeExtractionProvider(),
-    storage: new FakeStorageProvider(),
-    embedding,
-  };
+function buildProviders(config: AppConfig): Providers {
+  const p = config.providers;
+
+  const transcription: TranscriptionProvider =
+    p.transcription === "openai"
+      ? new OpenAiTranscriptionProvider({
+          apiKey: requireKey(p.openaiApiKey, "OPENAI_API_KEY", "openai"),
+          model: p.transcriptionModel,
+        })
+      : new FakeTranscriptionProvider();
+
+  const extraction: ExtractionProvider =
+    p.extraction === "anthropic"
+      ? new AnthropicExtractionProvider({
+          apiKey: requireKey(p.anthropicApiKey, "ANTHROPIC_API_KEY", "anthropic"),
+          model: p.extractionModel,
+        })
+      : new FakeExtractionProvider();
+
+  const storage: StorageProvider =
+    p.storage === "local" ? new LocalFileStorageProvider(p.storageDir) : new FakeStorageProvider();
+
+  const embedding: EmbeddingProvider =
+    p.embedding === "openai"
+      ? new OpenAiEmbeddingProvider({
+          apiKey: requireKey(p.openaiApiKey, "OPENAI_API_KEY", "openai"),
+          model: p.embeddingModel,
+          dimensions: p.embeddingDimensions,
+        })
+      : new FakeEmbeddingProvider({
+          model: p.embeddingModel,
+          dimensions: p.embeddingDimensions,
+        });
+
+  return { transcription, extraction, storage, embedding };
 }
 
 export function compose(config: AppConfig, overrides?: {
@@ -89,10 +143,34 @@ export function compose(config: AppConfig, overrides?: {
   });
 
   const providers = buildProviders(config);
+  const recordingRepo = new PrismaRecordingRepository(prisma);
+
+  const ingestionService = createIngestionService({
+    repo: recordingRepo,
+    transcription: providers.transcription,
+    extraction: providers.extraction,
+    storage: providers.storage,
+    embedding: providers.embedding,
+    clock,
+    logger: logger.child({ component: "ingestion" }),
+  });
+
+  const recordingsService = createRecordingsService({
+    repo: recordingRepo,
+    storage: providers.storage,
+    clock,
+    // L'API non elabora: accoda e basta. E' il worker a raccogliere, e questa
+    // riga esiste solo perche' un giorno il segnale possa diventare qualcosa di
+    // piu' immediato del polling senza toccare il servizio.
+    onEnqueued: (recordingId) => {
+      logger.debug("registrazione in coda", { recordingId });
+    },
+  });
 
   const app = createApp({
     logger,
     authService,
+    recordingsService,
     requireAuth: createRequireAuth({ tokens, clock }),
     isDatabaseUp: () => isDatabaseReachable(prisma),
     now: () => clock.now(),
@@ -104,6 +182,8 @@ export function compose(config: AppConfig, overrides?: {
     logger,
     prisma,
     authService,
+    recordingsService,
+    ingestionService,
     providers,
     app,
     async shutdown(): Promise<void> {

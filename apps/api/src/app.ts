@@ -4,7 +4,9 @@ import { createErrorHandler, notFoundHandler } from "./errors/errorHandler.js";
 import type { Logger } from "./logger.js";
 import { createAuthRouter } from "./routes/auth.routes.js";
 import { createHealthRouter } from "./routes/health.routes.js";
+import { createRecordingsRouter } from "./routes/recordings.routes.js";
 import type { AuthService } from "./services/auth.service.js";
+import type { RecordingsService } from "./services/recordings.service.js";
 
 /**
  * Costruisce l'app Express a partire dalle dipendenze gia' risolte.
@@ -18,6 +20,7 @@ import type { AuthService } from "./services/auth.service.js";
 export interface AppDeps {
   readonly logger: Logger;
   readonly authService: AuthService;
+  readonly recordingsService: RecordingsService;
   readonly requireAuth: RequestHandler;
   readonly isDatabaseUp: () => Promise<boolean>;
   readonly now: () => Date;
@@ -52,6 +55,14 @@ export function createApp(deps: AppDeps): Express {
   app.use(
     "/api/auth",
     createAuthRouter({ authService: deps.authService, requireAuth: deps.requireAuth }),
+  );
+
+  app.use(
+    "/api/recordings",
+    createRecordingsRouter({
+      recordingsService: deps.recordingsService,
+      requireAuth: deps.requireAuth,
+    }),
   );
 
   app.use(notFoundHandler);

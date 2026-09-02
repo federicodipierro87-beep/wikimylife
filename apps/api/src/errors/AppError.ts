@@ -92,6 +92,27 @@ export class AppError extends Error {
     });
   }
 
+  /**
+   * Distinti da VALIDATION_FAILED perche' il rimedio e' diverso: qui non si
+   * corregge un campo, si manda un altro file. Un client che riprovasse la
+   * stessa richiesta dopo un 400 avrebbe ragione; dopo questi due, no.
+   */
+  static payloadTooLarge(message: string): AppError {
+    return new AppError({
+      code: ErrorCode.PAYLOAD_TOO_LARGE,
+      message,
+      status: 413,
+    });
+  }
+
+  static unsupportedMediaType(message: string): AppError {
+    return new AppError({
+      code: ErrorCode.UNSUPPORTED_MEDIA_TYPE,
+      message,
+      status: 415,
+    });
+  }
+
   /** Risorsa inesistente E risorsa altrui: dall'esterno devono coincidere. */
   static notFound(message = "Risorsa non trovata"): AppError {
     return new AppError({ code: ErrorCode.NOT_FOUND, message, status: 404 });

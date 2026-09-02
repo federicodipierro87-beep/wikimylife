@@ -9,7 +9,13 @@ import { AppError } from "../errors/AppError.js";
  * Ogni corpo di richiesta passa da qui, sempre — anche quando "e' solo una
  * stringa".
  */
-export function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
+/**
+ * Il terzo parametro di `ZodType` e' il tipo di INGRESSO, e qui vale `unknown`
+ * di proposito: uno schema con dei `.default()` ha ingresso e uscita diversi, e
+ * fissarli uguali (come farebbe `z.ZodType<T>`) escluderebbe proprio gli schemi
+ * che applicano un default — cioe' quelli per cui la validazione serve di piu'.
+ */
+export function parseBody<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, body: unknown): T {
   const parsed = schema.safeParse(body);
   if (parsed.success) {
     return parsed.data;
