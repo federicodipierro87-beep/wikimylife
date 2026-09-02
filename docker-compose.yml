@@ -1,0 +1,27 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: wikimylife-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wikimylife
+      POSTGRES_PASSWORD: wikimylife
+      POSTGRES_DB: wikimylife
+      # initdb runs only on an empty volume: see docker/initdb
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      # Se la 5432 e' occupata: cambiare in "5433:5432" e allineare DATABASE_URL.
+      - "5432:5432"
+    volumes:
+      - wikimylife-db-data:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wikimylife -d wikimylife"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  wikimylife-db-data:
+    name: wikimylife-db-data
