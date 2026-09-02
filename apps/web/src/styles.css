@@ -1,0 +1,85 @@
+:root {
+  color-scheme: dark;
+  --bg: #101418;
+  --card: #171d24;
+  --line: #263140;
+  --text: #e6edf3;
+  --muted: #8b98a5;
+  --good: #3fb950;
+  --bad: #f85149;
+  font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.page {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 2rem 1rem 4rem;
+}
+
+h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.75rem;
+  letter-spacing: -0.02em;
+}
+
+.lead {
+  margin: 0 0 2rem;
+  color: var(--muted);
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--card);
+  padding: 1.25rem;
+}
+
+.card h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+code {
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.8125rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 8rem 1fr;
+  gap: 0.4rem 1rem;
+  margin: 1rem 0 0;
+}
+
+.grid dt {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.grid dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.good {
+  color: var(--good);
+}
+
+.bad {
+  color: var(--bad);
+}
