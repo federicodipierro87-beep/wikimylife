@@ -1,0 +1,18 @@
+// Radice della build a project references: `tsc -b` costruisce shared, poi i tre
+// consumatori, nell'ordine imposto dal grafo.
+//
+// `prisma/` e `tests/` NON sono qui e non sono progetti composite di proposito:
+// non emettono niente e importano sorgenti di altri progetti con percorsi
+// relativi, cosa che un composite vieta (`rootDir`). Si typecheckano da soli:
+//   tsc -p prisma            (seed)
+//   tsc -p tsconfig.tests.json
+// Entrambi girano in `npm run typecheck`.
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./apps/api" },
+    { "path": "./apps/worker" },
+    { "path": "./apps/web" }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "name": "wikimylife",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Trasforma note vocali in schede-procedura riutilizzabili",
+  "engines": {
+    "node": ">=22.11"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "typecheck": "tsc -b && tsc -p prisma && tsc -p tsconfig.tests.json",
+    "dev": "concurrently -n shared,api,web -c blue,green,magenta \"npm run dev:shared\" \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:shared": "tsc -b packages/shared --watch --preserveWatchOutput",
+    "dev:api": "npm run dev --workspace @wikimylife/api",
+    "dev:web": "npm run dev --workspace @wikimylife/web",
+    "dev:worker": "npm run dev --workspace @wikimylife/worker",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy && prisma generate",
+    "db:migrate:create": "prisma migrate dev --create-only",
+    "db:reset": "prisma migrate reset --force",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:studio": "prisma studio",
+    "pretest": "tsc -b packages/shared",
+    "test": "vitest run --project unit",
+    "test:watch": "vitest --project unit",
+    "test:integration": "vitest run --project integration"
+  },
+  "overrides": {
+    "deepmerge-ts": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "concurrently": "^9.1.2",
+    "prisma": "^6.2.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  }
+}
