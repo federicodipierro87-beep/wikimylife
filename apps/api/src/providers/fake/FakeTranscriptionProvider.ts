@@ -32,6 +32,21 @@ export class FakeTranscriptionProvider implements TranscriptionProvider {
     return this.#calls;
   }
 
+  /**
+   * Riporta il fake allo stato iniziale.
+   *
+   * I test end-to-end condividono una sola istanza per file — riavviare il
+   * server a ogni caso costerebbe la chiusura delle connessioni keep-alive di
+   * `fetch` — quindi una coda non consumata da un caso avvelenerebbe il
+   * successivo, e il fallimento comparirebbe nel test sbagliato.
+   */
+  reset(): this {
+    this.#queue.length = 0;
+    this.#failNext = false;
+    this.#calls = 0;
+    return this;
+  }
+
   transcribe(input: TranscriptionInput): Promise<TranscriptionResult> {
     this.#calls += 1;
 

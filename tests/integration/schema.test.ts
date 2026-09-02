@@ -184,10 +184,24 @@ describe("vincoli che il dominio da' per scontati", () => {
 
     expect(rows.map((r) => r.indexname)).toContain("Recording_status_idx");
   });
+
+  it("cancellare la scheda suggerita non cancella la registrazione [D9]", async () => {
+    // ON DELETE SET NULL e non CASCADE: `duplicateOfId` e' un suggerimento, e
+    // un suggerimento che sparisce non deve portarsi via l'audio e la
+    // trascrizione originali. CASCADE qui sarebbe perdita di dati silenziosa.
+    const rows = await prisma.$queryRaw<{ delete_rule: string }[]>`
+      SELECT rc.delete_rule
+      FROM information_schema.referential_constraints rc
+      WHERE rc.constraint_schema = 'public'
+        AND rc.constraint_name = 'Recording_duplicateOfId_fkey'
+    `;
+
+    expect(rows[0]?.delete_rule).toBe("SET NULL");
+  });
 });
 
 describe("storia delle migration", () => {
-  it("le tre migration sono applicate, in ordine e senza fallimenti", async () => {
+  it("sono tutte applicate, in ordine e senza fallimenti", async () => {
     const rows = await prisma.$queryRaw<
       { migration_name: string; finished_at: Date | null; rolled_back_at: Date | null }[]
     >`
@@ -200,6 +214,7 @@ describe("storia delle migration", () => {
       "20260902090000_enable_pgvector",
       "20260902090100_init",
       "20260902090200_procedure_embedding_hnsw",
+      "20260902165725_recording_dedup",
     ]);
     expect(rows.every((r) => r.finished_at !== null && r.rolled_back_at === null)).toBe(true);
   });

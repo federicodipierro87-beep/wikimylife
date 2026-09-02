@@ -1,7 +1,8 @@
 import type { AddressInfo } from "node:net";
+import { RECORDING_UPLOAD_FIELDS } from "@wikimylife/shared";
 import type { PrismaClient } from "@prisma/client";
 import { loadConfig } from "../../../apps/api/src/config/env.js";
-import { compose } from "../../../apps/api/src/composition.js";
+import { compose, type Composition } from "../../../apps/api/src/composition.js";
 import { createLogger } from "../../../apps/api/src/logger.js";
 import { testDatabaseUrl, testPrisma } from "./db.js";
 
@@ -24,6 +25,16 @@ import { testDatabaseUrl, testPrisma } from "./db.js";
 export interface TestServer {
   readonly url: string;
   readonly prisma: PrismaClient;
+  /**
+   * Le stesse istanze che servono le richieste HTTP.
+   *
+   * Serve a due cose che dall'esterno non si raggiungono: eseguire
+   * `ingestionService.processNext()` in-process subito dopo un upload — invece
+   * di avviare il worker e aspettare un giro di polling — e programmare i
+   * provider finti. Un secondo `compose()` per i test avrebbe dato altri
+   * oggetti: si sarebbero configurati fake che nessuna richiesta usa.
+   */
+  readonly composition: Composition;
   close(): Promise<void>;
 }
 
@@ -49,9 +60,9 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
   // stamperebbe uno stack in mezzo all'output della suite e sembrerebbe un
   // guasto.
   const silent = createLogger({ level: "error", write: () => undefined, writeError: () => undefined });
-  const { app } = compose(config, { prisma, logger: silent });
+  const composition = compose(config, { prisma, logger: silent });
 
-  const server = app.listen(0);
+  const server = composition.app.listen(0);
   await new Promise<void>((resolve, reject) => {
     server.once("listening", resolve);
     server.once("error", reject);
@@ -62,6 +73,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
   return {
     url: `http://127.0.0.1:${String(address.port)}`,
     prisma,
+    composition,
     async close(): Promise<void> {
       await new Promise<void>((resolve, reject) => {
         server.close((err) => {
@@ -103,10 +115,70 @@ export async function call(
     ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
   });
 
+  return toResult(response);
+}
+
+async function toResult(response: Response): Promise<HttpResult> {
   const text = await response.text();
   return {
     status: response.status,
     body: text === "" ? null : (JSON.parse(text) as unknown),
     headers: response.headers,
   };
+}
+
+export interface UploadInit {
+  readonly accessToken?: string | undefined;
+  /**
+   * Serializzato con `JSON.stringify` se non e' gia' una stringa: i casi
+   * negativi devono poter mandare un JSON storto, e una stringa passa intatta.
+   */
+  readonly metadata: unknown;
+  readonly audio?: Uint8Array | undefined;
+  readonly filename?: string | undefined;
+  /** Manda il multipart senza la parte `audio`. */
+  readonly omitAudio?: boolean | undefined;
+}
+
+/**
+ * L'upload multipart vero.
+ *
+ * Il `content-type` non si scrive a mano: lo compone `fetch` a partire dalla
+ * `FormData`, boundary compreso. Sceglierlo qui vorrebbe dire indovinare il
+ * boundary, e un boundary sbagliato produce un corpo illeggibile senza dire
+ * perche' — un 400 che sembra un bug del server e invece e' un bug del test.
+ */
+export async function uploadRecording(
+  server: TestServer,
+  init: UploadInit,
+): Promise<HttpResult> {
+  const form = new FormData();
+  form.set(
+    RECORDING_UPLOAD_FIELDS.metadata,
+    typeof init.metadata === "string" ? init.metadata : JSON.stringify(init.metadata),
+  );
+
+  if (init.omitAudio !== true) {
+    const bytes = init.audio ?? new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3, 4]);
+    form.set(
+      RECORDING_UPLOAD_FIELDS.audio,
+      // `type` volutamente generico: il tipo autorevole e' quello dichiarato
+      // nei metadati, e il test lo dimostra non aiutando il server.
+      new Blob([bytes], { type: "application/octet-stream" }),
+      init.filename ?? "voce.webm",
+    );
+  }
+
+  const headers: Record<string, string> = {};
+  if (init.accessToken !== undefined) {
+    headers["authorization"] = `Bearer ${init.accessToken}`;
+  }
+
+  const response = await fetch(`${server.url}/api/recordings`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+
+  return toResult(response);
 }

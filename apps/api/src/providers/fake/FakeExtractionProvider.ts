@@ -40,6 +40,15 @@ export class FakeExtractionProvider implements ExtractionProvider {
     return this.#lastInput;
   }
 
+  /** Come in `FakeTranscriptionProvider`: una sola istanza per file di e2e. */
+  reset(): this {
+    this.#queue.length = 0;
+    this.#failNext = false;
+    this.#calls = 0;
+    this.#lastInput = null;
+    return this;
+  }
+
   extract(input: ExtractionInput): Promise<ExtractionResult> {
     this.#calls += 1;
     this.#lastInput = input;

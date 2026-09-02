@@ -5,7 +5,15 @@
     "composite": false,
     "declaration": false,
     "declarationMap": false,
-    "lib": ["ES2023", "DOM"],
+    // Senza "DOM", esattamente come apps/api. I test importano i sorgenti
+    // dell'API con percorsi relativi, quindi li ricompilano con QUESTA
+    // configurazione: con "DOM" in lista vincerebbero i tipi del browser per
+    // Blob, FormData e Response, dove `BlobPart` pretende un
+    // `ArrayBufferView<ArrayBuffer>` e un `Uint8Array` non lo e'. Il risultato
+    // era che `http/multipart.ts` compilava nel suo progetto e falliva qui:
+    // due verdetti diversi sullo stesso file. I globali di fetch li porta
+    // @types/node, che e' anche cio' che quel codice usa davvero a runtime.
+    "lib": ["ES2023"],
     "types": ["node"],
     "jsx": "react-jsx"
   },
