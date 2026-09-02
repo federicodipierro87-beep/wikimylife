@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+
+    // "DOM" serve solo per i tipi di fetch/Response/AbortSignal.
+    // "types": [] impedisce l'ingresso dei tipi di Node (process, Buffer, ...).
+    // Il compilatore permetterebbe comunque `document`: a vietarlo e' il test
+    // di guardia in tests/unit/guards.test.ts.
+    "lib": ["ES2023", "DOM"],
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
+}
