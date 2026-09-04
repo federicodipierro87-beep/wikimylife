@@ -97,7 +97,7 @@ export interface HttpResult {
 /** Non lancia mai sui codici di errore: nei test lo status e' un'asserzione. */
 export async function call(
   server: TestServer,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PATCH" | "DELETE",
   path: string,
   init: { body?: unknown; accessToken?: string } = {},
 ): Promise<HttpResult> {
