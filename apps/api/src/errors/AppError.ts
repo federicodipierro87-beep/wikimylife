@@ -118,6 +118,20 @@ export class AppError extends Error {
     return new AppError({ code: ErrorCode.NOT_FOUND, message, status: 404 });
   }
 
+  /**
+   * La richiesta e' formalmente valida ma il dominio la vieta: rendere PUBBLICA
+   * una scheda di ambito CLIENTE, registrare un'esecuzione su una scheda
+   * archiviata.
+   *
+   * 409 e non 400 perche' non c'e' niente da correggere nel corpo — quello e'
+   * scritto bene. E' esplicito e non silenzioso perche' l'alternativa (accettare
+   * la richiesta e scrivere PRIVATA di nascosto) direbbe all'utente che la
+   * scheda e' condivisa quando non lo e', che nella §9 e' il caso peggiore.
+   */
+  static conflict(message: string): AppError {
+    return new AppError({ code: ErrorCode.CONFLICT, message, status: 409 });
+  }
+
   static serviceUnavailable(message = "Servizio non disponibile"): AppError {
     return new AppError({
       code: ErrorCode.SERVICE_UNAVAILABLE,
