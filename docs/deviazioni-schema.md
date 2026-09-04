@@ -26,6 +26,7 @@ silenzio è una colonna che fra sei mesi nessuno saprà spiegare.
 | [D7](#d7) | `Recording.mimeType/sizeBytes/deviceLocale/updatedAt` | requisiti del testo assenti dallo schema |
 | [D8](#d8) | tre campi `nullable` in più nel contratto §4.1 | lettura del preambolo della §4 |
 | [D9](#d9) | `RecordingStatus` += `DUPLICATO_SOSPETTO`, `Recording.duplicateOfId` + `duplicateSimilarity` | conseguenza della dedup §5 in Fase 2 |
+| [D10](#d10) | `Procedure.searchText` + `Procedure.searchVector` + indice GIN | modellazione della ricerca full-text §7 |
 
 Tutto il resto è invariato: `Procedure` (incluso `status @default(BOZZA_AUDIO)`), `Step`,
 `Prerequisite`, `Pitfall`, `Cost`, `Reference`, `Attachment`, `Execution`, `Tag`,
@@ -318,17 +319,33 @@ la soglia di 0.85 è tarata bene: senza il valore misurato, cambiarla sarebbe un
 registrazione, che contiene l'audio e la trascrizione originali — gli unici dati non riproducibili
 di tutta la catena.
 
-**Cosa resta scoperto.** Non c'è ancora una rotta per *accettare* il suggerimento (fondere la nuova
-estrazione nella scheda esistente e aggiungere una riga a `Execution`). È lavoro di Fase 3, insieme
-alla modifica delle procedure: qui la §5 chiede solo di non creare il duplicato e di lasciar decidere
-l'utente, e per decidere basta poter vedere.
+**Cosa resta scoperto.** Non c'è ancora una rotta per *accettare* il suggerimento in un colpo solo
+(fondere la nuova estrazione nella scheda esistente e aggiungere una riga a `Execution`). La Fase 3
+la rende però eseguibile a mano, con due chiamate che esistono: `PATCH /api/procedures/:id` per
+portare dentro i campi nuovi e `POST /api/procedures/:id/executions` per registrare l'esecuzione. Una
+rotta dedicata dovrebbe decidere *quali* campi vincono in caso di conflitto, ed è una domanda di
+prodotto a cui non c'è ancora risposta: farla adesso significherebbe inventarne una.
 
 ---
 
-## Rimandato alla Fase 3: la ricerca full-text (§7)
+<a id="d10"></a>
+## D10 — `searchText` e `searchVector` su `Procedure`
 
-La §7 chiede ricerca full-text in italiano oltre a quella semantica. **Non è implementata in Fase 1**,
-ma il disegno è deciso ora perché condiziona il modo in cui la Fase 2 scriverà le procedure.
+**Cosa.**
+
+```prisma
+model Procedure {
+  searchText   String @default("")
+  searchVector Unsupported("tsvector")?
+}
+```
+
+più, nella migration `20260903100000_procedure_fulltext` scritta a mano, la colonna generata e
+l'indice GIN che Prisma non sa dichiarare.
+
+**Perché.** La §7 chiede ricerca full-text in italiano oltre a quella semantica, ma la §6 non modella
+niente per ottenerla. Il disegno era già deciso in Fase 1 — sta qui sotto, invariato — perché
+condizionava il modo in cui la Fase 2 avrebbe scritto le procedure; la Fase 3 lo esegue e basta.
 
 ### Perché non basta un `tsvector` generato
 
@@ -349,7 +366,7 @@ tabelle figlie. Una subquery in una colonna generata è vietata.
 la variante a un argomento non lo è, perché dipende da `default_text_search_config`. La
 configurazione va sempre scritta esplicitamente.)
 
-### Il disegno deciso
+### Il disegno, com'è stato realizzato
 
 Una colonna `searchText` denormalizzata, **mantenuta dall'applicazione**, più un `tsvector` generato
 sopra di essa:
@@ -364,8 +381,8 @@ CREATE INDEX "Procedure_searchVector_idx" ON "Procedure" USING gin ("searchVecto
 ```
 
 `searchText` viene ricomposto dall'applicazione ogni volta che la procedura o una delle sue righe
-figlie cambia, con la stessa funzione unica in `packages/shared` — l'equivalente testuale di
-`embeddingInput()`:
+figlie cambia, con `searchText()` in `packages/shared/src/util/searchText.ts` — funzione pura,
+l'equivalente testuale di `embeddingInput()`:
 
 ```
 titolo
@@ -380,33 +397,55 @@ nomi dei tag
 Il `tsvector` resta generato e non mantenuto a mano: così è impossibile che vada fuori sincrono
 rispetto a `searchText`, e l'unico punto di verità applicativa è una funzione pura e testabile.
 
+Differenza da `embeddingInput()`, che vale la pena scrivere: `searchText()` **non abbassa le
+maiuscole**. Normalizzare è compito del dizionario `italian`, che lo fa meglio — insieme allo stemming
+e alle stop word — e che riceve la stringa così com'è. Farlo due volte non aggiunge niente e nasconde
+dove avviene davvero.
+
+La migration contiene anche un `UPDATE` di backfill per le righe già scritte dalla Fase 2 e dal seed.
+Non è la fonte di verità: è l'allineamento iniziale. Ricalca in SQL l'ordine e le regole di trim di
+`searchText()`, e una divergenza residua si riassorbe alla prima modifica della scheda, perché il
+`tsvector` è un insieme di lessemi e non una stringa.
+
 **Nota sulle procedure con `contieneDatiSensibili: true`:** entrano nell'indice normalmente. La
 sensibilità limita la *condivisione* (§5), non la ricercabilità da parte del proprietario. La query
 di ricerca filtra sempre per `userId`, come ogni altra query — vedi la regola di ownership nel README.
 
-### Ranking
+### Ranking, e i pesi che non ci sono
 
-`ts_rank_cd` con pesi per sezione (`setweight`): titolo `A`, trigger `B`, passi `C`, il resto `D`.
-Con `searchText` come singola stringa i pesi si perdono; se in Fase 3 serviranno davvero, `searchText`
-diventerà quattro colonne (`searchTitle`, `searchTrigger`, `searchSteps`, `searchRest`) e il
-`tsvector` generato le comporrà con `setweight`. La decisione si può prendere allora: non cambia
-nulla di quello che la Fase 2 deve scrivere oggi.
+Il canale full-text ordina con `ts_rank_cd`, la query si costruisce con `websearch_to_tsquery` e non
+con `to_tsquery`: la seconda solleva un errore su una parentesi spaiata, e le query le scrivono le
+persone. Un `SyntaxError` di Postgres in faccia a chi cerca *«marca da bollo (2024»* non è un
+comportamento accettabile.
+
+I pesi per sezione (`setweight`: titolo `A`, trigger `B`, passi `C`, il resto `D`) **non sono stati
+implementati**: con `searchText` come singola stringa si perdono. Il giorno in cui serviranno,
+`searchText` diventerà quattro colonne (`searchTitle`, `searchTrigger`, `searchSteps`, `searchRest`)
+e il `tsvector` generato le comporrà con `setweight`. Non è stato fatto ora perché richiede una
+misura che oggi non si può prendere — quali risultati la gente si aspetta prima — e perché la fusione
+RRF (`apps/api/src/services/search/fusion.ts`) usa i *ranghi* e non i punteggi: una differenza di
+peso fra titolo e passi cambierebbe l'ordine dentro il canale, non necessariamente quello finale.
 
 ---
 
-## Nota operativa: l'indice HNSW è invisibile a Prisma
+## Nota operativa: i due indici di ricerca sono invisibili a Prisma
 
-Non è una deviazione dallo schema ma è la conseguenza più pericolosa di averlo scelto, quindi sta
+Non è una deviazione dallo schema ma è la conseguenza più pericolosa di averli scelti, quindi sta
 scritta anche qui oltre che nel README.
 
-`Procedure.embedding` è `Unsupported("vector(1536)")`. L'indice
-`Procedure_embedding_hnsw_idx` è creato da una migration scritta a mano e **il drift detection di
-Prisma non lo vede**: una `prisma migrate dev` fatta senza pensarci può generare un `DROP INDEX`, e
-il risultato non è un errore ma una ricerca semantica che diventa lentissima in silenzio.
+`Procedure.embedding` è `Unsupported("vector(1536)")` e `Procedure.searchVector` è
+`Unsupported("tsvector")`. Gli indici `Procedure_embedding_hnsw_idx` (HNSW) e
+`Procedure_searchVector_idx` (GIN) sono creati da migration scritte a mano, e così l'espressione
+`GENERATED ALWAYS` di `searchVector`: **il drift detection di Prisma non vede niente di tutto
+questo**. Una `prisma migrate dev` fatta senza pensarci può generare un `DROP INDEX` o un
+`DROP COLUMN`, e il risultato non è un errore ma una ricerca che degrada in silenzio — in scansione
+sequenziale nel caso migliore, in nessun risultato nel caso peggiore.
 
 Difese, in ordine:
 
 1. **Sempre `prisma migrate dev --create-only`** (script `db:migrate:create`), poi leggere l'SQL
-   generato e cancellare ogni `DROP INDEX` / `DROP EXTENSION` non voluto.
-2. `tests/integration/schema.test.ts` verifica estensione, tipo della colonna e presenza dell'indice.
-   È la rete che prende quello che sfugge alla regola 1.
+   generato e cancellare ogni `DROP INDEX` / `DROP COLUMN` / `DROP EXTENSION` non voluto.
+2. `tests/integration/schema.test.ts` verifica estensione, tipo e dimensioni della colonna vettore,
+   entrambi gli indici con la loro classe di operatori, che `searchVector` sia davvero generata e che
+   il dizionario `italian` sia installato e faccia stemming. È la rete che prende quello che sfugge
+   alla regola 1.

@@ -239,6 +239,18 @@ model Procedure {
   /// castato `::vector`, mai concatenato.
   embedding Unsupported("vector(1536)")?
 
+  /// [D10] Testo denormalizzato da cui si genera `searchVector` (§7). Lo
+  /// mantiene l'applicazione, con `searchText()` di packages/shared, a ogni
+  /// scrittura della scheda o di una sua riga figlia.
+  searchText String @default("")
+
+  /// [D10] `tsvector` italiano, colonna GENERATED ALWAYS su `searchText` con
+  /// indice GIN. Prisma non sa dichiarare ne' l'espressione ne' l'indice: sono
+  /// nella migration 20260903100000_procedure_fulltext, scritta a mano.
+  /// `Unsupported` la rende invisibile al client tipizzato, che e' esattamente
+  /// quello che serve — una colonna generata non si scrive mai.
+  searchVector Unsupported("tsvector")?
+
   steps       Step[]
   prereqs     Prerequisite[]
   pitfalls    Pitfall[]

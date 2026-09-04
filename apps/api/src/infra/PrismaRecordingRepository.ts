@@ -2,6 +2,7 @@ import {
   RecordingStatus,
   Scope,
   Visibility,
+  searchText,
   type ExtractionContract,
 } from "@wikimylife/shared";
 import { Prisma, type PrismaClient } from "@prisma/client";
@@ -332,6 +333,18 @@ export class PrismaRecordingRepository implements RecordingRepository {
           ultimaVerifica: input.recordedAt,
           volteEseguita: 1,
           contieneDatiSensibili: contract._meta.contieneDatiSensibili,
+          // [D10] La colonna che alimenta il `tsvector` generato. Si scrive qui
+          // e non con un secondo UPDATE perche' il testo si conosce gia' tutto:
+          // i figli vengono creati nella stessa istruzione, dagli stessi dati.
+          searchText: searchText({
+            titolo,
+            trigger: contract.trigger,
+            esito: contract.esito,
+            steps: contract.passi,
+            prereqs: contract.prerequisiti,
+            pitfalls: contract.trappole,
+            tag: contract.tag,
+          }),
           steps: {
             create: contract.passi.map((passo) => ({
               ordine: passo.ordine,

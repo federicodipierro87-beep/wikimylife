@@ -4,6 +4,7 @@ import {
   EMBEDDING_DIMENSIONS,
   deterministicUnitVector,
   embeddingInput,
+  searchText,
   toVectorLiteral,
 } from "@wikimylife/shared";
 
@@ -122,6 +123,26 @@ export function procedureEmbeddingText(blueprint: ProcedureBlueprint): string {
   });
 }
 
+/**
+ * [D10] Il testo da cui Postgres genera il `tsvector` italiano.
+ *
+ * Piu' largo di quello dell'embedding, e di proposito: qui entrano anche passi,
+ * prerequisiti e trappole, cioe' le parole esatte che il seed serve a rendere
+ * cercabili nei test di integrazione ("marca da bollo" sta al secondo costo
+ * della procedura A, non nel titolo).
+ */
+export function procedureSearchText(blueprint: ProcedureBlueprint): string {
+  return searchText({
+    titolo: blueprint.titolo,
+    trigger: blueprint.trigger,
+    esito: blueprint.esito,
+    steps: blueprint.steps,
+    prereqs: blueprint.prereqs,
+    pitfalls: blueprint.pitfalls,
+    tag: blueprint.tags,
+  });
+}
+
 async function upsertTags(
   prisma: PrismaClient,
   userId: string,
@@ -192,6 +213,7 @@ export async function createProcedure(
     contieneDatiSensibili: blueprint.contieneDatiSensibili,
     ultimaVerifica: invariants.ultimaVerifica,
     volteEseguita: invariants.volteEseguita,
+    searchText: procedureSearchText(blueprint),
     steps: { create: blueprint.steps.map((s) => ({ ...s })) },
     prereqs: { create: blueprint.prereqs.map((p) => ({ ...p })) },
     pitfalls: { create: blueprint.pitfalls.map((p) => ({ ...p })) },

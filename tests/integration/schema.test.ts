@@ -131,6 +131,67 @@ describe("indice HNSW", () => {
   });
 });
 
+describe("full-text [D10]", () => {
+  it("searchText esiste, e' NOT NULL e ha un default", async () => {
+    // Il default vale per le righe che nascono prima che il servizio scriva la
+    // colonna: `NULL` la' dentro renderebbe `to_tsvector` nullo e la scheda
+    // invisibile alla ricerca senza un solo errore.
+    const rows = await prisma.$queryRaw<{ is_nullable: string; column_default: string | null }[]>`
+      SELECT is_nullable, column_default
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'Procedure'
+        AND column_name = 'searchText'
+    `;
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.is_nullable).toBe("NO");
+    expect(rows[0]?.column_default).not.toBeNull();
+  });
+
+  it("searchVector e' una colonna generata, non una da mantenere a mano", async () => {
+    // GENERATED ALWAYS ... STORED e' cio' che rende impossibile che il vettore
+    // e il testo divergano: non esiste un percorso di scrittura che aggiorni
+    // l'uno senza l'altro, nemmeno un UPDATE fatto a mano in psql.
+    const rows = await prisma.$queryRaw<{ udt_name: string; generation_expression: string | null }[]>`
+      SELECT udt_name, generation_expression
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'Procedure'
+        AND column_name = 'searchVector'
+    `;
+
+    expect(rows[0]?.udt_name).toBe("tsvector");
+    // `italian` e non `simple`: e' cio' che fa funzionare lo stemming.
+    expect(rows[0]?.generation_expression).toContain("italian");
+  });
+
+  it("l'indice GIN esiste su searchVector", async () => {
+    // Stesso rischio dell'HNSW: la colonna e' `Unsupported`, quindi l'indice e'
+    // invisibile alla drift detection di Prisma.
+    const rows = await prisma.$queryRaw<{ method: string; definition: string }[]>`
+      SELECT am.amname AS method, pg_get_indexdef(i.indexrelid) AS definition
+      FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      JOIN pg_am am ON am.oid = c.relam
+      WHERE c.relname = 'Procedure_searchVector_idx'
+    `;
+
+    expect(rows[0]?.method).toBe("gin");
+    expect(rows[0]?.definition).toContain("searchVector");
+  });
+
+  it("la configurazione italiana esiste e fa stemming", async () => {
+    // Se il container fosse costruito senza il dizionario italiano, la
+    // migration passerebbe e la ricerca smetterebbe di trovare le forme flesse.
+    const rows = await prisma.$queryRaw<{ uguali: boolean }[]>`
+      SELECT to_tsvector('italian', 'pagare') = to_tsvector('italian', 'pagato') AS uguali
+    `;
+
+    expect(rows[0]?.uguali).toBe(true);
+  });
+});
+
 describe("enum del database", () => {
   it("CardStatus include ESTRAZIONE_FALLITA [D1]", async () => {
     const values = await enumValues("CardStatus");
@@ -215,6 +276,7 @@ describe("storia delle migration", () => {
       "20260902090100_init",
       "20260902090200_procedure_embedding_hnsw",
       "20260902165725_recording_dedup",
+      "20260903100000_procedure_fulltext",
     ]);
     expect(rows.every((r) => r.finished_at !== null && r.rolled_back_at === null)).toBe(true);
   });
