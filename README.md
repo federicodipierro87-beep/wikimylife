@@ -3,10 +3,12 @@
 Trasforma note vocali in schede-procedura riutilizzabili: registri come hai fatto
 una cosa, e la prossima volta la ritrovi scritta.
 
-Siamo alla **Fase 2 — Pipeline di ingestione**: si carica un vocale e ne esce una
-scheda. Sopra le fondamenta della Fase 1 (monorepo, schema dati, pgvector, seed,
-`packages/shared`, autenticazione JWT) ci sono ora l'upload multipart, il worker,
-la validazione deterministica della §5 e la deduplicazione per similarità coseno.
+Siamo alla **Fase 3 — Lettura e ricerca**: le schede prodotte dai vocali ora si
+elencano, si aprono, si correggono, si confermano e si cercano. Sotto ci sono le
+fondamenta della Fase 1 (monorepo, schema dati, pgvector, seed,
+`packages/shared`, autenticazione JWT) e la pipeline della Fase 2 (upload
+multipart, worker, validazione deterministica della §5, deduplicazione per
+similarità coseno).
 
 I provider di trascrizione, estrazione ed embedding hanno **due implementazioni
 ciascuno**: quella reale (Whisper, Claude, `text-embedding-3-small`) e una fake
@@ -157,13 +159,92 @@ codice non usa, come `domandeSuggerite`.
 
 ---
 
-## pgvector — la regola permanente sulle migration
+## Leggere, modificare, cercare
 
-`Procedure.embedding` è una colonna `vector(1536)`, che Prisma dichiara
-`Unsupported`. Ne discende una cosa da sapere prima di toccare lo schema:
+```
+GET    /api/procedures                 lista, filtri scope / status / tag, paginata
+GET    /api/procedures/:id             scheda completa con tutte le relazioni
+PATCH  /api/procedures/:id             modifica manuale
+DELETE /api/procedures/:id             soft delete → ARCHIVIATA
+POST   /api/procedures/:id/executions  registra un'esecuzione (§8)
+GET    /api/search?q=                  ricerca ibrida (§7)
+```
 
-> **L'indice HNSW è invisibile alla drift detection di Prisma.** Ogni migration
-> va generata con `--create-only`, l'SQL va letto, e ogni `DROP INDEX` o
+**Le liste nascondono il cestino, ma non lo cancellano.** `DELETE` porta la
+scheda in `ARCHIVIATA` e risponde `200` con la scheda archiviata, non `204`: c'è
+ancora tutto da vedere, e la si recupera con una `PATCH` sullo stato. La lista
+esclude le archiviate finché non le si chiede esplicitamente con
+`?status=ARCHIVIATA`.
+
+**Gli array si sostituiscono in blocco.** Una `PATCH` con `steps` cancella i
+passi e li riscrive, rinumerati `1..n` — il client manda lo stato finale, non un
+diff. Mandare `"steps": []` significa davvero «nessun passo». I campi derivati
+(`volteEseguita`, `ultimaVerifica`, `costoTotaleCent`) non si scrivono: mandarli
+è un `400`, perché sono conseguenze e non decisioni.
+
+**Le due regole della §9 vivono nel servizio, non nell'interfaccia.** Una scheda
+con `scope = CLIENTE` o `contieneDatiSensibili = true` non può diventare
+`PUBBLICA`: è un `409`, e la transazione non parte nemmeno. Si può però togliere
+il flag e pubblicare nella stessa `PATCH`, perché è una revisione esplicita —
+esattamente quello che la §9 chiede.
+
+**Un'esecuzione `CAMBIATA` riporta la scheda in `DA_RIVEDERE`** (§8). Una
+`FALLITA` non muove niente: `ultimaVerifica` è l'ultima volta che la procedura ha
+*funzionato*, e un tentativo andato male non la aggiorna né la cancella. Il flag
+`obsoleta` è calcolato, non salvato: `ultimaVerifica` più vecchia di un anno.
+
+### La ricerca ha due canali e non li somma
+
+`ts_rank_cd` restituisce numeri piccoli e senza scala fissa; la similarità coseno
+sta fra 0.6 e 0.95 quasi sempre. Sommarli, anche normalizzati, significa
+inventare un tasso di cambio fra due grandezze che non ne hanno uno. Quindi
+**Reciprocal Rank Fusion**: conta la *posizione* in ciascuna lista, non il
+punteggio. Una scheda che entrambi i canali mettono terza batte una che un canale
+solo mette prima — l'accordo fra due misure indipendenti vale più dell'eccellenza
+in una sola. A parità: prima la più fresca, poi la più eseguita.
+
+Ogni risultato dice da dove viene (`matchedBy`: `TESTO`, `SEMANTICA`, `ENTRAMBE`).
+
+Due dettagli che sembrano piccoli e non lo sono:
+
+- La query si costruisce con **`websearch_to_tsquery`**, non `to_tsquery`: la
+  seconda solleva un errore su una parentesi spaiata, e le query le scrivono le
+  persone. Cercare `marca da bollo (2024` deve dare risultati, non un `500`.
+- Il canale semantico ha un **pavimento** (`SEARCH_MIN_SIMILARITY`). Una query ai
+  vicini più prossimi non sa dire «nessun risultato»: `ORDER BY <=> LIMIT 20`
+  restituisce venti schede anche quando la più vicina non c'entra niente. Senza
+  il pavimento, cercare «criptovalute» in un archivio di pratiche burocratiche
+  restituisce pratiche burocratiche.
+
+Se il provider di embedding cade, la ricerca **risponde lo stesso** col solo
+full-text e lascia una riga di warning nei log. I dati sono già tutti in casa: un
+timeout esterno non deve rendere inutilizzabile la funzione principale dell'app.
+
+### Il full-text è denormalizzato di proposito
+
+Le cose che si cercano davvero — *«quella dove poi serviva la marca da bollo»* —
+stanno nei passi e nelle trappole, cioè in tabelle figlie. Una colonna generata
+non può contenere una subquery. Quindi `Procedure.searchText` è una stringa
+mantenuta dall'applicazione con `searchText()` di `packages/shared`, e
+`searchVector` è un `tsvector` **`GENERATED ALWAYS ... STORED`** sopra di essa.
+
+Il vettore non può andare fuori sincrono col testo perché non è l'applicazione a
+scriverlo: non esiste un percorso di scrittura che aggiorni l'uno senza l'altro,
+nemmeno un `UPDATE` fatto a mano in psql. Il dizionario è `italian` e non
+`simple`, ed è ciò che fa sì che «pagamento» trovi «pagare». Dettagli in
+`docs/deviazioni-schema.md` `[D10]`.
+
+---
+
+## pgvector e tsvector — la regola permanente sulle migration
+
+`Procedure.embedding` è una colonna `vector(1536)` e `Procedure.searchVector` è
+un `tsvector` generato: Prisma le dichiara entrambe `Unsupported`. Ne discende
+una cosa da sapere prima di toccare lo schema:
+
+> **L'indice HNSW, l'indice GIN e l'espressione `GENERATED ALWAYS` sono
+> invisibili alla drift detection di Prisma.** Ogni migration va generata con
+> `--create-only`, l'SQL va letto, e ogni `DROP INDEX`, `DROP COLUMN` o
 > `DROP EXTENSION` non voluto va cancellato a mano prima di applicarla.
 
 ```powershell
@@ -190,17 +271,24 @@ await prisma.$executeRaw`UPDATE "Procedure" SET embedding = ${literal}::vector W
 
 ## Verificare che tutto funzioni
 
-### Schema e pgvector
+### Schema, pgvector e full-text
 
 ```powershell
 docker compose exec db psql -U wikimylife -d wikimylife -c "\dx"
 #   → vector
 
 docker compose exec db psql -U wikimylife -d wikimylife -c "\d+ \""Procedure\"""
-#   → embedding | vector(1536)
+#   → embedding    | vector(1536)
+#   → searchVector | tsvector | generated always as (to_tsvector('italian'::regconfig, "searchText")) stored
 
 docker compose exec db psql -U wikimylife -d wikimylife -c "SELECT indexname FROM pg_indexes WHERE tablename='Procedure';"
 #   → Procedure_embedding_hnsw_idx
+#   → Procedure_searchVector_idx
+
+# Il dizionario italiano c'è e fa stemming: se questa dà `f`, la ricerca
+# smetterebbe di trovare le forme flesse senza un solo errore.
+docker compose exec db psql -U wikimylife -d wikimylife -c "SELECT to_tsvector('italian','pagare') = to_tsvector('italian','pagato');"
+#   → t
 ```
 
 ### Le invarianti del seed
@@ -327,6 +415,73 @@ curl.exe http://localhost:3000/api/recordings/<id> -H "authorization: Bearer $al
 #   → 404 NOT_FOUND — identico a un id inesistente
 ```
 
+### Leggere e cercare, a mano
+
+Con l'API avviata e il seed applicato (`npm run db:seed`), i due esempi sono le
+schede del casellario e della VPN.
+
+```powershell
+$token = "<accessToken del login qui sopra>"
+$h = @{ authorization = "Bearer $token" }
+
+curl.exe "http://localhost:3000/api/procedures" -H "authorization: Bearer $token"
+#   → { items: [2 schede], total: 2, limit: 20, offset: 0 }
+
+curl.exe "http://localhost:3000/api/procedures?scope=LAVORO" -H "authorization: Bearer $token"
+#   → solo la VPN
+
+# Refuso nel nome del filtro: 400, non venti risultati ignorando la chiave.
+curl.exe "http://localhost:3000/api/procedures?limti=5" -H "authorization: Bearer $token"
+#   → 400 VALIDATION_FAILED
+```
+
+La ricerca, e le tre cose che vale la pena vedere accadere:
+
+```powershell
+# 1. Trova una parola che sta solo in un passo, non nel titolo.
+curl.exe "http://localhost:3000/api/search?q=tabaccheria" -H "authorization: Bearer $token"
+#   → il casellario, matchedBy: "TESTO"
+
+# 2. Stemming italiano: singolare per plurale.
+curl.exe "http://localhost:3000/api/search?q=credenziale" -H "authorization: Bearer $token"
+#   → la VPN — «credenziali» nel testo
+
+# 3. Una query che nessuno saprebbe interpretare non fa 500.
+curl.exe "http://localhost:3000/api/search?q=vpn%20(%20%22or%20!%20&" -H "authorization: Bearer $token"
+#   → 200
+```
+
+La §8 e la §9, in quattro chiamate:
+
+```powershell
+$id = "seed-proc-casellario"
+
+# CAMBIATA riporta la scheda in DA_RIVEDERE.
+curl.exe -X POST "http://localhost:3000/api/procedures/$id/executions" -H "authorization: Bearer $token" `
+  -H "content-type: application/json" -d '{\"esito\":\"CAMBIATA\",\"nota\":\"Ora il modulo e online\"}'
+#   → 200, status: "DA_RIVEDERE", volteEseguita incrementato
+
+# La VPN ha contieneDatiSensibili: true. Pubblicarla è un 409, non un warning.
+curl.exe -X PATCH "http://localhost:3000/api/procedures/seed-proc-vpn" -H "authorization: Bearer $token" `
+  -H "content-type: application/json" -d '{\"visibility\":\"PUBBLICA\"}'
+#   → 409 CONFLICT
+
+# DELETE archivia: la riga resta, la scheda sparisce dalla lista e dalla ricerca.
+curl.exe -X DELETE "http://localhost:3000/api/procedures/$id" -H "authorization: Bearer $token"
+#   → 200, status: "ARCHIVIATA"
+curl.exe "http://localhost:3000/api/search?q=casellario" -H "authorization: Bearer $token"
+#   → items: []
+curl.exe "http://localhost:3000/api/procedures?status=ARCHIVIATA" -H "authorization: Bearer $token"
+#   → eccola
+```
+
+E la proprietà, di nuovo, perché è la regola che non deve avere eccezioni:
+
+```powershell
+curl.exe "http://localhost:3000/api/procedures/$id" -H "authorization: Bearer $altroToken"
+#   → 404 NOT_FOUND — mai 403: un 403 confermerebbe che quell'id esiste
+```
+
 ---
 
 ## Test
@@ -347,7 +502,12 @@ servizio di autenticazione con un repository in memoria, l'error handler, il
 client API e i provider fake. Della Fase 2: la validazione della §5 caso per caso
 (JSON malformato, ordine non contiguo, confidenza bassa, importi negativi,
 `NOTA_SEMPLICE`), il prompt confrontato carattere per carattere con la specifica,
-e la pipeline con un repository in memoria — compreso il duplicato rilevato.
+e la pipeline con un repository in memoria — compreso il duplicato rilevato. Della
+Fase 3: la composizione di `searchText()`, la fusione RRF come funzione pura (che
+l'accordo batta l'eccellenza in un canale solo, l'ordinamento a parità, il
+degrado con un canale vuoto), le regole §8 e §9 del servizio delle procedure, e
+l'orchestrazione della ricerca — incluso il provider di embedding che cade e non
+deve portarsi via la risposta.
 
 **integration** applica le migration su `DATABASE_URL_TEST`, poi verifica lo
 schema fisico contro il catalogo di Postgres, esegue il seed vero e ricontrolla
@@ -362,6 +522,17 @@ fake che nessuna richiesta usa. Tre cose si possono verificare solo lì: che
 `Response.formData()` regga un corpo multipart vero, che il `<=>` di pgvector
 serva davvero la deduplicazione, e che `@@unique([procedureId, ordine])` non
 esploda sui passi rinumerati.
+
+L'end-to-end della ricerca costruisce le schede facendole passare per la pipeline
+vera invece di scriverle con `prisma.procedure.create`: è l'unico modo perché
+`searchText` e l'embedding siano davvero popolati come in produzione. Prova le
+cose che nessun test in memoria può provare — che «tabaccheria», parola presente
+solo dentro un passo, trovi la scheda; che «credenziale» trovi «credenziali»,
+cioè che il dizionario sia `italian` e non `simple`; che una query con parentesi
+spaiate non faccia `500`. Il canale semantico lì tace, perché il
+`FakeEmbeddingProvider` produce vettori quasi ortogonali: un test scrive a mano
+nella colonna l'embedding della query stessa, così il percorso SQL semantico —
+indice, cast, pavimento, fusione — resta comunque esercitato.
 
 `DATABASE_URL_TEST` non ha un valore di default, di proposito: i test fanno
 `TRUNCATE`, e un default che puntasse al database di sviluppo lo svuoterebbe in
@@ -404,16 +575,15 @@ Non installate, e il perché:
 - **`vector(1536)` accoppia lo schema a `text-embedding-3-small`.** Passare a
   `-large` (3072 dimensioni) richiede una migration e il re-embedding di tutte le
   procedure.
-- **Il full-text non c'è.** Il `tsvector` deve coprire anche passi e trappole, che
-  stanno in tabelle figlie: serve una colonna `searchText` mantenuta
-  dall'applicazione. Il design SQL definitivo è già scritto in
-  `docs/deviazioni-schema.md`, si applica in Fase 3.
-- **Il suggerimento di duplicato si può solo scartare.** `POST /retry` cancella il
-  suggerimento e riprocessa, ma "aggiorna quella esistente invece di crearne una
-  nuova" richiede la rotta di modifica delle procedure, che è Fase 3.
-- **Le schede non si leggono ancora via API.** `GET /api/recordings/:id` dice come
-  è andata e dà il `procedureId`; per vedere la scheda serve Prisma Studio. Le
-  rotte delle procedure sono Fase 3.
+- **Il duplicato si fonde a mano.** `POST /retry` scarta il suggerimento e
+  riprocessa; "aggiorna quella esistente invece di crearne una nuova" si fa con
+  una `PATCH` sulla scheda indicata da `duplicateOfId`, leggendo l'estrazione
+  dalla registrazione. Non esiste una rotta che unisca le due in un colpo solo,
+  ed è voluto: la fusione è una decisione, e va vista prima di essere scritta.
+- **La ricerca non pagina.** `GET /api/search` ha un `limit` e nessun `offset`:
+  RRF fonde due classifiche troncate, e la pagina due di una fusione di due
+  finestre diverse non è la continuazione della pagina uno. Servirà una strategia
+  a cursore, non un `OFFSET`.
 - **Nessun limite al numero di retry.** `retryCount` si incrementa e basta: un
   audio irrecuperabile può essere riprocessato all'infinito, a spese di chi paga
   le chiamate ai modelli.
