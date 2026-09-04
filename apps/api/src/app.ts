@@ -4,9 +4,13 @@ import { createErrorHandler, notFoundHandler } from "./errors/errorHandler.js";
 import type { Logger } from "./logger.js";
 import { createAuthRouter } from "./routes/auth.routes.js";
 import { createHealthRouter } from "./routes/health.routes.js";
+import { createProceduresRouter } from "./routes/procedures.routes.js";
 import { createRecordingsRouter } from "./routes/recordings.routes.js";
+import { createSearchRouter } from "./routes/search.routes.js";
 import type { AuthService } from "./services/auth.service.js";
+import type { ProceduresService } from "./services/procedures.service.js";
 import type { RecordingsService } from "./services/recordings.service.js";
+import type { SearchService } from "./services/search.service.js";
 
 /**
  * Costruisce l'app Express a partire dalle dipendenze gia' risolte.
@@ -21,6 +25,8 @@ export interface AppDeps {
   readonly logger: Logger;
   readonly authService: AuthService;
   readonly recordingsService: RecordingsService;
+  readonly proceduresService: ProceduresService;
+  readonly searchService: SearchService;
   readonly requireAuth: RequestHandler;
   readonly isDatabaseUp: () => Promise<boolean>;
   readonly now: () => Date;
@@ -63,6 +69,19 @@ export function createApp(deps: AppDeps): Express {
       recordingsService: deps.recordingsService,
       requireAuth: deps.requireAuth,
     }),
+  );
+
+  app.use(
+    "/api/procedures",
+    createProceduresRouter({
+      proceduresService: deps.proceduresService,
+      requireAuth: deps.requireAuth,
+    }),
+  );
+
+  app.use(
+    "/api/search",
+    createSearchRouter({ searchService: deps.searchService, requireAuth: deps.requireAuth }),
   );
 
   app.use(notFoundHandler);

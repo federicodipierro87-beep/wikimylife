@@ -8,6 +8,7 @@ import { createRequireAuth } from "./http/middleware/requireAuth.js";
 import { Argon2PasswordHasher } from "./infra/Argon2PasswordHasher.js";
 import { JoseTokenIssuer } from "./infra/JoseTokenIssuer.js";
 import { PrismaAuthRepository } from "./infra/PrismaAuthRepository.js";
+import { PrismaProcedureRepository } from "./infra/PrismaProcedureRepository.js";
 import { PrismaRecordingRepository } from "./infra/PrismaRecordingRepository.js";
 import { SystemClock } from "./infra/SystemClock.js";
 import { createLogger, type Logger } from "./logger.js";
@@ -24,9 +25,14 @@ import {
 import { createAuthService, type AuthService } from "./services/auth.service.js";
 import { createIngestionService, type IngestionService } from "./services/ingestion.service.js";
 import {
+  createProceduresService,
+  type ProceduresService,
+} from "./services/procedures.service.js";
+import {
   createRecordingsService,
   type RecordingsService,
 } from "./services/recordings.service.js";
+import { createSearchService, type SearchService } from "./services/search.service.js";
 
 /**
  * L'unico file che conosce le classi concrete.
@@ -51,6 +57,8 @@ export interface Composition {
   readonly prisma: PrismaClient;
   readonly authService: AuthService;
   readonly recordingsService: RecordingsService;
+  readonly proceduresService: ProceduresService;
+  readonly searchService: SearchService;
   /**
    * Esposto anche se l'app HTTP non lo usa: e' il worker a chiamarlo, e i test
    * end-to-end lo eseguono in-process subito dopo l'upload invece di aspettare
@@ -167,10 +175,33 @@ export function compose(config: AppConfig, overrides?: {
     },
   });
 
+  const procedureRepo = new PrismaProcedureRepository(prisma);
+
+  const proceduresService = createProceduresService({
+    repo: procedureRepo,
+    embeddings: providers.embedding,
+    clock,
+  });
+
+  const searchService = createSearchService({
+    repo: procedureRepo,
+    embeddings: providers.embedding,
+    clock,
+    // Il canale semantico che cade non e' un errore da 500: la ricerca risponde
+    // lo stesso col solo full-text. Ma un provider giu' per un'ora deve lasciare
+    // una traccia, altrimenti la degradazione e' invisibile e si scopre solo
+    // dalle lamentele sulla qualita' dei risultati.
+    onSemanticUnavailable: (error) => {
+      logger.warn("ricerca semantica non disponibile, degrado a full-text", { error });
+    },
+  });
+
   const app = createApp({
     logger,
     authService,
     recordingsService,
+    proceduresService,
+    searchService,
     requireAuth: createRequireAuth({ tokens, clock }),
     isDatabaseUp: () => isDatabaseReachable(prisma),
     now: () => clock.now(),
@@ -183,6 +214,8 @@ export function compose(config: AppConfig, overrides?: {
     prisma,
     authService,
     recordingsService,
+    proceduresService,
+    searchService,
     ingestionService,
     providers,
     app,
