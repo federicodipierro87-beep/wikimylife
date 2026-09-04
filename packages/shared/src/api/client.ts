@@ -3,6 +3,18 @@ import { AUTH_STORAGE_KEYS, type SecureStorageAdapter } from "../adapters/secure
 import { errorBodySchema, type ValidationIssue } from "../errors/body.js";
 import { ErrorCode, type ErrorCode as ErrorCodeType } from "../errors/codes.js";
 import {
+  procedureDetailSchema,
+  procedureListSchema,
+  searchResultSchema,
+  type CreateExecutionBodyInput,
+  type ListProceduresQueryInput,
+  type ProcedureDetail,
+  type ProcedureList,
+  type SearchQueryInput,
+  type SearchResult,
+  type UpdateProcedureBodyInput,
+} from "./procedures.js";
+import {
   RECORDING_UPLOAD_FIELDS,
   recordingStateSchema,
   type CaptureMetadataInput,
@@ -83,6 +95,23 @@ function joinUrl(baseUrl: string, path: string): string {
   return `${base}${suffix}`;
 }
 
+/**
+ * `URLSearchParams` e non una concatenazione: un tag con uno spazio o una `&`
+ * dentro romperebbe la query string in silenzio, e i tag li scrive l'utente.
+ * E' un globale standard, presente sia in Node sia nei browser sia in React
+ * Native: non viola l'isomorfismo di questo pacchetto.
+ */
+function queryString(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) {
+      search.set(key, String(value));
+    }
+  }
+  const encoded = search.toString();
+  return encoded === "" ? "" : `?${encoded}`;
+}
+
 export interface ApiClient {
   health(): Promise<HealthResponse>;
   signup(input: SignupRequest): Promise<AuthSession>;
@@ -107,6 +136,20 @@ export interface ApiClient {
   getRecording(id: string): Promise<RecordingState>;
   /** Rimette in coda dalla trascrizione. */
   retryRecording(id: string): Promise<RecordingState>;
+
+  listProcedures(query?: ListProceduresQueryInput): Promise<ProcedureList>;
+  getProcedure(id: string): Promise<ProcedureDetail>;
+  updateProcedure(id: string, patch: UpdateProcedureBodyInput): Promise<ProcedureDetail>;
+  /**
+   * Soft delete: la scheda passa ad `ARCHIVIATA` e sparisce da liste e ricerca,
+   * ma resta leggibile per id. Cancellare davvero significherebbe buttare via
+   * anche le registrazioni collegate, che sono l'unico dato non riproducibile.
+   */
+  archiveProcedure(id: string): Promise<ProcedureDetail>;
+  /** §8: un esito `CAMBIATA` riporta la scheda in `DA_RIVEDERE`. */
+  recordExecution(id: string, body: CreateExecutionBodyInput): Promise<ProcedureDetail>;
+  /** §7: full-text italiano e semantica pgvector, fusi. */
+  search(query: SearchQueryInput): Promise<SearchResult>;
 }
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
@@ -377,6 +420,90 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           method: "POST",
           path: `/api/recordings/${encodeURIComponent(id)}/retry`,
           schema: recordingStateSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    listProcedures(query: ListProceduresQueryInput = {}): Promise<ProcedureList> {
+      return send(
+        {
+          method: "GET",
+          path: `/api/procedures${queryString({
+            scope: query.scope,
+            status: query.status,
+            tag: query.tag,
+            limit: query.limit,
+            offset: query.offset,
+          })}`,
+          schema: procedureListSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    getProcedure(id: string): Promise<ProcedureDetail> {
+      return send(
+        {
+          method: "GET",
+          path: `/api/procedures/${encodeURIComponent(id)}`,
+          schema: procedureDetailSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    updateProcedure(id: string, patch: UpdateProcedureBodyInput): Promise<ProcedureDetail> {
+      return send(
+        {
+          method: "PATCH",
+          path: `/api/procedures/${encodeURIComponent(id)}`,
+          body: patch,
+          schema: procedureDetailSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    archiveProcedure(id: string): Promise<ProcedureDetail> {
+      return send(
+        {
+          method: "DELETE",
+          path: `/api/procedures/${encodeURIComponent(id)}`,
+          schema: procedureDetailSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    recordExecution(id: string, body: CreateExecutionBodyInput): Promise<ProcedureDetail> {
+      return send(
+        {
+          method: "POST",
+          path: `/api/procedures/${encodeURIComponent(id)}/executions`,
+          body,
+          schema: procedureDetailSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    search(query: SearchQueryInput): Promise<SearchResult> {
+      return send(
+        {
+          method: "GET",
+          path: `/api/search${queryString({
+            q: query.q,
+            scope: query.scope,
+            limit: query.limit,
+          })}`,
+          schema: searchResultSchema,
           auth: true,
         },
         true,
