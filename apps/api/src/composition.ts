@@ -16,6 +16,7 @@ import { AnthropicExtractionProvider } from "./providers/AnthropicExtractionProv
 import { LocalFileStorageProvider } from "./providers/LocalFileStorageProvider.js";
 import { OpenAiEmbeddingProvider } from "./providers/OpenAiEmbeddingProvider.js";
 import { OpenAiTranscriptionProvider } from "./providers/OpenAiTranscriptionProvider.js";
+import { S3StorageProvider } from "./providers/S3StorageProvider.js";
 import {
   FakeEmbeddingProvider,
   FakeExtractionProvider,
@@ -86,6 +87,28 @@ function requireKey(value: string | undefined, name: string, provider: string): 
   return value;
 }
 
+/**
+ * Lo storage ha tre implementazioni e una sola e' adatta alla produzione.
+ *
+ * La configurazione impedisce gia' di avviare `NODE_ENV=production` con le
+ * altre due, quindi qui non c'e' nessun controllo da rifare: e' il vantaggio
+ * di validare l'ambiente in un punto solo.
+ */
+function buildStorage(p: AppConfig["providers"]): StorageProvider {
+  switch (p.storage) {
+    case "s3": {
+      if (p.s3 === undefined) {
+        throw new ConfigError('STORAGE_PROVIDER="s3" senza configurazione S3');
+      }
+      return new S3StorageProvider(p.s3);
+    }
+    case "local":
+      return new LocalFileStorageProvider(p.storageDir);
+    case "fake":
+      return new FakeStorageProvider();
+  }
+}
+
 function buildProviders(config: AppConfig): Providers {
   const p = config.providers;
 
@@ -105,8 +128,7 @@ function buildProviders(config: AppConfig): Providers {
         })
       : new FakeExtractionProvider();
 
-  const storage: StorageProvider =
-    p.storage === "local" ? new LocalFileStorageProvider(p.storageDir) : new FakeStorageProvider();
+  const storage: StorageProvider = buildStorage(p);
 
   const embedding: EmbeddingProvider =
     p.embedding === "openai"
@@ -206,6 +228,7 @@ export function compose(config: AppConfig, overrides?: {
     isDatabaseUp: () => isDatabaseReachable(prisma),
     now: () => clock.now(),
     version: API_VERSION,
+    corsOrigins: config.corsOrigins,
   });
 
   return {

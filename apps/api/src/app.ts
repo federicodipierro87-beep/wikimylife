@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express, { type Express, type RequestHandler } from "express";
 import { createErrorHandler, notFoundHandler } from "./errors/errorHandler.js";
+import { createCors } from "./http/middleware/cors.js";
 import type { Logger } from "./logger.js";
 import { createAuthRouter } from "./routes/auth.routes.js";
 import { createHealthRouter } from "./routes/health.routes.js";
@@ -31,6 +32,8 @@ export interface AppDeps {
   readonly isDatabaseUp: () => Promise<boolean>;
   readonly now: () => Date;
   readonly version: string;
+  /** Origini ammesse dal CORS. Vuoto = nessuna chiamata cross-origin. */
+  readonly corsOrigins: readonly string[];
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -48,6 +51,11 @@ export function createApp(deps: AppDeps): Express {
     res.setHeader("x-request-id", incoming ?? randomUUID());
     next();
   });
+
+  // Prima di tutto il resto: un preflight non deve attraversare il parser JSON
+  // ne' l'autenticazione, e una risposta d'errore senza le intestazioni CORS
+  // arriva al browser come un errore di rete, che non dice niente a nessuno.
+  app.use(createCors({ origins: deps.corsOrigins }));
 
   app.use(express.json({ limit: "1mb" }));
 

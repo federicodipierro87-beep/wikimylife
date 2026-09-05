@@ -42,6 +42,8 @@ export interface TestServerOptions {
   readonly signupEnabled?: boolean;
   readonly accessTokenTtlMin?: number;
   readonly refreshTokenTtlDays?: number;
+  /** Lista separata da virgola, come la variabile d'ambiente vera. */
+  readonly corsOrigins?: string;
 }
 
 export async function startTestServer(options: TestServerOptions = {}): Promise<TestServer> {
@@ -53,6 +55,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     ACCESS_TOKEN_TTL_MIN: String(options.accessTokenTtlMin ?? 15),
     REFRESH_TOKEN_TTL_DAYS: String(options.refreshTokenTtlDays ?? 30),
     SIGNUP_ENABLED: String(options.signupEnabled ?? true),
+    CORS_ORIGINS: options.corsOrigins ?? "",
   });
 
   const prisma = testPrisma();
