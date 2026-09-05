@@ -1,3 +1,20 @@
+/*
+ * Il foglio di stile, scritto a mano.
+ *
+ * Non c'e' Tailwind e non c'e' una libreria di componenti perche' questa app ha
+ * cinque schermate e un pulsante che conta: la superficie visiva sta in
+ * trecento righe, e trecento righe di CSS costano meno di una dipendenza da
+ * configurare, aggiornare e spiegare.
+ *
+ * Mobile first: nessuna media query allarga niente sotto i 40rem, perche'
+ * sotto i 40rem c'e' il caso d'uso vero — qualcuno in piedi fuori da un
+ * ufficio, con una mano sola. La larghezza massima esiste solo perche' su un
+ * portatile una riga di testo lunga trenta centimetri e' illeggibile.
+ *
+ * Le aree di tocco stanno a 44px: e' il minimo sotto il quale un pollice
+ * sbaglia, ed e' il motivo per cui i pulsanti qui sembrano grandi.
+ */
+
 :root {
   color-scheme: dark;
   --bg: #101418;
@@ -7,7 +24,12 @@
   --muted: #8b98a5;
   --good: #3fb950;
   --bad: #f85149;
+  --warn: #d29922;
+  --accent: #e5484d;
+  --tocco: 2.75rem;
+  --barra-h: 4.5rem;
   font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  font-size: 16px;
 }
 
 * {
@@ -18,68 +40,605 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
+  /* Il rimbalzo elastico su iOS sotto una barra fissa scopre il fondo bianco. */
+  overscroll-behavior-y: none;
 }
 
-.page {
+/* --------------------------------------------------------------------------
+   Impalcatura
+   -------------------------------------------------------------------------- */
+
+.schermata {
   max-width: 40rem;
   margin: 0 auto;
-  padding: 2rem 1rem 4rem;
+  /* `safe-area-inset-bottom` e' l'altezza della barra gestuale su iPhone:
+     senza, l'ultimo pulsante finisce sotto una zona che intercetta i tocchi. */
+  padding: 1rem 1rem calc(var(--barra-h) + env(safe-area-inset-bottom) + 1.5rem);
+  min-height: 100vh;
 }
 
-h1 {
-  margin: 0 0 0.25rem;
-  font-size: 1.75rem;
+.schermata--centrata {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  text-align: center;
+}
+
+.avvio {
+  min-height: 100vh;
+}
+
+.testata {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.testata h1 {
+  flex: 1;
+  margin: 0;
+  font-size: 1.35rem;
   letter-spacing: -0.02em;
 }
 
-.lead {
-  margin: 0 0 2rem;
+h1,
+h2 {
+  letter-spacing: -0.02em;
+}
+
+h2 {
+  font-size: 1rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 0.5rem;
+}
+
+.muto {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* --------------------------------------------------------------------------
+   Comandi
+   -------------------------------------------------------------------------- */
+
+.bottone {
+  min-height: var(--tocco);
+  padding: 0 1rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.bottone:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.bottone--primario {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  width: 100%;
+}
+
+.bottone--piatto {
+  background: transparent;
+  border-color: transparent;
   color: var(--muted);
 }
 
-.card {
-  border: 1px solid var(--line);
-  border-radius: 0.75rem;
-  background: var(--card);
-  padding: 1.25rem;
+.campo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 0.9rem;
 }
 
-.card h2 {
-  margin: 0 0 0.25rem;
+.campo > span {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+input,
+textarea {
+  width: 100%;
+  min-height: var(--tocco);
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--text);
+  /* Sotto 16px iOS ingrandisce la pagina quando il campo prende il fuoco, e
+     non la rimpicciolisce piu'. */
+  font: inherit;
   font-size: 1rem;
 }
 
-.muted {
-  color: var(--muted);
-  font-size: 0.875rem;
+input:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
-code {
-  font-family: ui-monospace, "Cascadia Code", monospace;
-  font-size: 0.8125rem;
+.modulo {
+  width: 100%;
+  max-width: 22rem;
 }
 
-.grid {
-  display: grid;
-  grid-template-columns: 8rem 1fr;
-  gap: 0.4rem 1rem;
-  margin: 1rem 0 0;
-}
-
-.grid dt {
-  color: var(--muted);
-  font-size: 0.875rem;
-}
-
-.grid dd {
+.marchio {
   margin: 0;
-  font-variant-numeric: tabular-nums;
+  font-size: 2rem;
 }
 
-.good {
+.sottotitolo {
+  margin: 0 0 1rem;
+  color: var(--muted);
+}
+
+/* --------------------------------------------------------------------------
+   Registrazione
+   -------------------------------------------------------------------------- */
+
+.registrazione {
+  gap: 1.5rem;
+}
+
+.contatore {
+  margin: 0;
+  font-size: 2.5rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.pulsantone {
+  width: 11rem;
+  height: 11rem;
+  border-radius: 50%;
+  border: 4px solid var(--accent);
+  background: rgba(229, 72, 77, 0.12);
+  color: var(--accent);
+  font-size: 3.5rem;
+  cursor: pointer;
+}
+
+.pulsantone--attivo {
+  background: var(--accent);
+  color: #fff;
+  animation: respiro 2s ease-in-out infinite;
+}
+
+/* Un battito lento dice «sto registrando» senza occupare spazio. Chi ha
+   chiesto meno animazioni non lo vede: la registrazione resta evidente dal
+   colore pieno e dal contatore che sale. */
+@keyframes respiro {
+  50% {
+    box-shadow: 0 0 0 1.25rem rgba(229, 72, 77, 0.15);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulsantone--attivo {
+    animation: none;
+  }
+}
+
+.istruzione {
+  margin: 0;
+  color: var(--muted);
+  max-width: 18rem;
+}
+
+/* --------------------------------------------------------------------------
+   Elenco
+   -------------------------------------------------------------------------- */
+
+.filtri {
+  display: flex;
+  gap: 0.4rem;
+  overflow-x: auto;
+  margin-bottom: 1rem;
+  padding-bottom: 0.25rem;
+}
+
+.chip {
+  min-height: 2.25rem;
+  padding: 0 0.9rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chip--attivo {
+  background: var(--card);
+  border-color: var(--text);
+  color: var(--text);
+}
+
+.elenco {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.riga {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--card);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.riga__titolo {
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.riga__trigger,
+.riga__meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.riga__perche {
+  margin: 0.25rem 0 0 1rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.riga__sensibile {
+  align-self: flex-start;
+  font-size: 0.72rem;
+  color: var(--warn);
+}
+
+.riga__badge {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.badge {
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border: 1px solid currentcolor;
+}
+
+.badge--revisione {
+  color: var(--warn);
+}
+
+.badge--obsoleta {
+  color: var(--warn);
+}
+
+.badge--fallita {
+  color: var(--bad);
+}
+
+.badge--elaborazione,
+.badge--archiviata {
+  color: var(--muted);
+}
+
+.vuoto {
+  text-align: center;
+  padding: 3rem 1rem;
+}
+
+.paginazione {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.ricerca {
+  flex: 1;
+}
+
+/* --------------------------------------------------------------------------
+   Scheda
+   -------------------------------------------------------------------------- */
+
+.scheda__titolo {
+  margin: 0 0 0.5rem;
+  font-size: 1.5rem;
+  line-height: 1.25;
+}
+
+.scheda__trigger,
+.scheda__esito,
+.scheda__sommario {
+  margin: 0.5rem 0;
+  font-size: 0.95rem;
+}
+
+.scheda__sommario {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.sezione {
+  margin: 1.75rem 0;
+}
+
+.lista-puntata {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  line-height: 1.45;
+}
+
+.tipo {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.lista-trappole {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.trappola {
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.6rem;
+  border-left: 3px solid var(--muted);
+  background: var(--card);
+  line-height: 1.45;
+}
+
+/* Il colore da solo non basta: una persona su dodici non distingue il rosso,
+   e la parola «Ti blocca» funziona anche in bianco e nero. */
+.trappola--bloccante {
+  border-left-color: var(--bad);
+}
+
+.trappola--fastidio {
+  border-left-color: var(--warn);
+}
+
+.trappola__marchio {
+  display: inline-block;
+  margin-right: 0.5rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 0.3rem;
+  background: var(--bad);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.lista-passi {
+  margin: 0;
+  padding-left: 1.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  line-height: 1.45;
+}
+
+.lista-passi li::marker {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.passo__azione {
+  display: block;
+}
+
+.passo__dettaglio {
+  display: block;
+  color: var(--muted);
+  font-size: 0.88rem;
+  margin-top: 0.2rem;
+}
+
+/* --------------------------------------------------------------------------
+   Avvisi
+   -------------------------------------------------------------------------- */
+
+.avviso {
+  margin: 0.75rem 0;
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--card);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.avviso--errore {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.avviso--obsoleta {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+/* --------------------------------------------------------------------------
+   Conferma (§8)
+   -------------------------------------------------------------------------- */
+
+.esiti {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.esito {
+  min-height: 3.25rem;
+  border-radius: 0.7rem;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.esito--ok.esito--scelto {
+  border-color: var(--good);
   color: var(--good);
 }
 
-.bad {
+.esito--cambiata.esito--scelto {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.esito--fallita.esito--scelto {
+  border-color: var(--bad);
   color: var(--bad);
+}
+
+.conferma__nota {
+  margin-top: 0.9rem;
+}
+
+/* --------------------------------------------------------------------------
+   Origine: trascrizione e audio
+   -------------------------------------------------------------------------- */
+
+.origine__vocale {
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--card);
+  padding: 0.7rem 0.85rem;
+  margin-bottom: 0.6rem;
+}
+
+.origine__vocale summary {
+  cursor: pointer;
+  min-height: var(--tocco);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.player {
+  width: 100%;
+  margin: 0.6rem 0;
+}
+
+.trascrizione {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.revisione__azioni {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+
+/* --------------------------------------------------------------------------
+   Barra bassa e indicatore della coda
+   -------------------------------------------------------------------------- */
+
+.barra {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--barra-h) + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  background: rgba(16, 20, 24, 0.92);
+  backdrop-filter: blur(8px);
+  border-top: 1px solid var(--line);
+}
+
+.barra__voce {
+  flex: 1;
+  min-height: var(--tocco);
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.barra__voce--attiva {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.barra__registra {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 1.5rem;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+/* Sopra la barra e non dentro: e' un avviso di stato, non una voce di
+   navigazione, e non deve rubare il posto a un pulsante. */
+.coda {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--barra-h) + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 1rem;
+  background: var(--card);
+  border-top: 1px solid var(--line);
+  font-size: 0.82rem;
+  color: var(--muted);
 }

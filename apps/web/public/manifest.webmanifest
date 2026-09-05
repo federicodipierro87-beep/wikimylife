@@ -1,0 +1,20 @@
+{
+  "name": "WikiMyLife",
+  "short_name": "WikiMyLife",
+  "description": "Racconta una volta come si fa. Ritrovalo per sempre.",
+  "lang": "it",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#101418",
+  "theme_color": "#101418",
+  "icons": [
+    {
+      "src": "/icona.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

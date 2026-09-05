@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="WikiMyLife">
+  <rect width="512" height="512" rx="96" fill="#101418" />
+  <!--
+    Un microfono, disegnato invece che importato: un solo file, nessuna
+    dipendenza da una libreria di icone, e un SVG scala a ogni dimensione che
+    Android e iOS chiedono senza produrre otto PNG da tenere allineati.
+  -->
+  <rect x="216" y="120" width="80" height="160" rx="40" fill="#e5484d" />
+  <path
+    d="M168 248a88 88 0 0 0 176 0"
+    fill="none"
+    stroke="#f4f6f8"
+    stroke-width="24"
+    stroke-linecap="round"
+  />
+  <path d="M256 336v56" fill="none" stroke="#f4f6f8" stroke-width="24" stroke-linecap="round" />
+</svg>
