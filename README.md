@@ -3,12 +3,13 @@
 Trasforma note vocali in schede-procedura riutilizzabili: registri come hai fatto
 una cosa, e la prossima volta la ritrovi scritta.
 
-Siamo alla **Fase 3 — Lettura e ricerca**: le schede prodotte dai vocali ora si
-elencano, si aprono, si correggono, si confermano e si cercano. Sotto ci sono le
-fondamenta della Fase 1 (monorepo, schema dati, pgvector, seed,
-`packages/shared`, autenticazione JWT) e la pipeline della Fase 2 (upload
-multipart, worker, validazione deterministica della §5, deduplicazione per
-similarità coseno).
+Siamo alla **Fase 4 — PWA**: c'è un'applicazione installabile con un pulsante
+grande al centro, che registra, mette in coda su IndexedDB se manca la rete, e
+manda tutto da sola appena torna. Sotto ci sono le fondamenta della Fase 1
+(monorepo, schema dati, pgvector, seed, `packages/shared`, autenticazione JWT),
+la pipeline della Fase 2 (upload multipart, worker, validazione deterministica
+della §5, deduplicazione per similarità coseno) e le rotte di lettura, modifica
+e ricerca della Fase 3.
 
 I provider di trascrizione, estrazione ed embedding hanno **due implementazioni
 ciascuno**: quella reale (Whisper, Claude, `text-embedding-3-small`) e una fake
@@ -64,7 +65,7 @@ previsto, non un guasto.
 ```
 apps/api        Express 5 + Prisma. Riceve l'audio e risponde subito.
 apps/worker     Secondo processo: trascrive, estrae, valida, persiste.
-apps/web        Vite + React. Consuma packages/shared senza alias né polyfill.
+apps/web        PWA Vite + React. Consuma packages/shared senza alias né polyfill.
 packages/shared Codice isomorfo: contratti Zod, enum, interfacce, client API.
 prisma/         Schema, migration, seed.
 tests/          unit (senza Docker) e integration (con Postgres vero).
@@ -77,8 +78,8 @@ references.
 
 ### Tre regole che vale la pena conoscere prima di scrivere codice
 
-**1. `packages/shared` deve restare isomorfo.** Ci gira sopra sia il browser sia
-Node, e in Fase 4 anche React Native. Non può contenere `window`, `document`,
+**1. `packages/shared` deve restare isomorfo.** Ci girano sopra sia la PWA sia
+l'API sia il worker. Non può contenere `window`, `document`,
 `localStorage`, `process`, `Buffer`, `node:*` né importare `@prisma/client`. Il
 `tsconfig` ha `types: []` per impedire l'accesso ai tipi di Node, ma `lib` deve
 includere `DOM` per i tipi di `fetch` — quindi il compilatore *permetterebbe*
@@ -233,6 +234,113 @@ scriverlo: non esiste un percorso di scrittura che aggiorni l'uno senza l'altro,
 nemmeno un `UPDATE` fatto a mano in psql. Il dizionario è `italian` e non
 `simple`, ed è ciò che fa sì che «pagamento» trovi «pagare». Dettagli in
 `docs/deviazioni-schema.md` `[D10]`.
+
+---
+
+## L'app
+
+Cinque schermate, un router a `hashchange` di trenta righe, nessuna libreria di
+componenti e nessun framework CSS. Il bundle sta in **71 kB compressi**, foglio
+di stile compreso.
+
+```
+apps/web/src/
+  recording/   MediaRecorder, GPS, coda IndexedDB, svuotamento, contesto React
+  screens/     login, registrazione, lista, ricerca, scheda, revisione
+  format.ts    le regole di presentazione, pure e testate
+  routes.ts    rotta ⇄ hash, puro e testato
+  router.ts    le tre righe che toccano location e history
+```
+
+**Lo stop non aspetta niente.** È la promessa della §2, e vale solo se è vera
+alla lettera: premuto stop, l'audio va in IndexedDB, lo svuotamento della coda
+parte senza essere atteso, e la schermata cambia. Si può chiudere l'app in
+quell'istante — la registrazione è su disco e partirà da sola.
+
+Per lo stesso motivo **il GPS non blocca il salvataggio**. Parte insieme al
+microfono e scrive in un riferimento mutabile man mano che arriva: prima le
+coordinate, poi l'etichetta del luogo. Allo stop quel riferimento si legge e
+basta. Se il geocoding non ha finito, il luogo semplicemente non c'è — è un
+contorno del racconto, non il racconto.
+
+**La coda ordina con un `seq` monotono**, non con `Date.now()`: due
+registrazioni salvate nello stesso millisecondo avrebbero un ordine arbitrario.
+Ogni operazione apre la propria transazione, perché una transazione tenuta viva
+attraverso un `await` si auto-annulla, e attende `oncomplete` invece del
+successo della singola richiesta, perché una `put` può riuscire mentre la
+transazione fallisce sulla quota del disco.
+
+**Lo svuotamento distingue i guasti che passano da quelli che non passano.** Un
+401 o un 413 non migliorano riprovando: la riga resta in coda marcata con
+l'errore, così l'utente la vede. Una rete assente o un 500 fermano il giro e
+lasciano la riga in testa, pronta per il prossimo `online`. È seriale di
+proposito: in parallelo, dieci upload su una linea mobile si rubano banda a
+vicenda e finiscono tutti in timeout invece che nove su dieci a buon fine.
+
+**L'ordine di lettura della scheda non sta nel JSX.** `sezioniDi()` restituisce
+la sequenza — prima cosa serve, poi cosa può andare storto, poi come si fa — e
+il componente disegna ciò che riceve. La regola della §2 si cambia in una
+funzione che ha i test, non in mezzo al markup. Le trappole `BLOCCANTE` portano
+un marchio testuale e non solo un colore, perché il rosso da solo non è
+un'informazione per chi non lo distingue.
+
+**Il player scarica l'audio con `fetch`, non con `<audio src>`**, che non manda
+l'intestazione `Authorization`. Parte solo quando si apre il pannello, e
+l'object URL si revoca allo smontaggio: qualche megabyte per registrazione,
+moltiplicato per le schede aperte in una sessione, è memoria che non torna più
+da sola.
+
+**La ricerca aspetta 300 ms e almeno due caratteri.** Senza freno, «pratica» è
+sette ricerche ibride, cioè sette embedding pagati per vederne uno solo.
+
+**La revisione non obbliga a niente.** Si salva, si lascia da rivedere, o si
+esce senza toccare nulla. Se non è cambiato niente non parte nessuna `PATCH`
+vuota, che il contratto rifiuterebbe con un 400 incomprensibile per chi ha solo
+premuto un pulsante.
+
+### Il service worker fa una cosa sola
+
+Tiene in cache il guscio, così che aprire l'app senza rete mostri il pulsante di
+registrazione invece del dinosauro del browser. Senza guscio in cache non c'è
+nessun pulsante da premere, e la coda offline non servirebbe a niente.
+
+> **`/api/` non entra mai in cache.** È la regola che non si tocca. Una risposta
+> in cache significherebbe mostrare la scheda di ieri come quella di oggi, o —
+> molto peggio — servire a un utente la lista di un altro rimasta nel browser.
+
+Per il guscio va **prima in rete e poi in cache**. Il contrario sarebbe più
+veloce ma terrebbe viva un'app vecchia fino alla chiusura di ogni scheda aperta,
+e un'app vecchia che parla con un'API nuova è il guasto che nessuno riesce a
+riprodurre. Sono sessanta righe scritte a mano: `vite-plugin-pwa` con Workbox
+porta con sé qualche megabyte e una configurazione da imparare per ottenere le
+stesse due regole.
+
+Si registra dopo `load` e **solo in produzione**: in sviluppo un guscio servito
+da cache mentre Vite sostituisce i moduli a caldo mostra codice di dieci minuti
+prima senza dare modo di accorgersene.
+
+### Provare l'offline, a mano
+
+Con `npm run dev:api`, `npm run dev:worker` e `npm run dev:web` avviati, su
+`http://localhost:5173`:
+
+1. Entra con le credenziali del seed, premi il pulsante grande, parla, premi
+   stop. La schermata torna alla lista **subito**.
+2. Apri i DevTools → Network → **Offline**, e registra di nuovo. In fondo
+   appare «1 in attesa»: l'audio è in IndexedDB (Application → IndexedDB →
+   `wikimylife` → `uploads`).
+3. Chiudi la scheda del browser. Riaprila, sempre offline: il guscio è servito
+   dalla cache e la riga è ancora in coda.
+4. Rimetti **Online**. La coda si svuota da sola entro un istante, senza
+   toccare niente, e il worker produce la scheda.
+
+Per il guscio offline serve la build vera, perché in sviluppo il service worker
+non si registra:
+
+```powershell
+npm run build --workspace @wikimylife/web
+npm run preview --workspace @wikimylife/web   # http://localhost:4173
+```
 
 ---
 
@@ -507,7 +615,17 @@ Fase 3: la composizione di `searchText()`, la fusione RRF come funzione pura (ch
 l'accordo batta l'eccellenza in un canale solo, l'ordinamento a parità, il
 degrado con un canale vuoto), le regole §8 e §9 del servizio delle procedure, e
 l'orchestrazione della ricerca — incluso il provider di embedding che cade e non
-deve portarsi via la risposta.
+deve portarsi via la risposta. Della Fase 4: lo svuotamento della coda (ordine di
+invio, `drain()` rientrante, un 401 che marca invece di riprovare all'infinito,
+una rete assente che lascia tutto in coda), le regole di presentazione con un
+*adesso* fisso — un test che legge l'orologio di sistema fallisce da solo a
+mezzanotte — e il giro rotta ⇄ hash ⇄ rotta.
+
+Le schermate non hanno test, e non c'è `jsdom` fra le dipendenze. È la ragione
+per cui `format.ts`, `routes.ts` e `uploader.ts` esistono come moduli separati e
+privi di DOM: lì sta tutto ciò che si può sbagliare in silenzio, e
+`tsconfig.tests.json` non carica nemmeno la libreria DOM, così un modulo che
+nomina `window` non è importabile da un test e la separazione non può marcire.
 
 **integration** applica le migration su `DATABASE_URL_TEST`, poi verifica lo
 schema fisico contro il catalogo di Postgres, esegue il seed vero e ricontrolla
@@ -559,7 +677,12 @@ Non installate, e il perché:
 | `pino` | un logger JSON su stdout di venti righe |
 | `cors` `helmet` `rate-limit` | Fasi 4-5, quando servono davvero |
 | `eslint` | il test di guardia copre le due regole che ci interessano |
-| `uuid` `nanoid` | `node:crypto` |
+| `uuid` `nanoid` | `crypto.randomUUID()` |
+| `react-router` | `hashchange`, trenta righe per cinque schermate |
+| `@tanstack/react-query` | `useAsync`, venti righe: carica e ricarica |
+| `vite-plugin-pwa` `workbox` | un service worker di sessanta righe |
+| `tailwind` e simili | un foglio di stile di 2 kB compressi |
+| `jsdom` `@testing-library` | la logica sta nei moduli puri, e quelli sono testati |
 
 ---
 
@@ -589,6 +712,17 @@ Non installate, e il perché:
   le chiamate ai modelli.
 - **La redazione dei dati sensibili (§9) non c'è.** `contieneDatiSensibili` viene
   rilevato e salvato, ma non produce ancora nessun comportamento.
+- **Le schermate non hanno test automatici.** La logica che vale la pena
+  verificare è stata spinta fuori dai componenti apposta, ma resta che nessuno
+  controlla che il pulsante di registrazione sia collegato al microfono se non
+  premendolo.
+- **La coda offline non ha un tetto.** Registrare per un pomeriggio senza rete
+  riempie IndexedDB finché il browser non rifiuta la scrittura, e in quel caso
+  l'errore si vede ma la registrazione è persa.
+- **Il deploy non c'è.** È la Fase 5: Railway per API e worker, Netlify per la
+  build statica, CORS ristretto, e soprattutto l'audio su object storage — il
+  filesystem di Railway è effimero e i file locali non sopravvivono a un
+  redeploy.
 
 ---
 
@@ -607,3 +741,4 @@ Non installate, e il perché:
 | `npm run db:studio` | Prisma Studio |
 | `npm test` | unit |
 | `npm run test:integration` | integration |
+| `npm run preview --workspace @wikimylife/web` | la build vera, service worker compreso |
