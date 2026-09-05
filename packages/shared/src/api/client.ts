@@ -136,6 +136,14 @@ export interface ApiClient {
   getRecording(id: string): Promise<RecordingState>;
   /** Rimette in coda dalla trascrizione. */
   retryRecording(id: string): Promise<RecordingState>;
+  /**
+   * I byte originali, per il player della scheda.
+   *
+   * Torna un `Blob` e non un URL perche' l'audio e' protetto da
+   * `Authorization`, e un tag `<audio src>` non manda intestazioni: chi chiama
+   * ne fa un object URL, e si ricorda di revocarlo.
+   */
+  getRecordingAudio(id: string): Promise<Blob>;
 
   listProcedures(query?: ListProceduresQueryInput): Promise<ProcedureList>;
   getProcedure(id: string): Promise<ProcedureDetail>;
@@ -195,8 +203,17 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     });
   }
 
-  async function send<T>(opts: RequestOptions<T>, allowRetry: boolean): Promise<T> {
-    const headers: Record<string, string> = { Accept: "application/json" };
+  /**
+   * Tutto cio' che accade prima di guardare il corpo: intestazioni, rotazione su
+   * 401, traduzione dell'errore. Sta separato da `send` perche' non ogni
+   * risposta e' JSON — l'audio originale sono byte, e deve passare per la stessa
+   * gestione della sessione senza duplicarla.
+   */
+  async function execute(
+    opts: Omit<RequestOptions<unknown>, "schema"> & { accept: string },
+    allowRetry: boolean,
+  ): Promise<Response> {
+    const headers: Record<string, string> = { Accept: opts.accept };
     if (opts.body !== undefined) {
       headers["Content-Type"] = "application/json";
     }
@@ -232,7 +249,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           options.onSessionExpired?.();
           throw error;
         }
-        return send(opts, false);
+        return execute(opts, false);
       }
 
       if (opts.auth && response.status === 401) {
@@ -242,8 +259,15 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       throw error;
     }
 
+    return response;
+  }
+
+  async function send<T>(opts: RequestOptions<T>, allowRetry: boolean): Promise<T> {
+    const { schema, ...rest } = opts;
+    const response = await execute({ ...rest, accept: "application/json" }, allowRetry);
+
     const payload: unknown = await response.json();
-    const parsed = opts.schema.safeParse(payload);
+    const parsed = schema.safeParse(payload);
     if (!parsed.success) {
       throw new ApiError({
         code: ErrorCode.INTERNAL_ERROR,
@@ -424,6 +448,19 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         },
         true,
       );
+    },
+
+    async getRecordingAudio(id: string): Promise<Blob> {
+      const response = await execute(
+        {
+          method: "GET",
+          path: `/api/recordings/${encodeURIComponent(id)}/audio`,
+          accept: "audio/*",
+          auth: true,
+        },
+        true,
+      );
+      return response.blob();
     },
 
     listProcedures(query: ListProceduresQueryInput = {}): Promise<ProcedureList> {

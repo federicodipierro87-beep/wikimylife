@@ -25,7 +25,13 @@ import {
   type IngestionOutcome,
 } from "../../apps/api/src/services/ingestion.service.js";
 import { disconnectTestPrisma, resetDatabase } from "./helpers/db.js";
-import { call, startTestServer, uploadRecording, type TestServer } from "./helpers/server.js";
+import {
+  call,
+  callBinary,
+  startTestServer,
+  uploadRecording,
+  type TestServer,
+} from "./helpers/server.js";
 
 /**
  * La pipeline di ingestione dall'HTTP al database, senza mock.
@@ -830,6 +836,49 @@ describe("fallimenti", () => {
     expect(res.status).toBe(404);
     expect(errorCode(res.body)).toBe("NOT_FOUND");
     expect(await server.prisma.procedure.count()).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L'audio originale, per il player della scheda
+// ---------------------------------------------------------------------------
+
+describe("GET /api/recordings/:id/audio", () => {
+  it("restituisce gli stessi byte che sono stati caricati", async () => {
+    const { token } = await signup();
+    // Un contenuto riconoscibile e non uniforme: un array di zeri passerebbe
+    // anche se il corpo fosse stato ricostruito male.
+    const audio = Uint8Array.from({ length: 2048 }, (_, i) => (i * 31) % 251);
+
+    const state = await carica(token, { audio });
+    const res = await callBinary(server, `/api/recordings/${state.id}/audio`, {
+      accessToken: token,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.bytes).toEqual(audio);
+    expect(res.headers.get("content-type")).toBe("audio/webm;codecs=opus");
+  });
+
+  it("non consegna l'audio di un altro utente", async () => {
+    const a = await signup();
+    const b = await signup();
+    const state = await carica(a.token);
+
+    const res = await callBinary(server, `/api/recordings/${state.id}/audio`, {
+      accessToken: b.token,
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("senza token non si scarica niente", async () => {
+    const { token } = await signup();
+    const state = await carica(token);
+
+    const res = await callBinary(server, `/api/recordings/${state.id}/audio`);
+
+    expect(res.status).toBe(401);
   });
 });
 

@@ -202,6 +202,42 @@ describe("find — proprieta' della risorsa", () => {
   });
 });
 
+describe("audio", () => {
+  it("restituisce i byte originali con il loro mime type", async () => {
+    const creata = await h.service.create(USER, { audio, metadata });
+
+    await expect(h.service.audio(USER, creata.id)).resolves.toEqual({
+      bytes: audio.bytes,
+      mimeType: "audio/webm",
+    });
+  });
+
+  it("non consegna l'audio di un altro utente", async () => {
+    // La stessa regola della scheda, e per la stessa ragione: qui l'audio e' la
+    // voce di una persona, quindi e' il posto dove un 403 costerebbe di piu'.
+    const creata = await h.service.create(USER, { audio, metadata });
+
+    await expect(h.service.audio(ALTRO, creata.id)).rejects.toMatchObject({
+      status: 404,
+      code: "NOT_FOUND",
+    });
+  });
+
+  it("risponde 404 quando la riga c'e' ma l'oggetto no", async () => {
+    // Succede davvero: `create` scrive i byte prima della riga, quindi un
+    // database ripristinato da un backup piu' recente dello storage lascia
+    // righe orfane. Il client deve poter mostrare la scheda senza player.
+    const creata = await h.service.create(USER, { audio, metadata });
+    const riga = h.repo.snapshot(creata.id);
+    await h.storage.delete(riga.audioUrl);
+
+    await expect(h.service.audio(USER, creata.id)).rejects.toMatchObject({
+      status: 404,
+      code: "NOT_FOUND",
+    });
+  });
+});
+
 describe("retry", () => {
   it("rimette in coda una registrazione fallita azzerando l'errore", async () => {
     const recording = h.repo.seedRecording({

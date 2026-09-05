@@ -121,6 +121,8 @@ export interface RecordingsService {
   ): Promise<RecordingState>;
   find(userId: string, id: string): Promise<RecordingState>;
   retry(userId: string, id: string): Promise<RecordingState>;
+  /** I byte originali, per il player in fondo alla scheda (§ Fase 4). */
+  audio(userId: string, id: string): Promise<UploadedAudio>;
 }
 
 export interface RecordingsServiceDeps {
@@ -192,6 +194,26 @@ export function createRecordingsService(deps: RecordingsServiceDeps): Recordings
       }
       deps.onEnqueued?.(detail.id);
       return toRecordingState(detail);
+    },
+
+    async audio(userId: string, id: string): Promise<UploadedAudio> {
+      const detail = await repo.findForUser(userId, id);
+      if (detail === null) {
+        throw AppError.notFound("Registrazione non trovata");
+      }
+
+      // L'oggetto puo' mancare: `create` scrive i byte prima della riga, quindi
+      // un database ripristinato da un backup piu' recente dello storage lascia
+      // righe senza audio. E' un 404 e non un 500 — la risorsa non c'e', e il
+      // client deve mostrare la scheda senza player invece di un errore.
+      let bytes: Uint8Array;
+      try {
+        bytes = await deps.storage.get(detail.audioUrl);
+      } catch {
+        throw AppError.notFound("Audio non disponibile");
+      }
+
+      return { bytes, mimeType: detail.mimeType };
     },
   };
 }

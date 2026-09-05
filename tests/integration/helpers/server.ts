@@ -118,6 +118,28 @@ export async function call(
   return toResult(response);
 }
 
+/**
+ * Come `call`, ma senza `JSON.parse`: l'audio sono byte, e leggerli come testo
+ * li corromperebbe prima ancora di poterli confrontare.
+ */
+export async function callBinary(
+  server: TestServer,
+  path: string,
+  init: { accessToken?: string } = {},
+): Promise<{ status: number; bytes: Uint8Array; headers: Headers }> {
+  const headers: Record<string, string> = {};
+  if (init.accessToken !== undefined) {
+    headers["authorization"] = `Bearer ${init.accessToken}`;
+  }
+
+  const response = await fetch(`${server.url}${path}`, { method: "GET", headers });
+  return {
+    status: response.status,
+    bytes: new Uint8Array(await response.arrayBuffer()),
+    headers: response.headers,
+  };
+}
+
 async function toResult(response: Response): Promise<HttpResult> {
   const text = await response.text();
   return {

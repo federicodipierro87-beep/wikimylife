@@ -37,6 +37,24 @@ export function createRecordingsRouter(deps: {
     res.status(200).json(state);
   });
 
+  /**
+   * I byte originali. Non c'e' un URL pubblico e non c'e' un token nella query:
+   * l'audio si scarica con lo stesso `Authorization` di tutto il resto, e il
+   * client ne fa un object URL da dare al tag `<audio>`. Un URL firmato sarebbe
+   * un secondo meccanismo di autorizzazione da tenere allineato al primo, e i
+   * file qui pesano al massimo 25 MB.
+   */
+  router.get("/:id/audio", async (req, res) => {
+    const { userId } = authContext(req);
+    const audio = await deps.recordingsService.audio(userId, req.params.id);
+    res.status(200);
+    res.setHeader("content-type", audio.mimeType);
+    res.setHeader("content-length", String(audio.bytes.byteLength));
+    // Privata: l'audio e' di una persona sola, e nessun proxy deve conservarlo.
+    res.setHeader("cache-control", "private, max-age=3600");
+    res.end(Buffer.from(audio.bytes));
+  });
+
   router.post("/:id/retry", async (req, res) => {
     const { userId } = authContext(req);
     const state = await deps.recordingsService.retry(userId, req.params.id);
