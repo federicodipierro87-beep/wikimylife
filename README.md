@@ -3,13 +3,15 @@
 Trasforma note vocali in schede-procedura riutilizzabili: registri come hai fatto
 una cosa, e la prossima volta la ritrovi scritta.
 
-Siamo alla **Fase 4 — PWA**: c'è un'applicazione installabile con un pulsante
-grande al centro, che registra, mette in coda su IndexedDB se manca la rete, e
-manda tutto da sola appena torna. Sotto ci sono le fondamenta della Fase 1
-(monorepo, schema dati, pgvector, seed, `packages/shared`, autenticazione JWT),
-la pipeline della Fase 2 (upload multipart, worker, validazione deterministica
-della §5, deduplicazione per similarità coseno) e le rotte di lettura, modifica
-e ricerca della Fase 3.
+Siamo alla **Fase 5 — Deploy**: API e worker su Railway, la build statica su
+Netlify, l'audio su object storage compatibile S3, e il CORS ristretto al solo
+dominio del frontend. Sotto ci sono le fondamenta della Fase 1 (monorepo, schema
+dati, pgvector, seed, `packages/shared`, autenticazione JWT), la pipeline della
+Fase 2 (upload multipart, worker, validazione deterministica della §5,
+deduplicazione per similarità coseno), le rotte di lettura, modifica e ricerca
+della Fase 3, e la PWA installabile della Fase 4 — quella con il pulsante grande
+al centro che registra, mette in coda su IndexedDB se manca la rete, e manda
+tutto da sola appena torna.
 
 I provider di trascrizione, estrazione ed embedding hanno **due implementazioni
 ciascuno**: quella reale (Whisper, Claude, `text-embedding-3-small`) e una fake
@@ -70,6 +72,8 @@ packages/shared Codice isomorfo: contratti Zod, enum, interfacce, client API.
 prisma/         Schema, migration, seed.
 tests/          unit (senza Docker) e integration (con Postgres vero).
 docs/           Le deviazioni dalla specifica, con le motivazioni.
+netlify.toml    Netlify serve file e nient'altro: redirect SPA e header.
+apps/*/railway.toml   Come si costruisce e come parte ciascun servizio.
 ```
 
 `packages/shared` si importa come `@wikimylife/shared` grazie ai workspace npm:
@@ -619,7 +623,9 @@ deve portarsi via la risposta. Della Fase 4: lo svuotamento della coda (ordine d
 invio, `drain()` rientrante, un 401 che marca invece di riprovare all'infinito,
 una rete assente che lascia tutto in coda), le regole di presentazione con un
 *adesso* fisso — un test che legge l'orologio di sistema fallisce da solo a
-mezzanotte — e il giro rotta ⇄ hash ⇄ rotta.
+mezzanotte — e il giro rotta ⇄ hash ⇄ rotta. Della Fase 5: la firma SigV4 contro
+i vettori ufficiali di AWS, e le regole di `loadConfig` che in produzione
+rifiutano lo storage effimero, il CORS vuoto e i provider fake.
 
 Le schermate non hanno test, e non c'è `jsdom` fra le dipendenze. È la ragione
 per cui `format.ts`, `routes.ts` e `uploader.ts` esistono come moduli separati e
@@ -652,9 +658,197 @@ spaiate non faccia `500`. Il canale semantico lì tace, perché il
 nella colonna l'embedding della query stessa, così il percorso SQL semantico —
 indice, cast, pavimento, fusione — resta comunque esercitato.
 
+Il CORS si prova lì e non con un finto oggetto request, pur non toccando il
+database: le cose che si rompono sono cose dello stack — un preflight che
+attraversa il parser JSON e muore su un corpo vuoto, un `OPTIONS` che finisce nel
+gestore delle rotte inesistenti, un'intestazione impostata dopo che la risposta è
+già partita. Nessuna si vede chiamando la funzione middleware a mano.
+
 `DATABASE_URL_TEST` non ha un valore di default, di proposito: i test fanno
 `TRUNCATE`, e un default che puntasse al database di sviluppo lo svuoterebbe in
 silenzio.
+
+---
+
+## Deploy
+
+Tre servizi su Railway e un sito statico su Netlify. Niente Docker scritto a
+mano, niente Functions, niente CI: il repo contiene solo file di configurazione
+dichiarativi e comandi npm, e ogni comando che gira in produzione si può
+eseguire in locale identico.
+
+| Dove | Cosa | Come parte |
+|---|---|---|
+| Railway | Postgres con `pgvector` | template ufficiale, estensione creata dalla prima migration |
+| Railway | `apps/api` | `apps/api/railway.toml` → `npm run start:api` |
+| Railway | `apps/worker` | `apps/worker/railway.toml` → `npm run start:worker` |
+| Netlify | `apps/web` (statico) | `netlify.toml` → `npm run build:web` |
+
+I due `railway.toml` si attivano da **Settings → Config-as-code** del rispettivo
+servizio, indicando il percorso del file. Entrambi i servizi puntano allo stesso
+repo e allo stesso `DATABASE_URL`, e hanno `watchPatterns` diversi: un push che
+tocca solo `apps/web` non fa ripartire niente su Railway.
+
+**Le migration girano nell'API e in nessun altro posto.** `npm run start:api` è
+`prisma migrate deploy && node apps/api/dist/index.js`; il worker parte e basta.
+Due processi che facessero `migrate deploy` insieme si contenderebbero
+`_prisma_migrations`, e chi perde muore all'avvio — un guasto che si manifesta
+solo quando i due deploy capitano nello stesso secondo, cioè raramente e mai in
+locale. Le migration sono in avanti e additive, quindi il worker vecchio
+sopravvive alla migrazione nuova per i secondi che separano i due redeploy.
+
+**`/health` risponde 200 anche con il database giù**, ed è quello che Railway
+interroga. Un 503 farebbe riavviare in ciclo un'API perfettamente viva che sta
+solo aspettando Postgres, e un ciclo di riavvii è peggio del guasto che
+segnalava: il campo `db` nel corpo dice la verità senza far rimbalzare il
+processo. Il worker non ha health check perché non ascolta su nessuna porta —
+gliene si assegnasse uno, Railway aspetterebbe una risposta HTTP che non arriva
+mai e dichiarerebbe fallito un deploy riuscito.
+
+### L'audio non sta più su disco
+
+`STORAGE_PROVIDER=s3` è **obbligatorio in produzione**: `loadConfig` rifiuta di
+avviarsi con `local` o `fake` quando `NODE_ENV=production`. Il filesystem di
+Railway è effimero e la perdita non fa rumore — gli upload riescono, le schede si
+generano, e i vocali spariscono al primo redeploy. Se ne accorgerebbe qualcuno
+mesi dopo, riascoltando una registrazione che non c'è più.
+
+Dietro c'è `S3StorageProvider`, che implementa la stessa interfaccia
+`StorageProvider` del provider locale: la pipeline non sa quale dei due sta
+usando. Firma le richieste con **AWS Signature Version 4 scritto a mano**, novanta
+righe in `apps/api/src/providers/s3/sigv4.ts`, invece di `@aws-sdk/client-s3` e
+delle sue cinquanta dipendenze transitive per quattro operazioni (`put`, `get`,
+`delete`, `exists`). Il vantaggio non è il peso: le stesse novanta righe firmano
+per S3, Cloudflare R2, Backblaze B2 e MinIO, quindi cambiare fornitore è cambiare
+`S3_ENDPOINT`, non sostituire una libreria.
+
+Una firma sbagliata è il genere di errore che non si trova rileggendo il codice,
+perciò `tests/unit/sigv4.test.ts` la confronta con i **vettori ufficiali di AWS**
+— chiave di firma e signature della suite `aws-sig-v4-test-suite`, presi da fuori
+e non calcolati con questo codice. È il punto: un test che ricalcola con la
+funzione sotto esame confermerebbe qualunque implementazione coerente con sé
+stessa.
+
+Il provider **non ritenta**. Un `put` fallito diventa un 500, il client se lo
+tiene in coda su IndexedDB e riprova da lì: un retry dentro il server
+raddoppierebbe il tempo di una richiesta che il browser ha già rinunciato ad
+aspettare, e la coda offline esiste esattamente per questo.
+
+### CORS: il dominio del frontend e nient'altro
+
+`CORS_ORIGINS` è una lista separata da virgola, e in produzione **non può essere
+vuota**: senza, la PWA non riuscirebbe nemmeno a fare login, e l'errore che il
+browser mostra («errore di rete») non nomina il CORS da nessuna parte.
+
+Il middleware sta in trenta righe (`apps/api/src/http/middleware/cors.ts`) invece
+del pacchetto `cors`, per una ragione precisa: la configurazione più comune di
+quel pacchetto, `origin: true`, riflette *qualunque* origine, ed è esattamente la
+cosa che qui non deve essere scrivibile per sbaglio. Quattro decisioni che vale
+la pena conoscere:
+
+- **Rimanda l'origine, mai `*`.** `*` direbbe «chiunque può leggermi», e sarebbe
+  falso.
+- **`Vary: Origin` c'è sempre, anche quando nega.** È proprio il ramo che nega
+  quello che una cache condivisa riuserebbe per un'origine diversa, con
+  l'intestazione sbagliata attaccata.
+- **Nessun `Allow-Credentials`.** I token viaggiano in `Authorization`, non in
+  cookie: dichiarare le credenziali aprirebbe una superficie CSRF che qui non
+  esiste.
+- **Le risposte d'errore portano le intestazioni CORS.** Senza, il browser mostra
+  «errore di rete» al posto del 401 e il client non può distinguere una password
+  sbagliata da un'API spenta.
+
+Sta montato prima del parser JSON e prima dell'autenticazione: un preflight non
+deve attraversare né l'uno né l'altra. Un `OPTIONS` da un'origine non ammessa
+riceve **403, non 404** — il 404 arriverebbe dal gestore delle rotte inesistenti e
+manderebbe chi configura il dominio a cercare un errore di routing che non c'è.
+
+Il CORS non è una difesa: una richiesta vera da un'origine non ammessa passa
+comunque, è il browser a non farne leggere la risposta. Chi chiama con `curl`
+arriva all'API, e lì trova l'autenticazione, che è l'unica difesa e regge.
+
+### La configurazione fallisce all'avvio
+
+In `NODE_ENV=production` `loadConfig` rifiuta: storage `local` o `fake`,
+`CORS_ORIGINS` vuoto, e provider `fake` per trascrizione, estrazione o embedding.
+Sono quattro modi di avere un deploy che sembra riuscito: risponde 200, scrive
+nel database, e il guasto si manifesta giorni dopo come audio spariti o schede
+inventate — schede finte in un database vero sono indistinguibili dalle buone.
+
+Le regole stanno in uno `superRefine` sullo schema Zod e non nel codice che
+costruisce i provider, così valgono anche per il **worker**, che compone i propri
+provider in un processo separato.
+
+Quando manca la configurazione S3 l'errore le elenca **tutte**, non la prima: chi
+imposta un servizio nuovo le sbaglia insieme, e dirgliene una per volta
+significherebbe quattro deploy.
+
+### Le variabili d'ambiente, e dove vanno
+
+`R` = servizio Railway dell'API, `W` = servizio Railway del worker, `N` = Netlify,
+`L` = solo in locale (`.env`).
+
+| Variabile | R | W | N | L | Note |
+|---|:-:|:-:|:-:|:-:|---|
+| `NODE_ENV` | ✓ | ✓ | | ✓ | `production` sui due servizi Railway: attiva le regole qui sopra |
+| `PORT` | | | | ✓ | **non impostarla su Railway**: la impone la piattaforma |
+| `LOG_LEVEL` | ✓ | ✓ | | ✓ | `info` in produzione |
+| `DATABASE_URL` | ✓ | ✓ | | ✓ | su Railway è il riferimento al servizio Postgres, non un URL copiato |
+| `DATABASE_URL_TEST` | | | | ✓ | solo `npm run test:integration`. Nessun default: i test fanno `TRUNCATE` |
+| `CORS_ORIGINS` | ✓ | | | ✓ | in produzione il dominio Netlify. In locale `http://localhost:5173` |
+| `JWT_ACCESS_SECRET` | ✓ | ✓ | | ✓ | ≥ 32 caratteri. Lo stesso valore nei due servizi |
+| `ACCESS_TOKEN_TTL_MIN` | ✓ | | | ✓ | default 15 |
+| `REFRESH_TOKEN_TTL_DAYS` | ✓ | | | ✓ | default 30 |
+| `SIGNUP_ENABLED` | ✓ | | | ✓ | **`false` dopo aver creato il primo utente** |
+| `STORAGE_PROVIDER` | ✓ | ✓ | | ✓ | `s3` in produzione, ed è obbligatorio |
+| `S3_BUCKET` | ✓ | ✓ | | | obbligatoria con `s3` |
+| `S3_REGION` | ✓ | ✓ | | | obbligatoria con `s3`. Su R2: `auto` |
+| `S3_ACCESS_KEY_ID` | ✓ | ✓ | | | obbligatoria con `s3` |
+| `S3_SECRET_ACCESS_KEY` | ✓ | ✓ | | | obbligatoria con `s3` |
+| `S3_ENDPOINT` | ✓ | ✓ | | | vuoto = AWS. R2: `https://<account>.r2.cloudflarestorage.com` |
+| `S3_FORCE_PATH_STYLE` | ✓ | ✓ | | | `true` solo per MinIO e simili |
+| `STORAGE_DIR` | | | | ✓ | solo con `STORAGE_PROVIDER=local` |
+| `TRANSCRIPTION_PROVIDER` | ✓ | ✓ | | ✓ | `openai` in produzione |
+| `EXTRACTION_PROVIDER` | ✓ | ✓ | | ✓ | `anthropic` in produzione |
+| `EMBEDDING_PROVIDER` | ✓ | ✓ | | ✓ | `openai` in produzione |
+| `OPENAI_API_KEY` | ✓ | ✓ | | ✓ | trascrizione ed embedding |
+| `ANTHROPIC_API_KEY` | ✓ | ✓ | | ✓ | estrazione |
+| `TRANSCRIPTION_MODEL` | ✓ | ✓ | | ✓ | default `whisper-1` |
+| `EXTRACTION_MODEL` | ✓ | ✓ | | ✓ | il nome del modello non è la versione del prompt |
+| `EMBEDDING_MODEL` | ✓ | ✓ | | ✓ | accoppiato a `vector(1536)`: cambiarlo richiede una migration |
+| `EMBEDDING_DIMENSIONS` | ✓ | ✓ | | ✓ | 1536 |
+| `SEED_USER_EMAIL` `SEED_USER_PASSWORD` | | | | ✓ | il seed non gira in produzione |
+| `VITE_API_URL` | | | ✓ | ✓ | il dominio Railway dell'API |
+
+Le API delle chiavi le vede solo Railway: **le `VITE_*` finiscono nel bundle in
+chiaro**, quindi su Netlify va un URL e nient'altro. E vale al momento della
+build, non dell'avvio: cambiare `VITE_API_URL` richiede un nuovo deploy.
+
+Il worker riceve `CORS_ORIGINS`? No, e non serve: non espone HTTP. Riceve invece
+tutte le variabili dei provider e dello storage, perché è lui a chiamare Whisper
+e Claude e a scrivere l'audio — l'API lo storage lo tocca solo per rileggere il
+file da servire.
+
+### Il primo deploy, nell'ordine
+
+1. **Postgres** su Railway. La prima migration fa `CREATE EXTENSION vector`:
+   non serve abilitarla a mano, ma serve un'immagine che ce l'abbia (il template
+   Postgres di Railway va bene).
+2. **API**: nuovo servizio dallo stesso repo, config-as-code `apps/api/railway.toml`,
+   variabili della colonna `R`. Al primo avvio applica tutte le migration. Poi si
+   genera un dominio pubblico — quello è `VITE_API_URL`.
+3. **Primo utente**: con `SIGNUP_ENABLED=true`, un `POST /api/auth/signup`, e
+   subito dopo la variabile a `false` e redeploy. Il seed non è un'alternativa:
+   popola dati di esempio, e in produzione non ci vanno.
+4. **Worker**: terzo servizio, config-as-code `apps/worker/railway.toml`,
+   variabili della colonna `W`.
+5. **Netlify**: si collega il repo, `netlify.toml` è già lì, si imposta
+   `VITE_API_URL` e si fa il deploy. Il dominio che ne esce va in `CORS_ORIGINS`
+   sull'API — e l'API va riavviata, perché la lista si legge all'avvio.
+
+Il punto 5 è circolare per costruzione: il frontend ha bisogno del dominio
+dell'API e l'API ha bisogno del dominio del frontend. Si rompe deployando prima
+l'API, che con un `CORS_ORIGINS` provvisorio parte lo stesso.
 
 ---
 
@@ -675,7 +869,9 @@ Non installate, e il perché:
 | `dotenv` | `process.loadEnvFile()` di Node ≥ 20.12 |
 | `supertest` | `listen(0)` + `fetch`, quindici righe |
 | `pino` | un logger JSON su stdout di venti righe |
-| `cors` `helmet` `rate-limit` | Fasi 4-5, quando servono davvero |
+| `cors` | trenta righe: `origin: true` non dev'essere scrivibile per sbaglio |
+| `@aws-sdk/client-s3` | SigV4 a mano, novanta righe, provate sui vettori AWS |
+| `helmet` `rate-limit` | non ancora: si veda «cosa non c'è ancora» |
 | `eslint` | il test di guardia copre le due regole che ci interessano |
 | `uuid` `nanoid` | `crypto.randomUUID()` |
 | `react-router` | `hashchange`, trenta righe per cinque schermate |
@@ -688,8 +884,12 @@ Non installate, e il perché:
 
 ## Cosa non c'è ancora, e si sa
 
-- **Nessun rate limiting su `/api/auth/login`.** Accettabile in locale, da
-  chiudere in Fase 5.
+- **Nessun rate limiting su `/api/auth/login`.** Con `SIGNUP_ENABLED=false` e un
+  solo utente la superficie è una password, ma resta che nessuno conta i
+  tentativi. È la prima cosa da aggiungere se il dominio diventa pubblico.
+- **Nessun header di sicurezza.** Niente `helmet`, niente CSP: l'API risponde
+  solo JSON e l'HTML lo serve Netlify, quindi il rischio è basso, ma «basso» non
+  è «zero» e la CSP andrebbe scritta in `netlify.toml`.
 - **Il refresh token vive 30 giorni, l'access token 15 minuti.** Un access token
   già emesso resta valido fino alla scadenza anche dopo la revoca della famiglia:
   invalidarlo richiederebbe una lettura del database a ogni richiesta, cioè
@@ -719,10 +919,21 @@ Non installate, e il perché:
 - **La coda offline non ha un tetto.** Registrare per un pomeriggio senza rete
   riempie IndexedDB finché il browser non rifiuta la scrittura, e in quel caso
   l'errore si vede ma la registrazione è persa.
-- **Il deploy non c'è.** È la Fase 5: Railway per API e worker, Netlify per la
-  build statica, CORS ristretto, e soprattutto l'audio su object storage — il
-  filesystem di Railway è effimero e i file locali non sopravvivono a un
-  redeploy.
+- **L'audio si scarica passando dall'API.** `GET /api/recordings/:id/audio` legge
+  da S3 e ristreamma: semplice, autenticato con lo stesso token di tutto il
+  resto, e paga la banda due volte. Un URL prefirmato eviterebbe il doppio salto,
+  ma sposterebbe l'autorizzazione dentro una firma con scadenza, e per ora non
+  vale il cambio.
+- **Nessuna pulizia dell'object storage.** `DELETE` su una scheda archivia la
+  riga; l'oggetto S3 resta. È voluto — l'audio è l'originale, la scheda è la
+  derivata — ma non c'è nessun processo che tolga i file delle registrazioni
+  cancellate davvero, e nessuna lifecycle rule configurata.
+- **Nessuna CI.** Nessuno esegue `npm test` prima di un deploy: Railway e Netlify
+  costruiscono qualunque cosa stia su `master`. Una build che compila e dei test
+  rossi sono compatibili.
+- **Il deploy non è provato da nessun test.** `netlify.toml` e i due
+  `railway.toml` sono documentazione eseguibile solo dalle piattaforme: un refuso
+  in `startCommand` si scopre al primo deploy, non prima.
 
 ---
 
@@ -731,6 +942,10 @@ Non installate, e il perché:
 | | |
 |---|---|
 | `npm run build` | `tsc -b` su tutti i progetti |
+| `npm run build:api` / `build:worker` | `prisma generate` + il sottoinsieme che serve — è ciò che gira su Railway |
+| `npm run build:web` | shared + `vite build` — è ciò che gira su Netlify, senza Prisma |
+| `npm run start:api` | `prisma migrate deploy` e poi l'API |
+| `npm run start:worker` | il worker, senza migration |
 | `npm run typecheck` | build + seed + test, senza emettere |
 | `npm run dev` | shared in watch, api, worker e web insieme |
 | `npm run dev:api` / `dev:web` / `dev:worker` | uno alla volta |
