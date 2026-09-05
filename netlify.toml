@@ -1,0 +1,72 @@
+# ---------------------------------------------------------------------------
+# Netlify serve file. Nient'altro.
+#
+# Niente Functions, niente Edge Functions, niente redirect proxy verso l'API:
+# tutta la logica sta su Railway, e il browser parla con quel dominio usando
+# `VITE_API_URL`. Un proxy `/api/* -> railway` sembrerebbe piu' comodo — stessa
+# origine, zero CORS — e in cambio metterebbe l'hosting sul percorso di ogni
+# chiamata: un timeout di Netlify diventerebbe un errore dell'API, e spostare il
+# frontend altrove vorrebbe dire riscrivere questo file invece di cambiare una
+# variabile.
+#
+# Il rovescio della medaglia e' che il CORS deve funzionare davvero, ed e' il
+# motivo per cui `tests/integration/cors.e2e.test.ts` esiste.
+# ---------------------------------------------------------------------------
+
+[build]
+  # La base e' la radice del monorepo: `apps/web` dipende da `packages/shared`
+  # via symlink dei workspace, e da dentro `apps/web` quel symlink non esiste.
+  base = "."
+  command = "npm run build:web"
+  publish = "apps/web/dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+  # Netlify installa TUTTO il workspace, API e worker compresi, e il postinstall
+  # di @prisma/client proverebbe a generare il client: qui non c'e' nessun
+  # database, e non serve. Il frontend non importa Prisma nemmeno per sbaglio —
+  # lo garantisce `tests/unit/guards.test.ts`.
+  PRISMA_SKIP_POSTINSTALL_GENERATE = "true"
+
+# --- Il service worker non si mette in cache --------------------------------
+# Se la CDN tiene `sw.js` per un'ora, per un'ora il browser continua a
+# reinstallare la versione vecchia: l'aggiornamento non arriva, e non c'e' modo
+# di accorgersene guardando il deploy, che risulta riuscito.
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+# Stessa ragione: l'HTML e' l'unico file che nomina gli asset con hash. Se resta
+# in cache, resta in cache anche la versione precedente dell'app intera.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Cache-Control = "no-cache"
+    Content-Type = "application/manifest+json; charset=utf-8"
+
+# Gli asset invece hanno l'hash nel nome: un contenuto diverso ha un URL
+# diverso, quindi tenerli per un anno non puo' servire niente di stantio.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# --- SPA --------------------------------------------------------------------
+# Il router e' a frammento (`#/scheda/123`), e il frammento non arriva mai al
+# server: per Netlify tutte le rotte sono `/`. Questo redirect serve comunque,
+# perche' senza, un `/qualcosa` battuto a mano o un vecchio segnalibro
+# darebbero il 404 di Netlify invece dell'app.
+#
+# Status 200 e non 301: l'URL nella barra resta quello chiesto, e il client
+# decide cosa mostrare. Va per ultimo: Netlify prova prima i file veri, quindi
+# `sw.js`, `manifest.webmanifest` e gli asset non ci finiscono dentro.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

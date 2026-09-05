@@ -13,6 +13,11 @@
   ],
   "scripts": {
     "build": "tsc -b",
+    "build:api": "prisma generate && tsc -b apps/api",
+    "build:worker": "prisma generate && tsc -b apps/worker",
+    "build:web": "tsc -b packages/shared && npm run build --workspace @wikimylife/web",
+    "start:api": "prisma migrate deploy && node apps/api/dist/index.js",
+    "start:worker": "node apps/worker/dist/index.js",
     "clean": "tsc -b --clean",
     "typecheck": "tsc -b && tsc -p prisma && tsc -p tsconfig.tests.json",
     "dev": "concurrently -n shared,api,worker,web -c blue,green,yellow,magenta \"npm run dev:shared\" \"npm run dev:api\" \"npm run dev:worker\" \"npm run dev:web\"",

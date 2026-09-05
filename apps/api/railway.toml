@@ -1,0 +1,44 @@
+# ---------------------------------------------------------------------------
+# Servizio Railway: l'API.
+#
+# Da impostare in Settings -> Config-as-code: `apps/api/railway.toml`. Il
+# servizio del worker punta al proprio file, e i due condividono il repo e il
+# database ma non il ciclo di vita.
+#
+# In questo file non c'e' nessuna variabile d'ambiente: quelle stanno nel
+# pannello, sono elencate nel README e non devono finire in git. Qui c'e' solo
+# come si costruisce e come si avvia — e sono due comandi npm, per cui la stessa
+# cosa si riproduce a mano su qualunque host che sappia eseguire Node.
+# ---------------------------------------------------------------------------
+
+[build]
+builder = "NIXPACKS"
+buildCommand = "npm run build:api"
+# Un push che tocca solo `apps/web` non deve far ripartire l'API: durante il
+# redeploy le richieste cadono, e non c'e' niente da aggiornare.
+watchPatterns = [
+  "apps/api/**",
+  "packages/shared/**",
+  "prisma/**",
+  "package.json",
+  "package-lock.json",
+]
+
+[deploy]
+# `npm run start:api` e' `prisma migrate deploy && node apps/api/dist/index.js`.
+# Le migrazioni girano qui e NON nel worker: due processi che fanno
+# `migrate deploy` insieme si contendono la tabella `_prisma_migrations`, e chi
+# perde muore all'avvio. Le migrazioni sono in avanti e additive, quindi il
+# worker vecchio sopravvive alla migrazione nuova per i pochi secondi che
+# separano i due redeploy.
+startCommand = "npm run start:api"
+
+# Railway smette di mandare traffico alla versione vecchia solo quando questa
+# risponde. `/health` restituisce 200 anche con il database giu' — di proposito:
+# un 503 farebbe riavviare in ciclo un'API viva che sta solo aspettando
+# Postgres, e il ciclo di riavvii e' peggio del guasto.
+healthcheckPath = "/health"
+healthcheckTimeout = 60
+
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

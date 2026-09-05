@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# Servizio Railway: il worker.
+#
+# Stesso repo e stesso `DATABASE_URL` dell'API, processo separato. Non e' una
+# scelta di scala: l'elaborazione di un vocale dura decine di secondi fra due
+# chiamate a modelli, e dentro l'API terrebbe occupato l'event loop e morirebbe
+# a meta' a ogni redeploy del frontend-facing.
+#
+# Da impostare in Settings -> Config-as-code: `apps/worker/railway.toml`.
+# ---------------------------------------------------------------------------
+
+[build]
+builder = "NIXPACKS"
+buildCommand = "npm run build:worker"
+watchPatterns = [
+  "apps/worker/**",
+  "apps/api/**",
+  "packages/shared/**",
+  "prisma/**",
+  "package.json",
+  "package-lock.json",
+]
+
+[deploy]
+# Nessun `prisma migrate deploy`: lo fa l'API. Si veda apps/api/railway.toml.
+startCommand = "npm run start:worker"
+
+# Niente `healthcheckPath`: il worker non ascolta su nessuna porta. Railway
+# aspetterebbe una risposta HTTP che non arriva mai e dichiarerebbe fallito un
+# deploy perfettamente riuscito.
+#
+# Che sia vivo si vede dalle registrazioni che cambiano stato, ed e' l'unica
+# prova che conti: un processo in ascolto che ha smesso di elaborare passerebbe
+# comunque qualunque health check.
+
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+# Una replica sola non e' un limite del codice: `claimNext` e' un
+# compare-and-swap (`UPDATE ... WHERE status = 'BOZZA_AUDIO'`), quindi due
+# worker non si pestano e alzare `numReplicas` e' sicuro. E' solo che con un
+# utente non serve.
+numReplicas = 1
