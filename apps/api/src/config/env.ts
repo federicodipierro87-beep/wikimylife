@@ -31,7 +31,37 @@ const booleanFromString = z
   .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
   .transform((value) => value === true || value === "true" || value === "1");
 
-const envSchema = z.object({
+/**
+ * Una stringa vuota e' un valore assente.
+ *
+ * I pannelli di Railway e Netlify non distinguono «variabile non impostata» da
+ * «variabile impostata a niente»: svuotare il campo lascia `""`. Senza questa
+ * normalizzazione un `OPENAI_API_KEY=` vuoto supererebbe i controlli di
+ * presenza e fallirebbe alla prima chiamata — in produzione, su un vocale
+ * vero, con l'audio gia' accettato.
+ */
+const optionalText = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().optional(),
+);
+
+/**
+ * Separa `CORS_ORIGINS`, scartando i vuoti e la barra finale.
+ *
+ * Un'origine e' `schema://host[:porta]`: `https://x.netlify.app/` con la barra
+ * non combacia mai con l'intestazione `Origin` che manda il browser, e il
+ * sintomo — tutto bloccato, nessun errore nei log dell'API — non suggerisce
+ * dove guardare. Anche una virgola di troppo in un pannello di configurazione
+ * non deve diventare un'origine vuota.
+ */
+export function parseOrigins(raw: string): readonly string[] {
+  return raw
+    .split(",")
+    .map((origine) => origine.trim().replace(/\/+$/, ""))
+    .filter((origine) => origine !== "");
+}
+
+const baseSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
@@ -50,13 +80,23 @@ const envSchema = z.object({
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
   SIGNUP_ENABLED: booleanFromString.default(true),
 
+  /**
+   * Le origini ammesse dal CORS, separate da virgola. Vuoto = nessuna origine
+   * esterna, cioe' solo chiamate dalla stessa origine o da riga di comando.
+   *
+   * Non c'e' e non deve esserci un valore che significhi «tutte»: il §5 della
+   * consegna chiede il dominio Netlify «e nient'altro», e un jolly qui sarebbe
+   * la cosa piu' facile da lasciarsi dietro dopo un pomeriggio di debug.
+   */
+  CORS_ORIGINS: z.string().default(""),
+
   TRANSCRIPTION_PROVIDER: z.enum(["fake", "openai"]).default("fake"),
   EXTRACTION_PROVIDER: z.enum(["fake", "anthropic"]).default("fake"),
-  STORAGE_PROVIDER: z.enum(["fake", "local"]).default("fake"),
+  STORAGE_PROVIDER: z.enum(["fake", "local", "s3"]).default("fake"),
   EMBEDDING_PROVIDER: z.enum(["fake", "openai"]).default("fake"),
 
-  OPENAI_API_KEY: z.string().optional(),
-  ANTHROPIC_API_KEY: z.string().optional(),
+  OPENAI_API_KEY: optionalText,
+  ANTHROPIC_API_KEY: optionalText,
 
   TRANSCRIPTION_MODEL: z.string().default("whisper-1"),
   /**
@@ -76,6 +116,93 @@ const envSchema = z.object({
   EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1536),
 
   STORAGE_DIR: z.string().default("./storage"),
+
+  // --- Object storage (STORAGE_PROVIDER=s3) --------------------------------
+  S3_BUCKET: optionalText,
+  /**
+   * Per Cloudflare R2 e' `auto`. Entra nella firma, quindi un valore sbagliato
+   * produce `SignatureDoesNotMatch` e non un errore di rete.
+   */
+  S3_REGION: optionalText,
+  /**
+   * L'origine del servizio, per chi non e' AWS. Assente = AWS S3.
+   * R2: `https://<account>.r2.cloudflarestorage.com`.
+   */
+  S3_ENDPOINT: optionalText,
+  S3_ACCESS_KEY_ID: optionalText,
+  S3_SECRET_ACCESS_KEY: optionalText,
+  /** Bucket nel percorso invece che nel sottodominio. Serve a MinIO. */
+  S3_FORCE_PATH_STYLE: booleanFromString.default(false),
+});
+
+/**
+ * I controlli che riguardano piu' di una variabile insieme.
+ *
+ * Stanno qui e non in `buildProviders` perche' devono valere anche per il
+ * worker, che compone gli stessi provider da un altro processo: una regola
+ * scritta nel ramo di costruzione dell'API sarebbe una regola che il worker
+ * non applica.
+ */
+const envSchema = baseSchema.superRefine((env, ctx) => {
+  const manca = (path: string, message: string): void => {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+  };
+
+  if (env.STORAGE_PROVIDER === "s3") {
+    if (env.S3_BUCKET === undefined) manca("S3_BUCKET", "obbligatoria con STORAGE_PROVIDER=s3");
+    if (env.S3_REGION === undefined) manca("S3_REGION", "obbligatoria con STORAGE_PROVIDER=s3");
+    if (env.S3_ACCESS_KEY_ID === undefined) {
+      manca("S3_ACCESS_KEY_ID", "obbligatoria con STORAGE_PROVIDER=s3");
+    }
+    if (env.S3_SECRET_ACCESS_KEY === undefined) {
+      manca("S3_SECRET_ACCESS_KEY", "obbligatoria con STORAGE_PROVIDER=s3");
+    }
+  }
+
+  if (env.NODE_ENV !== "production") {
+    return;
+  }
+
+  /**
+   * In produzione lo storage su disco e' perdita di dati, non lentezza.
+   *
+   * Il filesystem di Railway e' effimero: sopravvive al processo, non al
+   * redeploy. Un'API che parte con `local` funziona benissimo per una
+   * settimana e poi restituisce 404 su ogni audio piu' vecchio dell'ultimo
+   * deploy, senza un errore da nessuna parte. E' l'unico guasto di questa
+   * lista che non si puo' riparare dopo.
+   */
+  if (env.STORAGE_PROVIDER !== "s3") {
+    manca(
+      "STORAGE_PROVIDER",
+      `in produzione deve essere "s3": il disco dell'host e' effimero e "${env.STORAGE_PROVIDER}" perde gli audio al primo redeploy`,
+    );
+  }
+
+  /**
+   * Senza origini ammesse la PWA non puo' parlare con l'API: sta su un dominio
+   * Netlify, l'API su uno Railway, e ogni fetch muore nel browser. Meglio non
+   * partire che partire e sembrare a posto nei log mentre nessuno riesce a
+   * fare login.
+   */
+  if (env.CORS_ORIGINS.trim() === "") {
+    manca(
+      "CORS_ORIGINS",
+      "in produzione serve almeno l'origine del frontend (es. https://wikimylife.netlify.app)",
+    );
+  }
+
+  // I provider finti in produzione producono schede finte in un database vero,
+  // indistinguibili dalle buone il giorno dopo.
+  for (const [nome, valore] of [
+    ["TRANSCRIPTION_PROVIDER", env.TRANSCRIPTION_PROVIDER],
+    ["EXTRACTION_PROVIDER", env.EXTRACTION_PROVIDER],
+    ["EMBEDDING_PROVIDER", env.EMBEDDING_PROVIDER],
+  ] as const) {
+    if (valore === "fake") {
+      manca(nome, `in produzione non puo' essere "fake"`);
+    }
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -87,11 +214,22 @@ export interface AuthConfig {
   readonly signupEnabled: boolean;
 }
 
+export interface S3Settings {
+  readonly bucket: string;
+  readonly region: string;
+  readonly endpoint: string | undefined;
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+  readonly forcePathStyle: boolean;
+}
+
 export interface AppConfig {
   readonly nodeEnv: Env["NODE_ENV"];
   readonly port: number;
   readonly logLevel: Env["LOG_LEVEL"];
   readonly databaseUrl: string;
+  /** Gia' separate e ripulite: si veda `parseOrigins`. */
+  readonly corsOrigins: readonly string[];
   readonly auth: AuthConfig;
   readonly providers: {
     readonly transcription: Env["TRANSCRIPTION_PROVIDER"];
@@ -105,6 +243,11 @@ export interface AppConfig {
     readonly embeddingModel: string;
     readonly embeddingDimensions: number;
     readonly storageDir: string;
+    /**
+     * Presente solo con `STORAGE_PROVIDER=s3`, e allora completo: la validazione
+     * dello schema ha gia' respinto il caso «s3 con meta' delle credenziali».
+     */
+    readonly s3: S3Settings | undefined;
   };
 }
 
@@ -115,12 +258,30 @@ export class ConfigError extends Error {
   }
 }
 
+function toS3(env: Env): S3Settings | undefined {
+  if (env.STORAGE_PROVIDER !== "s3") {
+    return undefined;
+  }
+  // Le quattro obbligatorie ci sono: lo `superRefine` non avrebbe lasciato
+  // passare l'ambiente altrimenti. Il `??` e' qui solo per il compilatore, che
+  // quella prova non la vede.
+  return {
+    bucket: env.S3_BUCKET ?? "",
+    region: env.S3_REGION ?? "",
+    endpoint: env.S3_ENDPOINT,
+    accessKeyId: env.S3_ACCESS_KEY_ID ?? "",
+    secretAccessKey: env.S3_SECRET_ACCESS_KEY ?? "",
+    forcePathStyle: env.S3_FORCE_PATH_STYLE,
+  };
+}
+
 function toConfig(env: Env): AppConfig {
   return {
     nodeEnv: env.NODE_ENV,
     port: env.PORT,
     logLevel: env.LOG_LEVEL,
     databaseUrl: env.DATABASE_URL,
+    corsOrigins: parseOrigins(env.CORS_ORIGINS),
     auth: {
       accessSecret: env.JWT_ACCESS_SECRET,
       accessTokenTtlSeconds: env.ACCESS_TOKEN_TTL_MIN * 60,
@@ -139,6 +300,7 @@ function toConfig(env: Env): AppConfig {
       embeddingModel: env.EMBEDDING_MODEL,
       embeddingDimensions: env.EMBEDDING_DIMENSIONS,
       storageDir: env.STORAGE_DIR,
+      s3: toS3(env),
     },
   };
 }
