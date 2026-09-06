@@ -108,11 +108,17 @@ jobs:
 
       - run: npm run db:generate
 
-      # Le migration le applica il `globalSetup` con `migrate deploy`, non un
-      # passo di questo file: cosi' il percorso provato in CI e' lo stesso che
+      # Le migration le applica il `globalSetup` con `migrate deploy`, e il
+      # build dei pacchetti lo fa `pretest:integration`: nessuno dei due e' un
+      # passo di questo file. Cosi' il percorso provato in CI e' lo stesso che
       # gira sulla macchina di chi sviluppa, e `schema.test.ts` continua a
       # verificare che le migration versionate bastino da sole a costruire lo
       # schema — indice HNSW e colonna generata compresi.
+      #
+      # Il primo rosso di questo job e' arrivato da li'. `test:integration` non
+      # aveva il `pretest` che `test` aveva sempre avuto, e su questa macchina
+      # `packages/shared/dist` non esiste: su un portatile dove qualcuno aveva
+      # gia' compilato una volta la suite passava, su un checkout pulito no.
       - run: npm run test:integration
 
   build:
