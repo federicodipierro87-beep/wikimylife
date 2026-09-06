@@ -28,6 +28,41 @@
   # lo garantisce `tests/unit/guards.test.ts`.
   PRISMA_SKIP_POSTINSTALL_GENERATE = "true"
 
+# --- Sicurezza --------------------------------------------------------------
+# La CSP sta qui e non nell'API perche' protegge un documento, e il documento lo
+# serve Netlify. Metterla sull'API sarebbe stato inutile e rassicurante insieme,
+# che e' la combinazione peggiore.
+#
+# La build non contiene un solo script inline ne' uno stile inline — Vite mette
+# tutto in file con hash, e nel codice non c'e' un `style={{...}}` — quindi
+# 'unsafe-inline' non serve da nessuna parte. Va detto perche' e' fragile: il
+# primo `<style>` aggiunto a index.html sparirebbe senza spiegazioni, e la
+# spiegazione e' questa riga.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' https:; worker-src 'self'; manifest-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"
+    # Un anno, sottodomini inclusi. Niente preload: iscriversi alla lista dei
+    # browser e' difficile da revocare, e non si decide in un file di deploy.
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    # Nessuna API di prossimita', e dirlo esplicitamente: il GPS lo chiede la
+    # PWA per la posizione di cattura, il resto no.
+    Permissions-Policy = "camera=(), microphone=(self), geolocation=(self), payment=(), usb=()"
+
+# `media-src blob:` non e' una concessione: il player scarica l'audio con
+# `fetch` — perche' quell'URL vuole un header Authorization che un `src` non
+# puo' portare — e poi lo passa a `<audio>` come object URL. Senza `blob:` la
+# riproduzione si romperebbe e il motivo non comparirebbe da nessuna parte se
+# non nella console.
+#
+# `connect-src https:` e non il dominio esatto dell'API: quel dominio cambia con
+# il progetto Railway e inchiodarlo qui vorrebbe dire mettere una variabile
+# d'ambiente dentro un file versionato. Resta comunque un limite vero — blocca
+# `http:`, `data:` e `ws:` — ma chi ha un solo deploy fa bene a sostituirlo con
+# l'origine precisa.
+
 # --- Il service worker non si mette in cache --------------------------------
 # Se la CDN tiene `sw.js` per un'ora, per un'ora il browser continua a
 # reinstallare la versione vecchia: l'aggiornamento non arriva, e non c'e' modo
