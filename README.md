@@ -196,6 +196,12 @@ con `scope = CLIENTE` o `contieneDatiSensibili = true` non può diventare
 il flag e pubblicare nella stessa `PATCH`, perché è una revisione esplicita —
 esattamente quello che la §9 chiede.
 
+**La passata di redazione è due rotte, non una** (§9). `GET
+/api/procedures/:id/redazione` propone le sostituzioni, `POST` applica quelle
+confermate. Sono due perché il «una per una» che chiede la §9 è un passo umano
+in mezzo, e una rotta sola l'avrebbe tolto. Il dettaglio sta più sotto, in
+[Redigere prima di condividere](#redigere-prima-di-condividere-9).
+
 **Un'esecuzione `CAMBIATA` riporta la scheda in `DA_RIVEDERE`** (§8). Una
 `FALLITA` non muove niente: `ultimaVerifica` è l'ultima volta che la procedura ha
 *funzionato*, e un tentativo andato male non la aggiorna né la cancella. Il flag
@@ -242,18 +248,78 @@ nemmeno un `UPDATE` fatto a mano in psql. Il dizionario è `italian` e non
 `simple`, ed è ciò che fa sì che «pagamento» trovi «pagare». Dettagli in
 `docs/deviazioni-schema.md` `[D10]`.
 
+### Redigere prima di condividere (§9)
+
+Il divieto — niente `PUBBLICA` per una scheda `CLIENTE` o marcata sensibile —
+c'era da subito. Quello che mancava era la via d'uscita: la §9 chiede una
+passata che «proponga le sostituzioni e le faccia confermare una per una
+all'utente», e senza di essa l'unico modo di ripulire una scheda era riscriverla
+a mano.
+
+**I rilevatori dicono di no più spesso di quanto dicano di sì.** Sono quattro —
+codice fiscale, IBAN, email, telefono — e i primi due passano da un checksum
+vero (il carattere di controllo ministeriale, il mod-97 dell'ISO 13616) prima di
+essere proposti. Non è pignoleria: qui i due errori non costano uguale. Un falso
+negativo lo intercetta la persona che sta leggendo le proposte; un falso
+positivo cancella in silenzio del testo buono, e nessuno se ne accorge finché
+non serve. Per la stessa ragione i numeri di telefono si riconoscono solo in tre
+forme prefissate: un archivio di pratiche burocratiche è pieno di numeri di
+protocollo, importi, CAP e date, e prenderli per numeri di telefono sarebbe il
+modo più rapido di rendere questa funzione inutilizzabile.
+
+**Gli id delle proposte sono derivati dal contenuto**, non generati:
+`steps.2.azione:14:TELEFONO` è campo, offset e tipo. Non c'è nessuna tabella
+dove conservarli fra la `GET` e la `POST` — e una tabella di proposte in attesa
+sarebbe un secondo posto dove il codice fiscale di qualcuno resta scritto anche
+dopo che la scheda è stata ripulita. Il server ricalcola le proposte sul testo
+com'è in quel momento e accetta solo gli id che ritrova: se la scheda è cambiata
+nel frattempo, gli offset non tornano e la chiamata fallisce con un `409` invece
+di cancellare caratteri scelti guardando un altro testo. È tutto o niente, per
+lo stesso motivo.
+
+**Il corpo della `POST` non contiene testo.** Solo id. Accettare testo avrebbe
+reso questa rotta un doppione della `PATCH` con un nome più rassicurante, cioè
+l'unico modo di far passare per redazione una modifica qualunque.
+
+**La scrittura passa dalla `PATCH`,** non dal repository. Scavalcarla sarebbe
+stato più corto e avrebbe saltato il ricalcolo di `searchText`: una scheda
+redatta resterebbe cercabile per il codice fiscale che le è stato tolto, e
+nessun test se ne accorgerebbe, perché nessuno cerca un codice fiscale. Il test
+di integrazione lo verifica sull'indice vero — cerca, redige, ricerca, e si
+aspetta zero.
+
+**Il flag non si toglie da solo.** Dopo la redazione `contieneDatiSensibili`
+resta, e la schermata lo dice. Farlo sparire perché i rilevatori non trovano più
+niente vorrebbe dire far dichiarare a quattro espressioni regolari che la scheda
+è pulita, quando l'unica cosa che sanno è di non riconoscere più i formati che
+conoscono: il nome dell'ex moglie di un cliente non ha un checksum. La
+«revisione esplicita» che la §9 chiede resta un gesto di una persona, e passa
+dalla `PATCH` come prima.
+
+**Fuori dalla passata restano le trascrizioni e le note delle esecuzioni.** La
+trascrizione è il verbale di ciò che l'utente ha detto: riscriverla farebbe
+perdere la corrispondenza fra l'audio e il suo testo, che è l'unica cosa che
+permette di capire da dove è uscita una scheda sbagliata (§3). Le note delle
+esecuzioni sono il diario privato di chi ha eseguito la procedura, e non escono
+dalla scheda quando la scheda esce. La §9 parla di ciò che si condivide, e ciò
+che si condivide è la scheda.
+
+Resta scoperto quello che il brief chiama «assistita dall'LLM per il resto»: i
+nomi di persona, gli indirizzi di casa, tutto ciò che non ha un formato. Vedi
+[Cosa non c'è ancora](#cosa-non-cè-ancora-e-si-sa).
+
 ---
 
 ## L'app
 
-Cinque schermate, un router a `hashchange` di trenta righe, nessuna libreria di
-componenti e nessun framework CSS. Il bundle sta in **71 kB compressi**, foglio
+Sei schermate, un router a `hashchange` di trenta righe, nessuna libreria di
+componenti e nessun framework CSS. Il bundle sta in **72 kB compressi**, foglio
 di stile compreso.
 
 ```
 apps/web/src/
   recording/   MediaRecorder, GPS, coda IndexedDB, svuotamento, contesto React
-  screens/     login, registrazione, lista, ricerca, scheda, revisione
+  screens/     login, registrazione, lista, ricerca, scheda, revisione, redazione
   format.ts    le regole di presentazione, pure e testate
   routes.ts    rotta ⇄ hash, puro e testato
   router.ts    le tre righe che toccano location e history
@@ -304,6 +370,14 @@ sette ricerche ibride, cioè sette embedding pagati per vederne uno solo.
 esce senza toccare nulla. Se non è cambiato niente non parte nessuna `PATCH`
 vuota, che il contratto rifiuterebbe con un 400 incomprensibile per chi ha solo
 premuto un pulsante.
+
+**La redazione parte con niente selezionato.** Partire con tutto spuntato avrebbe
+reso la schermata un pulsante «conferma» con del testo intorno, e il «una per
+una» della §9 sarebbe rimasto solo nella forma. Ogni proposta mostra il contesto
+con il dato evidenziato, perché è lì che si vede la differenza fra il centralino
+di un ufficio e il cellulare di una persona — il numero da solo non la contiene.
+È una schermata e non un dialogo: la fretta è esattamente ciò che fa condividere
+un codice fiscale per sbaglio, e un dialogo la incoraggia.
 
 ### Il service worker fa una cosa sola
 
@@ -566,7 +640,7 @@ curl.exe "http://localhost:3000/api/search?q=vpn%20(%20%22or%20!%20&" -H "author
 #   → 200
 ```
 
-La §8 e la §9, in quattro chiamate:
+La §8 e la §9, in sei chiamate:
 
 ```powershell
 $id = "seed-proc-casellario"
@@ -580,6 +654,15 @@ curl.exe -X POST "http://localhost:3000/api/procedures/$id/executions" -H "autho
 curl.exe -X PATCH "http://localhost:3000/api/procedures/seed-proc-vpn" -H "authorization: Bearer $token" `
   -H "content-type: application/json" -d '{\"visibility\":\"PUBBLICA\"}'
 #   → 409 CONFLICT
+
+# La passata di redazione propone e non tocca niente.
+curl.exe "http://localhost:3000/api/procedures/seed-proc-vpn/redazione" -H "authorization: Bearer $token"
+#   → proposte[], ognuna con campo, etichetta, valore, sostituzione e contesto
+
+# Si applica solo quello che si conferma, per id. Nessun testo nel corpo.
+curl.exe -X POST "http://localhost:3000/api/procedures/seed-proc-vpn/redazione" -H "authorization: Bearer $token" `
+  -H "content-type: application/json" -d '{\"conferme\":[\"steps.1.dettaglio:24:EMAIL\"]}'
+#   → 200 con la scheda redatta; un id che non si ritrova più è un 409
 
 # DELETE archivia: la riga resta, la scheda sparisce dalla lista e dalla ricerca.
 curl.exe -X DELETE "http://localhost:3000/api/procedures/$id" -H "authorization: Bearer $token"
@@ -633,7 +716,13 @@ l'aritmetica del limitatore con un orologio iniettato — la finestra che si ria
 a `windowMs` e non un millisecondo prima, i budget separati per IP e per rotta,
 `Retry-After` che compare solo negando, e seicento indirizzi che non restano in
 memoria — e il tetto ai tentativi di ingestione, compreso che il riscatto manuale
-ne ricompri esattamente uno.
+ne ricompri esattamente uno. Della redazione: i rilevatori presi uno per uno, con
+i codici fiscali e gli IBAN validi accanto ai loro gemelli sbagliati di un
+carattere — un test che provi solo che il formato giusto passa non dimostra che
+il checksum venga guardato — e il servizio, dove conta soprattutto ciò che *non*
+succede: le proposte non confermate restano nel testo, gli id di una passata
+vecchia danno `409` invece di tagliare a caso, e il flag è ancora acceso quando
+tutto è stato applicato.
 
 Le schermate non hanno test, e non c'è `jsdom` fra le dipendenze. È la ragione
 per cui `format.ts`, `routes.ts` e `uploader.ts` esistono come moduli separati e
@@ -665,6 +754,13 @@ spaiate non faccia `500`. Il canale semantico lì tace, perché il
 `FakeEmbeddingProvider` produce vettori quasi ortogonali: un test scrive a mano
 nella colonna l'embedding della query stessa, così il percorso SQL semantico —
 indice, cast, pavimento, fusione — resta comunque esercitato.
+
+La redazione ha lì il suo test che conta: crea una scheda con un codice fiscale
+nel titolo, la cerca e la trova, redige, ricerca di nuovo e si aspetta zero
+risultati. In memoria sarebbe passato comunque, perché in memoria non esiste un
+indice da lasciare indietro. È l'unico modo di accorgersi che una scheda ripulita
+sia rimasta cercabile per il dato che le è stato tolto — cioè del solo bug che
+renderebbe l'intera funzione una bugia.
 
 Il CORS si prova lì e non con un finto oggetto request, pur non toccando il
 database: le cose che si rompono sono cose dello stack — un preflight che
@@ -1116,8 +1212,14 @@ Non installate, e il perché:
   Un backoff — riprovare dopo un minuto, poi dieci, poi un'ora — sarebbe più
   gentile con i guasti transitori, e richiederebbe una colonna `nextAttemptAt` e
   una `claimNext` che la guardi.
-- **La redazione dei dati sensibili (§9) non c'è.** `contieneDatiSensibili` viene
-  rilevato e salvato, ma non produce ancora nessun comportamento.
+- **Della §9 c'è la metà deterministica.** Il blocco alla pubblicazione e la
+  passata su codici fiscali, IBAN, email e telefoni esistono; l'«assistita
+  dall'LLM per il resto» no. Nomi di persona, indirizzi di casa, il numero di
+  pratica che identifica qualcuno: tutto ciò che non ha un formato verificabile a
+  macchina passa indenne, e chi rilegge la scheda deve accorgersene da solo. Il
+  flag `contieneDatiSensibili` resta acceso anche dopo una passata proprio per
+  questo — dice che l'estrazione ha visto qualcosa, e nessuna regex può
+  smentirla.
 - **Le schermate non hanno test automatici.** La logica che vale la pena
   verificare è stata spinta fuori dai componenti apposta, ma resta che nessuno
   controlla che il pulsante di registrazione sia collegato al microfono se non
