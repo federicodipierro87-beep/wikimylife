@@ -237,13 +237,40 @@ describe("vincoli che il dominio da' per scontati", () => {
     expect(rows.map((r) => r.indexname)).toContain("RefreshToken_tokenHash_key");
   });
 
-  it("Recording ha l'indice su status che il worker usera' per il polling [D3]", async () => {
-    const rows = await prisma.$queryRaw<{ indexname: string }[]>`
-      SELECT indexname FROM pg_indexes
-      WHERE schemaname = 'public' AND tablename = 'Recording'
+  it("Recording ha l'indice del polling, e comprende il backoff [D3][D11]", async () => {
+    // Composto e non due indici separati: `claimNext` filtra sulle due colonne
+    // insieme, e `(status)` resta servito da `(status, nextAttemptAt)` come
+    // prefisso. Se un giorno la seconda colonna sparisse dall'indice, tutto
+    // continuerebbe a funzionare — solo che dopo un guasto del fornitore la
+    // coda intera verrebbe letta riga per riga a ogni giro del worker, che e'
+    // esattamente il momento in cui non ce lo si puo' permettere.
+    const rows = await prisma.$queryRaw<{ indexdef: string }[]>`
+      SELECT indexdef FROM pg_indexes
+      WHERE schemaname = 'public'
+        AND tablename = 'Recording'
+        AND indexname = 'Recording_status_nextAttemptAt_idx'
     `;
 
-    expect(rows.map((r) => r.indexname)).toContain("Recording_status_idx");
+    expect(rows[0]?.indexdef).toContain("status");
+    expect(rows[0]?.indexdef).toContain("nextAttemptAt");
+  });
+
+  it("Recording.nextAttemptAt e' nullable e senza default [D11]", async () => {
+    // `NULL` significa "prendibile adesso", ed e' il valore giusto per una
+    // registrazione appena caricata. Un default diverso da NULL — o peggio un
+    // NOT NULL con `now()` — renderebbe ogni riga nuova un'attesa.
+    const rows = await prisma.$queryRaw<
+      { is_nullable: string; column_default: string | null }[]
+    >`
+      SELECT is_nullable, column_default
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'Recording'
+        AND column_name = 'nextAttemptAt'
+    `;
+
+    expect(rows[0]?.is_nullable).toBe("YES");
+    expect(rows[0]?.column_default).toBeNull();
   });
 
   it("cancellare la scheda suggerita non cancella la registrazione [D9]", async () => {
@@ -277,6 +304,7 @@ describe("storia delle migration", () => {
       "20260902090200_procedure_embedding_hnsw",
       "20260902165725_recording_dedup",
       "20260903100000_procedure_fulltext",
+      "20260906120000_recording_next_attempt_at",
     ]);
     expect(rows.every((r) => r.finished_at !== null && r.rolled_back_at === null)).toBe(true);
   });

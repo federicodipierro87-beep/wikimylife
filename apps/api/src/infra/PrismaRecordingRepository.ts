@@ -52,6 +52,7 @@ interface RecordingRow {
   lastErrorCode: string | null;
   lastErrorMessage: string | null;
   lastErrorAt: Date | null;
+  nextAttemptAt: Date | null;
   duplicateOfId: string | null;
   duplicateSimilarity: number | null;
   retryCount: number;
@@ -84,6 +85,7 @@ function toDetail(row: RecordingRow): RecordingDetail {
     lastErrorCode: row.lastErrorCode,
     lastErrorMessage: row.lastErrorMessage,
     lastErrorAt: row.lastErrorAt,
+    nextAttemptAt: row.nextAttemptAt,
     duplicateOfId: row.duplicateOfId,
     duplicateOfTitolo: row.duplicateOf?.titolo ?? null,
     duplicateSimilarity: row.duplicateSimilarity,
@@ -169,7 +171,11 @@ export class PrismaRecordingRepository implements RecordingRepository {
   async claim(id: string, at: Date): Promise<RecordingJob | null> {
     const claimed = await this.#prisma.recording.updateMany({
       where: { id, status: { in: [...CLAIMABLE] } },
-      data: { status: RecordingStatus.IN_ELABORAZIONE, lastErrorAt: at },
+      // `nextAttemptAt` si azzera prendendo la riga: descrive un'attesa, e
+      // l'attesa e' finita. Lasciarlo scritto significherebbe che una riga
+      // ripresa a mano prima della scadenza continua a dichiarare un'ora che e'
+      // gia' passata mentre viene elaborata.
+      data: { status: RecordingStatus.IN_ELABORAZIONE, lastErrorAt: at, nextAttemptAt: null },
     });
     if (claimed.count === 0) {
       return null;
@@ -186,8 +192,16 @@ export class PrismaRecordingRepository implements RecordingRepository {
     // esplicita (`/retry`), altrimenti il worker riproverebbe all'infinito una
     // trascrizione che il modello non sa strutturare, bruciando token a ogni
     // giro senza che nessuno se ne accorga.
+    //
+    // E fra le BOZZA_AUDIO, solo quelle scadute. `null` e' "mai fallita, quindi
+    // subito": va tenuto esplicitamente perche' in SQL `NULL <= now()` non e'
+    // vero, e' sconosciuto — un `WHERE nextAttemptAt <= $1` da solo escluderebbe
+    // tutte le registrazioni nuove, cioe' fermerebbe la pipeline.
     const candidate = await this.#prisma.recording.findFirst({
-      where: { status: RecordingStatus.BOZZA_AUDIO },
+      where: {
+        status: RecordingStatus.BOZZA_AUDIO,
+        OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: at } }],
+      },
       orderBy: { recordedAt: "asc" },
       select: { id: true },
     });
@@ -412,6 +426,7 @@ export class PrismaRecordingRepository implements RecordingRepository {
         // intero di una risposta HTTP, e questa colonna non e' un log.
         lastErrorMessage: failure.message.slice(0, 2000),
         lastErrorAt: failure.at,
+        nextAttemptAt: failure.nextAttemptAt,
         retryCount: { increment: 1 },
       },
     });
@@ -448,6 +463,9 @@ export class PrismaRecordingRepository implements RecordingRepository {
         lastErrorCode: null,
         lastErrorMessage: null,
         lastErrorAt: at,
+        // Chi chiede un retry lo chiede adesso. Il backoff protegge dal ciclo
+        // automatico, e un ciclo automatico non preme un pulsante.
+        nextAttemptAt: null,
         duplicateOfId: null,
         duplicateSimilarity: null,
         retryCount: { increment: 1 },

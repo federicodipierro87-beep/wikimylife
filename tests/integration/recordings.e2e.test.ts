@@ -146,6 +146,21 @@ async function elabora(): Promise<IngestionOutcome> {
   return outcome;
 }
 
+/**
+ * Fa scadere il backoff senza aspettarlo davvero.
+ *
+ * L'alternativa sarebbe un orologio finto nella composizione, ma qui la
+ * composizione e' quella di produzione apposta — e un test che aspetta un
+ * minuto vero non e' un test. Retrodatare la colonna prova comunque cio' che
+ * conta: che sia `claimNext` a leggerla, e non il servizio a ricordarsela.
+ */
+async function scadeAttesa(id: string): Promise<void> {
+  await server.prisma.recording.update({
+    where: { id },
+    data: { nextAttemptAt: new Date(Date.now() - 1000) },
+  });
+}
+
 async function stato(token: string, id: string): Promise<RecordingState> {
   const res = await call(server, "GET", `/api/recordings/${id}`, { accessToken: token });
   expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -756,12 +771,79 @@ describe("fallimenti", () => {
     expect(dopo.procedureId).toBeNull();
     expect(await server.prisma.procedure.count()).toBe(0);
 
-    // Il worker la ripesca da solo al giro successivo, senza che l'utente
-    // debba fare niente: e' il senso di "resta riprocessabile".
+    // Il worker la ripesca da solo, senza che l'utente debba fare niente — ma
+    // non al giro successivo: prima passa l'attesa. E' il senso di "resta
+    // riprocessabile" con il backoff addosso.
+    expect(dopo.nextAttemptAt).not.toBeNull();
+    await scadeAttesa(state.id);
+
     stt.enqueue("al secondo tentativo si sente");
     llm.enqueue(buildExtractionContract());
     expect((await elabora()).kind).toBe("ESTRATTO");
     expect((await stato(token, state.id)).status).toBe(RecordingStatus.ESTRATTO);
+  });
+
+  it("finche' l'attesa non scade la coda e' vuota, anche se la riga e' in BOZZA_AUDIO", async () => {
+    const { token } = await signup();
+    stt.failNext();
+
+    const state = await carica(token);
+    expect((await elabora()).kind).toBe("FALLITO");
+
+    // Questo e' il test che il repository in memoria non puo' fare: `claimNext`
+    // filtra con `nextAttemptAt IS NULL OR nextAttemptAt <= $1`, e in SQL
+    // `NULL <= now()` non e' vero ma sconosciuto. Scritta senza quell'`OR`, la
+    // query smetterebbe di vedere ogni registrazione appena caricata — cioe'
+    // fermerebbe la pipeline invece di rallentarla.
+    expect((await stato(token, state.id)).status).toBe(RecordingStatus.BOZZA_AUDIO);
+    expect(await server.composition.ingestionService.processNext()).toBeNull();
+
+    await scadeAttesa(state.id);
+    stt.enqueue("adesso si sente");
+    llm.enqueue(buildExtractionContract());
+    expect((await elabora()).kind).toBe("ESTRATTO");
+  });
+
+  it("una registrazione nuova e' prendibile subito, con altre in attesa nella stessa coda", async () => {
+    const { token } = await signup();
+    stt.failNext();
+
+    const ferma = await carica(token);
+    expect((await elabora()).kind).toBe("FALLITO");
+
+    // La riga in attesa e' anche la piu' vecchia, quindi l'ordinamento per
+    // `recordedAt` la metterebbe per prima: se il filtro fosse sbagliato, la
+    // nuova non verrebbe mai vista.
+    stt.enqueue("un secondo vocale");
+    llm.enqueue(buildExtractionContract());
+    const nuova = await carica(token, { metadata: metadata({ recordedAt: "2026-03-01T11:00:00.000Z" }) });
+
+    const outcome = await elabora();
+    expect(outcome.kind).toBe("ESTRATTO");
+    expect((await stato(token, nuova.id)).status).toBe(RecordingStatus.ESTRATTO);
+    expect((await stato(token, ferma.id)).status).toBe(RecordingStatus.BOZZA_AUDIO);
+  });
+
+  it("/retry non aspetta il backoff", async () => {
+    const { token } = await signup();
+    stt.failNext();
+
+    const state = await carica(token);
+    await elabora();
+    expect(await server.composition.ingestionService.processNext()).toBeNull();
+
+    // Il backoff protegge dal ciclo automatico. Chi preme «riprova» ha appena
+    // guardato l'errore e deciso: fargli scontare un'attesa pensata per una
+    // macchina sarebbe punirlo per aver letto.
+    const res = await call(server, "POST", `/api/recordings/${state.id}/retry`, {
+      accessToken: token,
+    });
+    expect(res.status).toBe(202);
+    expect(recordingStateSchema.parse(res.body).nextAttemptAt).toBeNull();
+
+    stt.enqueue("al secondo tentativo si sente");
+    llm.enqueue(buildExtractionContract());
+    expect((await elabora()).kind).toBe("ESTRATTO");
   });
 
   it("due estrazioni non conformi fermano la registrazione in ESTRAZIONE_FALLITA", async () => {

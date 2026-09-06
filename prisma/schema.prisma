@@ -177,6 +177,11 @@ model Recording {
   lastErrorMessage String?   @db.Text
   lastErrorAt      DateTime?
   retryCount       Int       @default(0)
+  /// [D11] Da quando il worker puo' riprendere questa riga. `null` = subito.
+  ///
+  /// `retryCount` conta i tentativi, questo li distanzia: senza, tre tentativi
+  /// a cinque secondi l'uno dall'altro sono un solo tentativo fatto tre volte.
+  nextAttemptAt    DateTime?
 
   procedureId String?
   procedure   Procedure? @relation(fields: [procedureId], references: [id])
@@ -199,7 +204,10 @@ model Recording {
 
   @@index([userId, recordedAt])
   /// [D3] Serve al polling del worker: "dammi i prossimi N da elaborare".
-  @@index([status])
+  /// [D11] La seconda colonna e' il filtro del backoff. Sta nell'indice e non
+  /// accanto perche' `claimNext` chiede le due cose insieme, e un indice sul
+  /// solo `status` costringerebbe a leggere ogni riga fallita per scartarla.
+  @@index([status, nextAttemptAt])
 }
 
 model Procedure {

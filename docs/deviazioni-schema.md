@@ -27,6 +27,7 @@ silenzio è una colonna che fra sei mesi nessuno saprà spiegare.
 | [D8](#d8) | tre campi `nullable` in più nel contratto §4.1 | lettura del preambolo della §4 |
 | [D9](#d9) | `RecordingStatus` += `DUPLICATO_SOSPETTO`, `Recording.duplicateOfId` + `duplicateSimilarity` | conseguenza della dedup §5 in Fase 2 |
 | [D10](#d10) | `Procedure.searchText` + `Procedure.searchVector` + indice GIN | modellazione della ricerca full-text §7 |
+| [D11](#d11) | `Recording.nextAttemptAt`, e `@@index([status])` → `@@index([status, nextAttemptAt])` | il «retry» della §5 aveva bisogno di un quando |
 
 Tutto il resto è invariato: `Procedure` (incluso `status @default(BOZZA_AUDIO)`), `Step`,
 `Prerequisite`, `Pitfall`, `Cost`, `Reference`, `Attachment`, `Execution`, `Tag`,
@@ -114,6 +115,8 @@ retryCount       Int       @default(0)
 
 @@index([status])
 ```
+
+(L'indice ha poi guadagnato una seconda colonna: vedi [D11](#d11).)
 
 **Perché.** La §1 chiede che il fallimento sia *«registrato con l'errore»* e la §5 impone *«un solo
 retry»*. Nessuna delle due cose è modellata nella §6. Senza `retryCount` la regola del retry singolo
@@ -425,6 +428,59 @@ e il `tsvector` generato le comporrà con `setweight`. Non è stato fatto ora pe
 misura che oggi non si può prendere — quali risultati la gente si aspetta prima — e perché la fusione
 RRF (`apps/api/src/services/search/fusion.ts`) usa i *ranghi* e non i punteggi: una differenza di
 peso fra titolo e passi cambierebbe l'ordine dentro il canale, non necessariamente quello finale.
+
+---
+
+<a id="d11"></a>
+## D11 — `Recording.nextAttemptAt`, e l'indice del polling che la comprende
+
+**Cosa.**
+
+```prisma
+model Recording {
+  nextAttemptAt DateTime?
+
+  @@index([status, nextAttemptAt])   // era @@index([status])
+}
+```
+
+**Perché.** La §5 dice *«retry»* e non dice *quando*. `retryCount` ([D3](#d3)) risponde a «quanti»,
+e per un po' è sembrato abbastanza: tre tentativi sono tre tentativi. Ma il worker fa polling ogni
+cinque secondi, e `claimNext` prendeva ogni riga in `BOZZA_AUDIO` senza guardare l'orologio — quindi
+i tre tentativi si consumavano in una quindicina di secondi. Un'indisponibilità di OpenAI che dura
+un minuto — cioè il guasto più banale che esista — bruciava l'intero credito di una registrazione
+prima di avere una possibilità di andare a buon fine, e la lasciava ferma in attesa di un umano che
+premesse «riprova» su qualcosa che si era guarito da solo.
+
+Tre tentativi ravvicinati non sono tre occasioni: sono un tentativo fatto tre volte. La colonna è
+ciò che li distanzia — un minuto, dieci, un'ora (`RITARDI_RITENTATIVO` in
+`apps/api/src/services/ingestion.service.ts`) — e trasforma il tetto in un budget speso su un'ora e
+mezza invece che su un quarto di minuto.
+
+**Perché una colonna e non un calcolo.** `lastErrorAt + f(retryCount)` darebbe la stessa risposta
+senza aggiungere niente allo schema, ma la darebbe solo a chi conosce `f`: la query di polling
+dovrebbe ricostruire in SQL una funzione che vive in TypeScript, e le due copie divergerebbero al
+primo aggiustamento degli scaglioni. Scritta, la decisione è visibile a `SELECT`, cambiarla non
+richiede una migration, e le righe già in attesa continuano a scontare l'attesa che era stata loro
+promessa invece di ricalcolarsi addosso la regola nuova.
+
+**`null` vuol dire «adesso», non «mai».** È il valore di ogni registrazione appena caricata, ed è
+per questo che il filtro è `nextAttemptAt IS NULL OR nextAttemptAt <= $1` e non solo la seconda
+metà: in SQL `NULL <= now()` non è falso, è **sconosciuto**, quindi un `WHERE` senza l'`OR`
+escluderebbe tutte le righe mai fallite — cioè fermerebbe la pipeline invece di rallentarla. Sia
+`claim` che `requeue` riazzerano la colonna: una riga in lavorazione non ha un prossimo tentativo, e
+chi preme «riprova» ha appena letto l'errore e deciso, quindi non deve scontare un'attesa pensata
+per una macchina.
+
+**Perché l'indice cambia invece di aggiungersene uno.** `(status)` resta servito come prefisso di
+`(status, nextAttemptAt)`, quindi nessuna query esistente perde il suo indice, e tenerli entrambi
+costerebbe due scritture per ogni cambio di stato in cambio di niente. La seconda colonna conta
+proprio nel momento peggiore: dopo un'indisponibilità l'intera coda è in backoff, e un indice sul
+solo `status` costringerebbe a leggere riga per riga tutte le registrazioni fallite per scartarle.
+
+La migration `20260906120000_recording_next_attempt_at` è scritta a mano, e contiene l'unico
+`DROP INDEX` volontario del progetto — con la motivazione accanto, perché la regola operativa qui
+sotto dice di cancellarli tutti.
 
 ---
 

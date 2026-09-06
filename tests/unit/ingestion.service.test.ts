@@ -19,7 +19,9 @@ import {
   IngestionError,
   MAX_EXTRACTION_ATTEMPTS,
   MAX_INGESTION_ATTEMPTS,
+  RITARDI_RITENTATIVO,
   createIngestionService,
+  ritardoDopo,
   type IngestionService,
 } from "../../apps/api/src/services/ingestion.service.js";
 import type { RecordingDetail } from "../../apps/api/src/services/ports/RecordingRepository.js";
@@ -100,6 +102,15 @@ async function seedConAudio(overrides: Partial<RecordingDetail> = {}): Promise<s
     mimeType: recording.mimeType,
   });
   return recording.id;
+}
+
+/** Quanto manca al prossimo tentativo, in millisecondi, dall'istante attuale. */
+function attesaDi(id: string): number {
+  const next = h.repo.snapshot(id).nextAttemptAt;
+  if (next === null) {
+    throw new Error("nessun prossimo tentativo programmato");
+  }
+  return next.getTime() - h.clock.now().getTime();
 }
 
 /** Il vettore che la pipeline calcolera' per questo contratto. */
@@ -512,6 +523,128 @@ describe("il tetto ai tentativi automatici", () => {
     const id = await seedConAudio({ retryCount: 12 });
 
     expect(await h.service.processRecording(id)).toMatchObject({ kind: "ESTRATTO" });
+  });
+});
+
+/**
+ * Il tetto conta i tentativi; questo li distanzia.
+ *
+ * Senza distanza il tetto e' quasi controproducente: il worker gira ogni cinque
+ * secondi, quindi le tre occasioni si consumano in quindici secondi e un guasto
+ * di mezzo minuto le brucia tutte. La registrazione esce dalla coda per una
+ * cosa che si era gia' aggiustata da sola — che e' il modo peggiore di
+ * fallire, perche' somiglia a un problema dell'audio.
+ */
+describe("il backoff fra un tentativo e il successivo", () => {
+  async function fallisce(id: string): Promise<void> {
+    h.transcription.failNext();
+    await h.service.processRecording(id);
+  }
+
+  it("dopo il primo fallimento la riga non e' subito riprendibile", async () => {
+    const id = await seedConAudio();
+
+    await fallisce(id);
+
+    expect(h.repo.snapshot(id).status).toBe(RecordingStatus.BOZZA_AUDIO);
+    expect(await h.repo.claimNext(h.clock.now())).toBeNull();
+  });
+
+  it("scaduta l'attesa torna in coda da sola", async () => {
+    // La differenza fra un rinvio e una perdita sta tutta qui: nessuno deve
+    // premere niente perche' questa riga riparta.
+    const id = await seedConAudio();
+    await fallisce(id);
+
+    h.clock.advanceSeconds(RITARDI_RITENTATIVO[0] / 1000);
+
+    expect(await h.repo.claimNext(h.clock.now())).toMatchObject({ id });
+  });
+
+  it("un secondo fallimento aspetta piu' del primo", async () => {
+    // Se i due ritardi fossero uguali, la seconda attesa direbbe la stessa cosa
+    // della prima — e la prima ha gia' dimostrato di non bastare.
+    const id = await seedConAudio();
+
+    await fallisce(id);
+    const primo = attesaDi(id);
+
+    h.clock.advanceSeconds(RITARDI_RITENTATIVO[0] / 1000);
+    await fallisce(id);
+    const secondo = attesaDi(id);
+
+    expect(primo).toBe(RITARDI_RITENTATIVO[0]);
+    expect(secondo).toBe(RITARDI_RITENTATIVO[1]);
+  });
+
+  it("una riga mai fallita e' prendibile subito", async () => {
+    // `null` deve valere "adesso" e non "mai": e' la condizione in cui si trova
+    // ogni registrazione appena caricata, cioe' il caso normale.
+    const id = await seedConAudio();
+
+    expect(h.repo.snapshot(id).nextAttemptAt).toBeNull();
+    expect(await h.repo.claimNext(h.clock.now())).toMatchObject({ id });
+  });
+
+  it("chi esce dalla coda non ha nessun prossimo tentativo", async () => {
+    // ESTRAZIONE_FALLITA non e' un'attesa lunga, e' una fine. Scriverci sopra
+    // un orario direbbe all'interfaccia di promettere un ritentativo che non
+    // arrivera'.
+    const id = await seedConAudio();
+
+    for (let i = 0; i < MAX_INGESTION_ATTEMPTS; i += 1) {
+      await fallisce(id);
+      h.clock.advanceSeconds(3600);
+    }
+
+    const dopo = h.repo.snapshot(id);
+    expect(dopo.status).toBe(RecordingStatus.ESTRAZIONE_FALLITA);
+    expect(dopo.nextAttemptAt).toBeNull();
+  });
+
+  it("il riscatto manuale non eredita l'attesa", async () => {
+    // Chi preme «riprova» lo sta chiedendo adesso. Fargli scontare un backoff
+    // deciso per il ciclo automatico significherebbe non rispondere al gesto.
+    const id = await seedConAudio();
+    await fallisce(id);
+    expect(h.repo.snapshot(id).nextAttemptAt).not.toBeNull();
+
+    await h.repo.requeue(USER, id, h.clock.now());
+
+    expect(h.repo.snapshot(id).nextAttemptAt).toBeNull();
+    expect(await h.repo.claimNext(h.clock.now())).toMatchObject({ id });
+  });
+
+  it("prendere la riga cancella l'attesa", async () => {
+    // Descriveva un'attesa, e l'attesa e' finita. Lasciarla scritta mentre la
+    // riga e' IN_ELABORAZIONE farebbe dire all'interfaccia «riprovo alle 12:01»
+    // di una registrazione che si sta gia' elaborando.
+    const id = await seedConAudio();
+    await fallisce(id);
+    h.clock.advanceSeconds(RITARDI_RITENTATIVO[0] / 1000);
+
+    await h.repo.claimNext(h.clock.now());
+
+    expect(h.repo.snapshot(id).nextAttemptAt).toBeNull();
+  });
+
+  it("il percorso felice non aspetta niente", async () => {
+    h.extraction.enqueue(buildExtractionContract());
+    const id = await seedConAudio();
+
+    await h.service.processRecording(id);
+
+    expect(h.repo.snapshot(id).nextAttemptAt).toBeNull();
+  });
+
+  it("gli scaglioni crescono e non tornano indietro oltre l'ultimo", async () => {
+    // `retryCount` puo' superare il numero di scaglioni passando dai riscatti
+    // manuali: la funzione deve restare definita, e restare monotona.
+    expect(ritardoDopo(1)).toBe(RITARDI_RITENTATIVO[0]);
+    expect(ritardoDopo(2)).toBe(RITARDI_RITENTATIVO[1]);
+    expect(ritardoDopo(3)).toBe(RITARDI_RITENTATIVO[2]);
+    expect(ritardoDopo(99)).toBe(RITARDI_RITENTATIVO[2]);
+    expect(ritardoDopo(0)).toBe(RITARDI_RITENTATIVO[0]);
   });
 });
 

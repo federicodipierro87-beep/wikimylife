@@ -48,6 +48,8 @@ export interface RecordingDetail extends RecordingJob {
   readonly lastErrorCode: string | null;
   readonly lastErrorMessage: string | null;
   readonly lastErrorAt: Date | null;
+  /** Quando il worker ci riprovera' da solo. `null`: subito, o mai piu'. */
+  readonly nextAttemptAt: Date | null;
   readonly duplicateOfId: string | null;
   readonly duplicateOfTitolo: string | null;
   readonly duplicateSimilarity: number | null;
@@ -104,6 +106,14 @@ export interface RecordingFailure {
   readonly code: string;
   readonly message: string;
   readonly at: Date;
+  /**
+   * Da quando la riga torna prendibile. `null` significa subito.
+   *
+   * Lo decide il servizio e non il repository: e' una regola di prodotto —
+   * quanto vale la pena aspettare prima di ripagare una chiamata a un modello —
+   * e sta dove si puo' provare senza un database.
+   */
+  readonly nextAttemptAt: Date | null;
 }
 
 export interface RecordingRepository {
@@ -121,7 +131,13 @@ export interface RecordingRepository {
    */
   claim(id: string, at: Date): Promise<RecordingJob | null>;
 
-  /** Come `claim`, ma sceglie da solo il piu' vecchio in attesa. */
+  /**
+   * Come `claim`, ma sceglie da solo il piu' vecchio in attesa.
+   *
+   * «In attesa» esclude chi ha un `nextAttemptAt` nel futuro rispetto ad `at`:
+   * e' quella condizione a rendere il backoff un'attesa e non un suggerimento.
+   * Senza, il ritardo sarebbe scritto in una colonna che nessuno legge.
+   */
   claimNext(at: Date): Promise<RecordingJob | null>;
 
   saveTranscript(

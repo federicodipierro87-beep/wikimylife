@@ -112,6 +112,7 @@ export class InMemoryRecordingRepository implements RecordingRepository {
       lastErrorCode: input.lastErrorCode ?? null,
       lastErrorMessage: input.lastErrorMessage ?? null,
       lastErrorAt: input.lastErrorAt ?? null,
+      nextAttemptAt: input.nextAttemptAt ?? null,
       duplicateOfId: input.duplicateOfId ?? null,
       duplicateOfTitolo: input.duplicateOfTitolo ?? null,
       duplicateSimilarity: input.duplicateSimilarity ?? null,
@@ -153,6 +154,7 @@ export class InMemoryRecordingRepository implements RecordingRepository {
     const claimed = this.#put({
       ...row,
       status: RecordingStatus.IN_ELABORAZIONE,
+      nextAttemptAt: null,
       updatedAt: at,
     });
     return {
@@ -171,7 +173,13 @@ export class InMemoryRecordingRepository implements RecordingRepository {
 
   async claimNext(at: Date): Promise<RecordingJob | null> {
     const candidate = [...this.#recordings.values()]
-      .filter((r) => r.status === RecordingStatus.BOZZA_AUDIO)
+      .filter(
+        (r) =>
+          r.status === RecordingStatus.BOZZA_AUDIO &&
+          // `null` e' "subito". Il confronto e' `<=` come in SQL: una riga la
+          // cui attesa scade esattamente adesso e' scaduta.
+          (r.nextAttemptAt === null || r.nextAttemptAt.getTime() <= at.getTime()),
+      )
       .sort((a, b) => a.recordedAt.getTime() - b.recordedAt.getTime())[0];
     return candidate === undefined ? null : this.claim(candidate.id, at);
   }
@@ -267,6 +275,7 @@ export class InMemoryRecordingRepository implements RecordingRepository {
       lastErrorCode: failure.code,
       lastErrorMessage: failure.message,
       lastErrorAt: failure.at,
+      nextAttemptAt: failure.nextAttemptAt,
       retryCount: row.retryCount + 1,
       updatedAt: failure.at,
     });
@@ -293,6 +302,9 @@ export class InMemoryRecordingRepository implements RecordingRepository {
       lastErrorCode: null,
       lastErrorMessage: null,
       lastErrorAt: at,
+      // Il riscatto manuale non eredita l'attesa: e' il gesto di qualcuno, non
+      // un giro del ciclo.
+      nextAttemptAt: null,
       duplicateOfId: null,
       duplicateOfTitolo: null,
       duplicateSimilarity: null,

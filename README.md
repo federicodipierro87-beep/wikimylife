@@ -716,7 +716,10 @@ l'aritmetica del limitatore con un orologio iniettato — la finestra che si ria
 a `windowMs` e non un millisecondo prima, i budget separati per IP e per rotta,
 `Retry-After` che compare solo negando, e seicento indirizzi che non restano in
 memoria — e il tetto ai tentativi di ingestione, compreso che il riscatto manuale
-ne ricompri esattamente uno. Della redazione: i rilevatori presi uno per uno, con
+ne ricompri esattamente uno e che il backoff sia una vera attesa: dopo un
+fallimento la riga resta in `BOZZA_AUDIO` ma la coda la ignora, il secondo
+fallimento aspetta più del primo, e prendere la riga o riscattarla a mano
+cancella l'attesa. Della redazione: i rilevatori presi uno per uno, con
 i codici fiscali e gli IBAN validi accanto ai loro gemelli sbagliati di un
 carattere — un test che provi solo che il formato giusto passa non dimostra che
 il checksum venga guardato — e il servizio, dove conta soprattutto ciò che *non*
@@ -739,10 +742,12 @@ cui `supertest` non è fra le dipendenze.
 L'end-to-end delle registrazioni carica un multipart vero e poi esegue
 `ingestionService.processNext()` in-process, sulle **stesse istanze** che servono
 le richieste HTTP: un secondo `compose()` per i test avrebbe programmato provider
-fake che nessuna richiesta usa. Tre cose si possono verificare solo lì: che
+fake che nessuna richiesta usa. Quattro cose si possono verificare solo lì: che
 `Response.formData()` regga un corpo multipart vero, che il `<=>` di pgvector
-serva davvero la deduplicazione, e che `@@unique([procedureId, ordine])` non
-esploda sui passi rinumerati.
+serva davvero la deduplicazione, che `@@unique([procedureId, ordine])` non
+esploda sui passi rinumerati, e che il filtro del backoff sia scritto giusto —
+una registrazione appena caricata ha `nextAttemptAt` a `null`, e in memoria un
+`null` si confronta come ci si aspetta mentre in SQL no.
 
 L'end-to-end della ricerca costruisce le schede facendole passare per la pipeline
 vera invece di scriverle con `prisma.procedure.create`: è l'unico modo perché
@@ -1126,7 +1131,7 @@ Due concessioni, entrambe necessarie:
 `Permissions-Policy` concede `microphone=(self)` e `geolocation=(self)` e nega
 tutto il resto: sono le due cose che la PWA usa davvero.
 
-### Il tetto ai tentativi di ingestione
+### Il tetto ai tentativi di ingestione, e la distanza fra uno e l'altro
 
 `MAX_INGESTION_ATTEMPTS = 3` in `ingestion.service.ts`. Al terzo fallimento
 automatico la registrazione passa a `ESTRAZIONE_FALLITA` invece di tornare in
@@ -1150,6 +1155,39 @@ una decisione e un ciclo. `ESTRAZIONE_FALLITA` resta un capolinea per la coda,
 non per l'utente: l'audio è ancora nello storage, e il messaggio d'errore dice
 che si è smesso di riprovare invece di ripetere solo cosa è andato storto — al
 terzo giro «trascrizione fallita» sembra il primo giro.
+
+Il tetto da solo però contava i tentativi senza distanziarli, e il worker fa un
+giro ogni cinque secondi: tre tentativi si consumavano in una quindicina di
+secondi, cioè erano un tentativo fatto tre volte. Un'indisponibilità di OpenAI
+di un minuto — il guasto più banale che esista — bruciava l'intero credito di una
+registrazione prima che avesse una possibilità, e la lasciava ferma ad aspettare
+che un umano premesse «riprova» su qualcosa che si era già guarito da solo.
+
+`RITARDI_RITENTATIVO = [1 minuto, 10 minuti, 1 ora]` li distanzia. La scala è
+×10 e non ×2 perché fra un fallimento e il successivo l'unica informazione
+disponibile è «è fallito di nuovo»: il primo scaglione copre un singolo
+singhiozzo, il secondo una finestra di rate limit, il terzo un'indisponibilità
+vera. Raddoppiando, il terzo tentativo cadrebbe venti secondi dopo il primo — di
+nuovo dentro lo stesso guasto. Nessun jitter, perché i tentativi sono già
+sfasati fra loro dal momento in cui ciascuna riga è fallita.
+
+Il quando sta su una colonna, `Recording.nextAttemptAt` ([D11](docs/deviazioni-schema.md#d11)),
+e non in un calcolo dentro la query di polling: `lastErrorAt + f(retryCount)`
+darebbe la stessa risposta, ma costringerebbe a riscrivere `f` in SQL e le due
+copie divergerebbero al primo aggiustamento degli scaglioni. `null` vuol dire
+«adesso» e non «mai» — è il valore di ogni registrazione appena caricata — ed è
+il motivo per cui il filtro è `nextAttemptAt IS NULL OR nextAttemptAt <= $1`: in
+SQL `NULL <= now()` non è falso, è *sconosciuto*, e la metà mancante avrebbe
+nascosto al worker ogni registrazione nuova. Il test che conta è in
+`tests/integration/recordings.e2e.test.ts`, contro Postgres, perché in memoria
+quella `OR` non ha modo di essere sbagliata.
+
+Il riscatto manuale azzera l'attesa. Il backoff protegge dal ciclo automatico, e
+chi preme «riprova» ha appena letto l'errore e deciso: fargli scontare un ritardo
+pensato per una macchina sarebbe punirlo per aver guardato. Per lo stesso motivo
+`nextAttemptAt` sta nel contratto HTTP: senza, un'attesa di un minuto è
+indistinguibile da un blocco, e un'interfaccia che non sa dirlo invita a premere
+«riprova» proprio mentre il tempo sta già facendo il suo lavoro.
 
 ---
 
@@ -1207,11 +1245,14 @@ Non installate, e il perché:
   RRF fonde due classifiche troncate, e la pagina due di una fusione di due
   finestre diverse non è la continuazione della pagina uno. Servirà una strategia
   a cursore, non un `OFFSET`.
-- **Il tetto ai tentativi non distingue le cause.** Tre fallimenti sono tre
-  fallimenti, che siano tre errori di rete o tre volte lo stesso file corrotto.
-  Un backoff — riprovare dopo un minuto, poi dieci, poi un'ora — sarebbe più
-  gentile con i guasti transitori, e richiederebbe una colonna `nextAttemptAt` e
-  una `claimNext` che la guardi.
+- **Il tetto ai tentativi continua a non distinguere le cause.** Il backoff ha
+  risolto la metà che riguarda il tempo — tre tentativi adesso sono spalmati su
+  un'ora e mezza invece che su un quarto di minuto — ma non quella che riguarda
+  il perché: un `429` e un file audio corrotto consumano lo stesso budget e
+  aspettano lo stesso minuto, anche se il secondo fallirà identico fra un'ora.
+  Distinguerli vorrebbe dire classificare gli errori dei provider in
+  «transitori» e «definitivi», e quella classificazione è indovinata finché non
+  la si misura su fallimenti veri.
 - **Della §9 c'è la metà deterministica.** Il blocco alla pubblicazione e la
   passata su codici fiscali, IBAN, email e telefoni esistono; l'«assistita
   dall'LLM per il resto» no. Nomi di persona, indirizzi di casa, il numero di

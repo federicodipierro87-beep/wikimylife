@@ -95,6 +95,7 @@ export function toRecordingState(detail: RecordingDetail): RecordingState {
             message: detail.lastErrorMessage ?? "",
             at: (detail.lastErrorAt ?? detail.updatedAt).toISOString(),
           },
+    nextAttemptAt: detail.nextAttemptAt?.toISOString() ?? null,
     duplicate:
       detail.duplicateOfId === null
         ? null

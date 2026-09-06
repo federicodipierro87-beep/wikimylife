@@ -112,6 +112,19 @@ export const recordingStateSchema = z
     retryCount: z.number().int(),
     lastError: recordingErrorSchema.nullable(),
 
+    /**
+     * Quando il worker riprovera' da solo, se lo fara'.
+     *
+     * Sta nel contratto perche' senza di esso un'attesa e' indistinguibile da un
+     * guasto: dopo il primo fallimento la registrazione resta in `BOZZA_AUDIO`
+     * per un minuto senza che accada niente, e un'interfaccia che non sa dirlo
+     * mostra «in attesa» per un minuto — cioe' invita a premere «riprova»
+     * proprio mentre il tempo sta gia' facendo il suo lavoro. `null` vuol dire
+     * che non c'e' un'attesa in corso: la riga e' prendibile adesso, oppure il
+     * ciclo automatico ha smesso e tocca a un umano.
+     */
+    nextAttemptAt: z.string().nullable(),
+
     /** Valorizzato solo a stato `DUPLICATO_SOSPETTO`. */
     duplicate: duplicateSuggestionSchema.nullable(),
 

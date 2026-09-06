@@ -83,6 +83,44 @@ export const MAX_EXTRACTION_ATTEMPTS = 2;
  */
 export const MAX_INGESTION_ATTEMPTS = 3;
 
+/**
+ * Quanto si aspetta prima di riprovare, dopo il primo, il secondo, il terzo
+ * fallimento.
+ *
+ * Il tetto da solo conta i tentativi ma non li distanzia, e senza distanza tre
+ * tentativi non sono tre occasioni: il worker gira ogni cinque secondi, quindi
+ * un 503 di OpenAI che dura mezzo minuto se li mangia tutti e tre prima di
+ * finire. La registrazione esce dalla coda per un guasto che si era gia'
+ * risolto da solo, e l'unico modo di riprenderla e' che qualcuno apra l'app e
+ * prema «riprova» — cioe' esattamente la manutenzione volontaria che questo
+ * progetto e' fatto per non chiedere.
+ *
+ * Un minuto, dieci, un'ora. Il primo salto copre i singhiozzi (un timeout, un
+ * riavvio, una connessione persa); il secondo copre i rate limit, che si
+ * misurano in minuti; il terzo copre i guasti veri di un fornitore, che si
+ * misurano in ore. Ogni scaglione e' dieci volte il precedente perche' l'unica
+ * informazione che si ha e' «non ha funzionato di nuovo», e raddoppiare
+ * significherebbe fare molti piu' tentativi per coprire la stessa finestra.
+ *
+ * Sono fissi e non casuali: il jitter serve a spargere client indipendenti che
+ * ripartono insieme, e qui i tentativi sono gia' sparsi dai loro `lastErrorAt`,
+ * che sono i momenti in cui sono falliti.
+ */
+export const RITARDI_RITENTATIVO = [60_000, 600_000, 3_600_000] as const;
+
+/**
+ * Il ritardo per il tentativo appena fallito, in millisecondi.
+ *
+ * Oltre l'ultimo scaglione resta l'ultimo scaglione. Non e' un caso che possa
+ * accadere con `MAX_INGESTION_ATTEMPTS = 3` — ci si arriva solo attraverso i
+ * riscatti manuali, che alzano `retryCount` senza limite — ma la funzione deve
+ * dare una risposta comunque, e «un'ora» e' meglio di `undefined`.
+ */
+export function ritardoDopo(attempt: number): number {
+  const indice = Math.min(Math.max(attempt, 1), RITARDI_RITENTATIVO.length) - 1;
+  return RITARDI_RITENTATIVO[indice] ?? 0;
+}
+
 export type IngestionOutcome =
   /** Nessun lavoro fatto: un altro worker aveva gia' preso questa riga. */
   | { readonly kind: "SALTATO"; readonly recordingId: string }
@@ -425,11 +463,22 @@ export function createIngestionService(deps: IngestionDeps): IngestionService {
         ? `${failure.message} Interrotto dopo ${String(attempt)} tentativi: riprovare dalla scheda della registrazione.`
         : failure.message;
 
+      const adesso = clock.now();
+      // Solo chi torna in coda ha un prossimo tentativo. Per gli altri stati la
+      // colonna resta `null`, che e' anche cio' che `claimNext` legge come
+      // "prendibile subito": una riga rimessa in coda a mano non deve ereditare
+      // l'attesa decisa per il ciclo automatico.
+      const nextAttemptAt =
+        status === RecordingStatus.BOZZA_AUDIO
+          ? new Date(adesso.getTime() + ritardoDopo(attempt))
+          : null;
+
       await repo.markFailed(job.id, {
         status,
         code: failure.code,
         message,
-        at: clock.now(),
+        at: adesso,
+        nextAttemptAt,
       });
 
       logger.error("elaborazione fallita", {
@@ -438,6 +487,7 @@ export function createIngestionService(deps: IngestionDeps): IngestionService {
         status,
         attempt,
         esaurita,
+        nextAttemptAt: nextAttemptAt?.toISOString() ?? null,
         message: failure.message,
       });
 
