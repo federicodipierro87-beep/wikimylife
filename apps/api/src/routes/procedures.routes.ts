@@ -1,4 +1,5 @@
 import {
+  applyRedactionBodySchema,
   createExecutionBodySchema,
   listProceduresQuerySchema,
   updateProcedureBodySchema,
@@ -9,7 +10,7 @@ import { parseBody, parseQuery } from "../http/validate.js";
 import type { ProceduresService } from "../services/procedures.service.js";
 
 /**
- * Le cinque rotte sulle schede.
+ * Le sette rotte sulle schede.
  *
  * Nessun `if` di dominio qui dentro: si prende lo `userId` dal token, si valida
  * l'ingresso con lo schema di `packages/shared` e si delega. Le regole della §8
@@ -30,6 +31,20 @@ import type { ProceduresService } from "../services/procedures.service.js";
  * esiste `GET /executions/:id`, e un 201 senza `Location` e' una promessa a
  * vuoto. Cio' che interessa al chiamante e' l'*effetto* sulla scheda — un esito
  * `CAMBIATA` la riporta in `DA_RIVEDERE` — quindi la risposta e' la scheda.
+ *
+ * ## Perche' la redazione (§9) e' una `GET` e una `POST` sullo stesso percorso
+ *
+ * La §9 chiede che le sostituzioni si facciano «confermare una per una». Sono
+ * due passi distinti nel tempo — il server propone, una persona guarda, il
+ * server applica cio' che ha ricevuto indietro — e due passi distinti nel tempo
+ * sono due chiamate. Una sola rotta che redigesse tutto avrebbe tolto di mezzo
+ * l'unica cosa che la §9 chiede davvero: lo sguardo in mezzo.
+ *
+ * La `POST` non e' `PATCH` perche' non descrive uno stato desiderato: manda
+ * degli identificativi e chiede al server di rifare i conti. E non e' `PUT`
+ * perche' non e' idempotente in modo utile — rimandare le stesse conferme una
+ * seconda volta fallisce con 409, dato che dopo la prima quelle proposte non
+ * esistono piu'.
  */
 export function createProceduresRouter(deps: {
   proceduresService: ProceduresService;
@@ -69,6 +84,19 @@ export function createProceduresRouter(deps: {
     const { userId } = authContext(req);
     const body = parseBody(createExecutionBodySchema, req.body);
     const scheda = await deps.proceduresService.addExecution(userId, req.params.id, body);
+    res.status(200).json(scheda);
+  });
+
+  router.get("/:id/redazione", async (req, res) => {
+    const { userId } = authContext(req);
+    const report = await deps.proceduresService.proposeRedaction(userId, req.params.id);
+    res.status(200).json(report);
+  });
+
+  router.post("/:id/redazione", async (req, res) => {
+    const { userId } = authContext(req);
+    const body = parseBody(applyRedactionBodySchema, req.body);
+    const scheda = await deps.proceduresService.applyRedaction(userId, req.params.id, body);
     res.status(200).json(scheda);
   });
 

@@ -45,6 +45,14 @@ export interface SeedProcedure {
   readonly volteEseguita?: number;
   readonly tag?: readonly string[];
   readonly steps?: ProcedureDetailRow["steps"];
+  readonly prereqs?: ProcedureDetailRow["prereqs"];
+  readonly pitfalls?: ProcedureDetailRow["pitfalls"];
+  readonly costs?: ProcedureDetailRow["costs"];
+  readonly refs?: ProcedureDetailRow["refs"];
+  readonly luogoNome?: string | null;
+  readonly luogoDettaglio?: string | null;
+  readonly clientLabel?: string | null;
+  readonly recordings?: ProcedureDetailRow["recordings"];
 }
 
 export class InMemoryProcedureRepository implements ProcedureRepository {
@@ -67,12 +75,12 @@ export class InMemoryProcedureRepository implements ProcedureRepository {
       trigger: input.trigger ?? null,
       esito: input.esito ?? null,
       scope: input.scope ?? Scope.PERSONALE,
-      clientLabel: null,
+      clientLabel: input.clientLabel ?? null,
       visibility: input.visibility ?? Visibility.PRIVATA,
       status: input.status ?? CardStatus.COMPLETA,
       durataStimataMin: null,
       costoTotaleCent: null,
-      luogoNome: null,
+      luogoNome: input.luogoNome ?? null,
       ultimaVerifica: input.ultimaVerifica ?? null,
       volteEseguita: input.volteEseguita ?? 1,
       contieneDatiSensibili: input.contieneDatiSensibili ?? false,
@@ -81,18 +89,18 @@ export class InMemoryProcedureRepository implements ProcedureRepository {
       createdAt: at,
       updatedAt: at,
       validitaEsito: null,
-      luogoDettaglio: null,
+      luogoDettaglio: input.luogoDettaglio ?? null,
       latitude: null,
       longitude: null,
       forkedFromId: null,
       steps: input.steps ?? [],
-      prereqs: [],
-      pitfalls: [],
-      costs: [],
-      refs: [],
+      prereqs: input.prereqs ?? [],
+      pitfalls: input.pitfalls ?? [],
+      costs: input.costs ?? [],
+      refs: input.refs ?? [],
       attachments: [],
       executions: [],
-      recordings: [],
+      recordings: input.recordings ?? [],
     };
     this.#rows.set(id, row);
     this.#owners.set(id, input.userId);
@@ -149,6 +157,10 @@ export class InMemoryProcedureRepository implements ProcedureRepository {
     }
     this.lastUpdate = data;
 
+    // Gli array figli si ricreano da zero, con id nuovi, come fa Prisma:
+    // `deleteMany` + `createMany`. Conservare gli id vecchi qui renderebbe
+    // possibile scrivere un test che si appoggia a un id di passo attraverso una
+    // PATCH — cosa che contro il database vero non funzionerebbe.
     const steps = data.steps?.map((s, index) => ({
       id: `${id}-step-${String(index + 1)}`,
       ordine: index + 1,
@@ -156,15 +168,40 @@ export class InMemoryProcedureRepository implements ProcedureRepository {
       dettaglio: s.dettaglio ?? null,
       durataStimataMin: s.durataStimataMin ?? null,
     }));
+    const prereqs = data.prereqs?.map((p, index) => ({
+      id: `${id}-prereq-${String(index + 1)}`,
+      descrizione: p.descrizione,
+      tipo: p.tipo,
+      obbligatorio: p.obbligatorio,
+    }));
+    const pitfalls = data.pitfalls?.map((p, index) => ({
+      id: `${id}-pitfall-${String(index + 1)}`,
+      descrizione: p.descrizione,
+      gravita: p.gravita,
+    }));
+    const costs = data.costs?.map((c, index) => ({
+      id: `${id}-cost-${String(index + 1)}`,
+      descrizione: c.descrizione,
+      importoCent: c.importoCent,
+      valuta: c.valuta,
+    }));
+    const refs = data.refs?.map((r, index) => ({
+      id: `${id}-ref-${String(index + 1)}`,
+      tipo: r.tipo,
+      valore: r.valore,
+    }));
 
     const aggiornata: ProcedureDetailRow = {
       ...row,
       ...omitUndefined(data.scalars),
       ...(data.tag === undefined ? {} : { tag: [...data.tag] }),
       ...(steps === undefined ? {} : { steps, numeroPassi: steps.length }),
-      ...(data.costs === undefined
+      ...(prereqs === undefined ? {} : { prereqs }),
+      ...(pitfalls === undefined ? {} : { pitfalls }),
+      ...(refs === undefined ? {} : { refs }),
+      ...(costs === undefined
         ? {}
-        : { costoTotaleCent: data.costs.reduce((sum, c) => sum + c.importoCent, 0) }),
+        : { costs, costoTotaleCent: costs.reduce((sum, c) => sum + c.importoCent, 0) }),
       updatedAt: new Date(row.updatedAt.getTime() + 1000),
     };
     this.#rows.set(id, aggiornata);

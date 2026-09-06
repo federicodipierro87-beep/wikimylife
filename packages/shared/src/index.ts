@@ -19,6 +19,7 @@ export * from "./adapters/secureStorage.js";
 export * from "./api/schemas.js";
 export * from "./api/recordings.js";
 export * from "./api/procedures.js";
+export * from "./api/redaction.js";
 export * from "./api/client.js";
 
 export * from "./redaction/detect.js";

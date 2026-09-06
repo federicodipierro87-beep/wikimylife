@@ -8,6 +8,8 @@ import {
   errorBodySchema,
   procedureDetailSchema,
   procedureListSchema,
+  redactionReportSchema,
+  searchResultSchema,
   type ProcedureDetail,
 } from "@wikimylife/shared";
 import { buildExtractionContract } from "@wikimylife/shared/testing";
@@ -31,7 +33,10 @@ import { call, startTestServer, uploadRecording, type TestServer } from "./helpe
  *  2. che `costoTotaleCent` sia ricalcolato dal database e non creduto sulla
  *     parola del client;
  *  3. che `volteEseguita` cresca con un `increment` SQL — l'unico modo di non
- *     perdere un'esecuzione registrata nel frattempo da un altro dispositivo.
+ *     perdere un'esecuzione registrata nel frattempo da un altro dispositivo;
+ *  4. che dopo una redazione (§9) la scheda sparisca davvero dai risultati di
+ *     ricerca per il dato che le e' stato tolto. Qui c'e' l'indice vero: in
+ *     memoria si puo' solo guardare la stringa che il servizio ha calcolato.
  */
 
 const PASSWORD = "password-di-prova-lunga";
@@ -636,5 +641,178 @@ describe("flag di obsolescenza", () => {
     });
 
     expect((await leggi(token, creata.id)).obsoleta).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Redazione (§9)
+// ---------------------------------------------------------------------------
+
+/**
+ * L'esempio pubblico dell'Agenzia delle Entrate. Ha il carattere di controllo
+ * giusto — quindi passa il checksum e non viene scartato — e non e' di nessuno.
+ */
+const CF = "MRTMTT25D09F205Z";
+
+describe("redazione", () => {
+  it("richiede l'autenticazione da entrambi i lati", async () => {
+    const proposta = await call(server, "GET", "/api/procedures/qualsiasi/redazione");
+    const applicazione = await call(server, "POST", "/api/procedures/qualsiasi/redazione", {
+      body: { conferme: ["titolo:0:EMAIL"] },
+    });
+
+    expect(proposta.status).toBe(401);
+    expect(applicazione.status).toBe(401);
+  });
+
+  it("propone i dati che trova, senza toccare la scheda", async () => {
+    const token = await signup();
+    const creata = await creaScheda(token, {
+      titolo: `Rinnovare la tessera di ${CF}`,
+      riferimenti: [{ tipo: "PERSONA", valore: "Scrivere a mario.rossi@example.com" }],
+    });
+
+    const res = await call(server, "GET", `/api/procedures/${creata.id}/redazione`, {
+      accessToken: token,
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const report = redactionReportSchema.parse(res.body);
+    expect(report.procedureId).toBe(creata.id);
+    expect(report.proposte.map((p) => p.kind).sort()).toEqual(["CODICE_FISCALE", "EMAIL"]);
+    expect((await leggi(token, creata.id)).titolo).toBe(`Rinnovare la tessera di ${CF}`);
+  });
+
+  it("applica solo le proposte confermate", async () => {
+    const token = await signup();
+    const creata = await creaScheda(token, {
+      titolo: `Rinnovare la tessera di ${CF}`,
+      riferimenti: [{ tipo: "PERSONA", valore: "Scrivere a mario.rossi@example.com" }],
+    });
+
+    const proposte = redactionReportSchema.parse(
+      (await call(server, "GET", `/api/procedures/${creata.id}/redazione`, { accessToken: token }))
+        .body,
+    ).proposte;
+    const soloEmail = proposte.filter((p) => p.kind === "EMAIL").map((p) => p.id);
+
+    const res = await call(server, "POST", `/api/procedures/${creata.id}/redazione`, {
+      accessToken: token,
+      body: { conferme: soloEmail },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const scheda = procedureDetailSchema.parse(res.body);
+    expect(scheda.refs[0]?.valore).toBe("Scrivere a [email]");
+    // Il codice fiscale non era fra le conferme: resta.
+    expect(scheda.titolo).toBe(`Rinnovare la tessera di ${CF}`);
+  });
+
+  it("toglie la scheda dai risultati della ricerca per il dato redatto", async () => {
+    // La ragione per cui la redazione passa dalla PATCH e non scrive dritta sul
+    // database. Qui c'e' l'indice vero: se `searchText` non fosse ricalcolato,
+    // la scheda resterebbe raggiungibile digitando il codice fiscale che le e'
+    // stato appena tolto, e nessun test in memoria potrebbe accorgersene.
+    const token = await signup();
+    const creata = await creaScheda(token, { titolo: `Pratica intestata a ${CF}` });
+
+    const prima = await call(server, "GET", `/api/search?q=${CF}`, { accessToken: token });
+    expect(searchResultSchema.parse(prima.body).items).toHaveLength(1);
+
+    const proposte = redactionReportSchema.parse(
+      (await call(server, "GET", `/api/procedures/${creata.id}/redazione`, { accessToken: token }))
+        .body,
+    ).proposte;
+    await call(server, "POST", `/api/procedures/${creata.id}/redazione`, {
+      accessToken: token,
+      body: { conferme: proposte.map((p) => p.id) },
+    });
+
+    const dopo = await call(server, "GET", `/api/search?q=${CF}`, { accessToken: token });
+    expect(searchResultSchema.parse(dopo.body).items).toHaveLength(0);
+  });
+
+  it("rifiuta con 409 una conferma che non corrisponde piu' a niente", async () => {
+    const token = await signup();
+    const creata = await creaScheda(token, { titolo: `Pratica di ${CF}` });
+
+    const res = await call(server, "POST", `/api/procedures/${creata.id}/redazione`, {
+      accessToken: token,
+      body: { conferme: ["titolo:999:IBAN"] },
+    });
+
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("CONFLICT");
+    expect((await leggi(token, creata.id)).titolo).toBe(`Pratica di ${CF}`);
+  });
+
+  it("rifiuta un corpo con del testo dentro", async () => {
+    // Lo schema e' `.strict()`: accettare testo qui renderebbe questa rotta una
+    // PATCH travestita da redazione.
+    const token = await signup();
+    const creata = await creaScheda(token, { titolo: `Pratica di ${CF}` });
+
+    const res = await call(server, "POST", `/api/procedures/${creata.id}/redazione`, {
+      accessToken: token,
+      body: { conferme: ["titolo:11:CODICE_FISCALE"], titolo: "Quello che voglio io" },
+    });
+
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
+  });
+
+  it("non lascia leggere ne' redigere la scheda di un altro", async () => {
+    const mio = await signup();
+    const altrui = await signup();
+    const sua = await creaScheda(altrui, { titolo: `Pratica di ${CF}` });
+
+    const lettura = await call(server, "GET", `/api/procedures/${sua.id}/redazione`, {
+      accessToken: mio,
+    });
+    const scrittura = await call(server, "POST", `/api/procedures/${sua.id}/redazione`, {
+      accessToken: mio,
+      body: { conferme: ["titolo:11:CODICE_FISCALE"] },
+    });
+
+    expect(lettura.status).toBe(404);
+    expect(scrittura.status).toBe(404);
+    expect((await leggi(altrui, sua.id)).titolo).toBe(`Pratica di ${CF}`);
+  });
+
+  it("non toglie il flag: la revisione esplicita resta di una persona", async () => {
+    const token = await signup();
+    const creata = await creaScheda(token, {
+      titolo: `Pratica di ${CF}`,
+      _meta: {
+        confidenzaGlobale: 0.8,
+        campiIncerti: [],
+        domandeSuggerite: [],
+        contieneDatiSensibili: true,
+        tipoRilevato: "PROCEDURA",
+      },
+    });
+    expect(creata.contieneDatiSensibili).toBe(true);
+
+    const proposte = redactionReportSchema.parse(
+      (await call(server, "GET", `/api/procedures/${creata.id}/redazione`, { accessToken: token }))
+        .body,
+    ).proposte;
+    const redatta = procedureDetailSchema.parse(
+      (
+        await call(server, "POST", `/api/procedures/${creata.id}/redazione`, {
+          accessToken: token,
+          body: { conferme: proposte.map((p) => p.id) },
+        })
+      ).body,
+    );
+
+    expect(redatta.contieneDatiSensibili).toBe(true);
+
+    // E finche' il flag c'e', la §9 continua a bloccare la pubblicazione.
+    const pubblica = await call(server, "PATCH", `/api/procedures/${creata.id}`, {
+      accessToken: token,
+      body: { visibility: Visibility.PUBBLICA },
+    });
+    expect(pubblica.status).toBe(409);
   });
 });

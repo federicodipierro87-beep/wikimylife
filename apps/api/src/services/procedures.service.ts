@@ -6,16 +6,19 @@ import {
   embeddingInput,
   isObsoleta,
   searchText,
+  type ApplyRedactionBody,
   type CreateExecutionBody,
   type EmbeddingProvider,
   type ListProceduresQuery,
   type ProcedureDetail,
   type ProcedureList,
   type ProcedureSummary,
+  type RedactionReport,
   type UpdateProcedureBody,
 } from "@wikimylife/shared";
 import { AppError } from "../errors/AppError.js";
 import type { Clock } from "./ports/Clock.js";
+import { idProposti, patchDiRedazione, proposteDi } from "./redaction/proposals.js";
 import type {
   AddExecutionData,
   ProcedureDetailRow,
@@ -148,6 +151,8 @@ export interface ProceduresService {
   update(userId: string, id: string, patch: UpdateProcedureBody): Promise<ProcedureDetail>;
   archive(userId: string, id: string): Promise<ProcedureDetail>;
   addExecution(userId: string, id: string, body: CreateExecutionBody): Promise<ProcedureDetail>;
+  proposeRedaction(userId: string, id: string): Promise<RedactionReport>;
+  applyRedaction(userId: string, id: string, body: ApplyRedactionBody): Promise<ProcedureDetail>;
 }
 
 export interface ProceduresServiceDeps {
@@ -167,6 +172,85 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
       throw AppError.notFound("Scheda non trovata");
     }
     return row;
+  }
+
+  /**
+   * La `PATCH`, come funzione e non solo come metodo.
+   *
+   * Serve un nome perche' `applyRedaction` la richiama: la redazione non e'
+   * un'altra via di scrittura, e' una `PATCH` il cui contenuto lo calcola il
+   * server invece di riceverlo. Se scrivesse per conto suo sul repository si
+   * porterebbe dietro l'obbligo di ricordarsi di `searchText` e
+   * `verificaVisibilita`, e quell'obbligo verrebbe dimenticato il giorno in cui
+   * si aggiunge il terzo campo derivato.
+   */
+  async function aggiorna(
+    userId: string,
+    id: string,
+    patch: UpdateProcedureBody,
+  ): Promise<ProcedureDetail> {
+    const current = await detailOrThrow(userId, id);
+
+    verificaVisibilita({
+      scope: patch.scope ?? current.scope,
+      visibility: patch.visibility ?? current.visibility,
+      contieneDatiSensibili: patch.contieneDatiSensibili ?? current.contieneDatiSensibili,
+    });
+
+    const { tag, steps, prereqs, pitfalls, costs, refs, ...scalars } = patch;
+    const nuoviTag = tag ?? current.tag;
+    const nuoviPassi = steps ?? current.steps;
+    const nuoviPrereq = prereqs ?? current.prereqs;
+    const nuoveTrappole = pitfalls ?? current.pitfalls;
+
+    // L'embedding si ricalcola solo se cambia il testo da cui dipende
+    // (`titolo + trigger + tag`, §7). Correggere un refuso in una trappola non
+    // deve costare una chiamata di rete, e soprattutto non deve far fallire il
+    // PATCH quando il provider di embedding e' giu'.
+    const testoVecchio = embeddingInput({
+      titolo: current.titolo,
+      trigger: current.trigger,
+      tag: current.tag,
+    });
+    const testoNuovo = embeddingInput({
+      titolo: patch.titolo ?? current.titolo,
+      trigger: patch.trigger === undefined ? current.trigger : patch.trigger,
+      tag: nuoviTag,
+    });
+
+    const embedding =
+      testoNuovo === testoVecchio ? undefined : await deps.embeddings.embed(testoNuovo);
+
+    const scalarPatch: ProcedureScalarPatch = scalars;
+    const data: UpdateProcedureData = {
+      scalars: scalarPatch,
+      ...(tag === undefined ? {} : { tag }),
+      ...(steps === undefined ? {} : { steps }),
+      ...(prereqs === undefined ? {} : { prereqs }),
+      ...(pitfalls === undefined ? {} : { pitfalls }),
+      ...(costs === undefined ? {} : { costs }),
+      ...(refs === undefined ? {} : { refs }),
+      // Ricomposto sempre e per intero, dalla stessa funzione che usa la
+      // pipeline di ingestione. Ricomporlo solo «quando serve» vorrebbe dire
+      // decidere ogni volta quali campi lo compongono, cioe' tenere quella
+      // lista in due posti.
+      searchText: searchText({
+        titolo: patch.titolo ?? current.titolo,
+        trigger: patch.trigger === undefined ? current.trigger : patch.trigger,
+        esito: patch.esito === undefined ? current.esito : patch.esito,
+        steps: nuoviPassi,
+        prereqs: nuoviPrereq,
+        pitfalls: nuoveTrappole,
+        tag: nuoviTag,
+      }),
+      ...(embedding === undefined ? {} : { embedding }),
+    };
+
+    const updated = await repo.update(userId, id, data);
+    if (updated === null) {
+      throw AppError.notFound("Scheda non trovata");
+    }
+    return toProcedureDetail(updated, clock.now());
   }
 
   return {
@@ -191,74 +275,7 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
       return toProcedureDetail(await detailOrThrow(userId, id), clock.now());
     },
 
-    async update(
-      userId: string,
-      id: string,
-      patch: UpdateProcedureBody,
-    ): Promise<ProcedureDetail> {
-      const current = await detailOrThrow(userId, id);
-
-      verificaVisibilita({
-        scope: patch.scope ?? current.scope,
-        visibility: patch.visibility ?? current.visibility,
-        contieneDatiSensibili: patch.contieneDatiSensibili ?? current.contieneDatiSensibili,
-      });
-
-      const { tag, steps, prereqs, pitfalls, costs, refs, ...scalars } = patch;
-      const nuoviTag = tag ?? current.tag;
-      const nuoviPassi = steps ?? current.steps;
-      const nuoviPrereq = prereqs ?? current.prereqs;
-      const nuoveTrappole = pitfalls ?? current.pitfalls;
-
-      // L'embedding si ricalcola solo se cambia il testo da cui dipende
-      // (`titolo + trigger + tag`, §7). Correggere un refuso in una trappola non
-      // deve costare una chiamata di rete, e soprattutto non deve far fallire il
-      // PATCH quando il provider di embedding e' giu'.
-      const testoVecchio = embeddingInput({
-        titolo: current.titolo,
-        trigger: current.trigger,
-        tag: current.tag,
-      });
-      const testoNuovo = embeddingInput({
-        titolo: patch.titolo ?? current.titolo,
-        trigger: patch.trigger === undefined ? current.trigger : patch.trigger,
-        tag: nuoviTag,
-      });
-
-      const embedding =
-        testoNuovo === testoVecchio ? undefined : await deps.embeddings.embed(testoNuovo);
-
-      const scalarPatch: ProcedureScalarPatch = scalars;
-      const data: UpdateProcedureData = {
-        scalars: scalarPatch,
-        ...(tag === undefined ? {} : { tag }),
-        ...(steps === undefined ? {} : { steps }),
-        ...(prereqs === undefined ? {} : { prereqs }),
-        ...(pitfalls === undefined ? {} : { pitfalls }),
-        ...(costs === undefined ? {} : { costs }),
-        ...(refs === undefined ? {} : { refs }),
-        // Ricomposto sempre e per intero, dalla stessa funzione che usa la
-        // pipeline di ingestione. Ricomporlo solo «quando serve» vorrebbe dire
-        // decidere ogni volta quali campi lo compongono, cioe' tenere quella
-        // lista in due posti.
-        searchText: searchText({
-          titolo: patch.titolo ?? current.titolo,
-          trigger: patch.trigger === undefined ? current.trigger : patch.trigger,
-          esito: patch.esito === undefined ? current.esito : patch.esito,
-          steps: nuoviPassi,
-          prereqs: nuoviPrereq,
-          pitfalls: nuoveTrappole,
-          tag: nuoviTag,
-        }),
-        ...(embedding === undefined ? {} : { embedding }),
-      };
-
-      const updated = await repo.update(userId, id, data);
-      if (updated === null) {
-        throw AppError.notFound("Scheda non trovata");
-      }
-      return toProcedureDetail(updated, clock.now());
-    },
+    update: aggiorna,
 
     async archive(userId: string, id: string): Promise<ProcedureDetail> {
       const archived = await repo.archive(userId, id);
@@ -309,6 +326,62 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
         throw AppError.notFound("Scheda non trovata");
       }
       return toProcedureDetail(updated, clock.now());
+    },
+
+    /**
+     * La passata di redazione della §9, meta' proposta.
+     *
+     * Non tocca niente e non conserva niente: le proposte si ricalcolano a ogni
+     * chiamata dal testo com'e' in quel momento. Una tabella di proposte in
+     * attesa sarebbe la cosa ovvia da aggiungere, e sarebbe un secondo posto
+     * dove il codice fiscale dell'utente resta scritto anche dopo che la scheda
+     * e' stata ripulita.
+     *
+     * Si puo' chiedere su qualsiasi scheda, anche senza il flag: il flag dice
+     * cosa ha pensato l'estrazione, non cosa c'e' davvero nel testo. Una scheda
+     * scritta a mano non passa dall'estrazione e non ha mai il flag.
+     */
+    async proposeRedaction(userId: string, id: string): Promise<RedactionReport> {
+      const row = await detailOrThrow(userId, id);
+      return {
+        procedureId: row.id,
+        proposte: [...proposteDi(row)],
+        contieneDatiSensibili: row.contieneDatiSensibili,
+      };
+    },
+
+    /**
+     * L'altra meta': si applica solo cio' che e' stato confermato.
+     *
+     * Il flag non lo tocca. La §9 chiede «una revisione esplicita» prima della
+     * pubblicazione, e togliere `contieneDatiSensibili` perche' i rilevatori
+     * non trovano piu' niente vorrebbe dire far dichiarare alle regex che la
+     * scheda e' pulita — quando l'unica cosa che sanno e' che non riconoscono
+     * piu' nessuno dei quattro formati che conoscono. Il nome dell'ex moglie di
+     * un cliente non ha un checksum. Il flag resta finche' non lo toglie una
+     * persona, con la `PATCH`, e quella e' la revisione esplicita.
+     */
+    async applyRedaction(
+      userId: string,
+      id: string,
+      body: ApplyRedactionBody,
+    ): Promise<ProcedureDetail> {
+      const row = await detailOrThrow(userId, id);
+      const disponibili = idProposti(row);
+
+      // Tutto o niente. Un id che non si ritrova significa che il testo e'
+      // cambiato fra la lettura e questa chiamata: gli offset degli altri id
+      // valgono per una versione della scheda che non esiste piu', e applicarli
+      // lo stesso cancellerebbe caratteri scelti guardando un altro testo.
+      const sconosciute = body.conferme.filter((c) => !disponibili.has(c));
+      if (sconosciute.length > 0) {
+        throw AppError.conflict(
+          `La scheda e' cambiata da quando hai chiesto le proposte: ${String(sconosciute.length)} conferme non corrispondono piu' a niente. Rileggi le proposte e riprova`,
+        );
+      }
+
+      const patch = patchDiRedazione(row, new Set(body.conferme));
+      return aggiorna(userId, id, patch);
     },
   };
 }

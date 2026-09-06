@@ -14,6 +14,7 @@ import {
   type SearchResult,
   type UpdateProcedureBodyInput,
 } from "./procedures.js";
+import { redactionReportSchema, type RedactionReport } from "./redaction.js";
 import {
   RECORDING_UPLOAD_FIELDS,
   recordingStateSchema,
@@ -156,6 +157,23 @@ export interface ApiClient {
   archiveProcedure(id: string): Promise<ProcedureDetail>;
   /** §8: un esito `CAMBIATA` riporta la scheda in `DA_RIVEDERE`. */
   recordExecution(id: string, body: CreateExecutionBodyInput): Promise<ProcedureDetail>;
+  /**
+   * §9: cosa il server proporrebbe di sostituire, senza sostituire niente.
+   *
+   * Si puo' chiamare quando si vuole e quante volte si vuole: e' una lettura.
+   * Gli `id` che torna valgono per la scheda com'e' adesso — se qualcuno la
+   * modifica nel frattempo, `applyRedaction` rifiuta invece di applicare a un
+   * testo diverso da quello mostrato.
+   */
+  proposeRedaction(id: string): Promise<RedactionReport>;
+  /**
+   * §9: applica solo le sostituzioni confermate.
+   *
+   * Il corpo contiene gli `id` di `proposeRedaction` e nient'altro. Il testo
+   * finale lo ricalcola il server: mandarglielo renderebbe questa chiamata una
+   * `PATCH` travestita.
+   */
+  applyRedaction(id: string, conferme: readonly string[]): Promise<ProcedureDetail>;
   /** §7: full-text italiano e semantica pgvector, fusi. */
   search(query: SearchQueryInput): Promise<SearchResult>;
 }
@@ -524,6 +542,31 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           method: "POST",
           path: `/api/procedures/${encodeURIComponent(id)}/executions`,
           body,
+          schema: procedureDetailSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    proposeRedaction(id: string): Promise<RedactionReport> {
+      return send(
+        {
+          method: "GET",
+          path: `/api/procedures/${encodeURIComponent(id)}/redazione`,
+          schema: redactionReportSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    applyRedaction(id: string, conferme: readonly string[]): Promise<ProcedureDetail> {
+      return send(
+        {
+          method: "POST",
+          path: `/api/procedures/${encodeURIComponent(id)}/redazione`,
+          body: { conferme: [...conferme] },
           schema: procedureDetailSchema,
           auth: true,
         },
