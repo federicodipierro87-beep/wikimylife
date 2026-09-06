@@ -180,6 +180,17 @@ export interface RecordingRepository {
   findForUser(userId: string, id: string): Promise<RecordingDetail | null>;
 
   /**
+   * Le registrazioni dell'utente che non sono ancora diventate una scheda,
+   * dalla piu' recente.
+   *
+   * "Non ancora" e' tutto cio' che non e' `ESTRATTO`: quelle estratte hanno gia'
+   * una scheda, e comparirebbero due volte nella stessa lista dicendo la stessa
+   * cosa. Le altre — in attesa, in lavorazione, fallite, sospette duplicate —
+   * esistono solo qui, e senza questa query non esistono affatto per l'utente.
+   */
+  listPending(userId: string, limit: number): Promise<readonly RecordingDetail[]>;
+
+  /**
    * Rimette in coda: torna a BOZZA_AUDIO, azzera l'errore, incrementa
    * `retryCount`. `null` se la registrazione non e' dell'utente, non esiste, o
    * e' gia' in elaborazione.

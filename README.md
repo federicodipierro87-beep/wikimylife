@@ -111,6 +111,7 @@ registrazione di un altro utente non si riprocessa, e non lo si viene a sapere.
 ```
 POST /api/recordings           multipart: audio + metadati di cattura
                                → 202 { id, status: "BOZZA_AUDIO" }
+GET  /api/recordings           quelle che non sono ancora una scheda
 GET  /api/recordings/:id       stato di avanzamento
 POST /api/recordings/:id/retry riprocessa dalla trascrizione → 202
 ```
@@ -370,6 +371,27 @@ sette ricerche ibride, cioè sette embedding pagati per vederne uno solo.
 esce senza toccare nulla. Se non è cambiato niente non parte nessuna `PATCH`
 vuota, che il contratto rifiuterebbe con un 400 incomprensibile per chi ha solo
 premuto un pulsante.
+
+**Ciò che non è ancora una scheda si vede in cima all'elenco.** Una registrazione
+che fallisce non produce nessuna procedura, e le procedure sono l'unica cosa che
+l'app elencava: fino a ieri l'audio era al sicuro e l'errore registrato, ma per
+chi aveva parlato al telefono la registrazione era sparita — e `/retry` esisteva
+per un id che nessuna schermata poteva conoscere. Sta lì e non su una schermata
+sua perché una voce di menu si apre solo se si sospetta già che qualcosa sia
+andato storto, mentre il punto è che non lo si sospetta. Ogni riga porta quando,
+quanto lunga e dove, che è quanto resta per riconoscere un vocale senza titolo,
+e la trascrizione se c'è: è stata pagata comunque, ed è l'unico modo di non
+perdere quello che si era detto.
+
+Il pulsante «riprova» compare solo dove premerlo cambia qualcosa. Durante
+un'attesa cambia — salta il backoff. Su una in lavorazione no, e il server lo
+rifiuterebbe. Su un duplicato nemmeno: la deduplicazione è deterministica,
+quindi rielaborare lo stesso audio ricade nello stesso verdetto, e un pulsante
+che riporta al punto di partenza è peggio di nessun pulsante — lì la riga dice a
+quale scheda somiglia e suggerisce di aprire quella. Il polling parte solo se in
+lista c'è qualcosa che può muoversi da solo: una lista di sole registrazioni
+ferme non cambia finché nessuno preme niente, e continuare a chiederla sarebbe
+una richiesta ogni cinque secondi per ricevere sempre la stessa risposta.
 
 **La redazione parte con niente selezionato.** Partire con tutto spuntato avrebbe
 reso la schermata un pulsante «conferma» con del testo intorno, e il «una per
@@ -709,7 +731,11 @@ deve portarsi via la risposta. Della Fase 4: lo svuotamento della coda (ordine d
 invio, `drain()` rientrante, un 401 che marca invece di riprovare all'infinito,
 una rete assente che lascia tutto in coda), le regole di presentazione con un
 *adesso* fisso — un test che legge l'orologio di sistema fallisce da solo a
-mezzanotte — e il giro rotta ⇄ hash ⇄ rotta. Della Fase 5: la firma SigV4 contro
+mezzanotte — e il giro rotta ⇄ hash ⇄ rotta. Fra le regole di presentazione,
+quella che conta di più è cosa dire di una registrazione che non è ancora una
+scheda: una appena caricata e una che ha appena fallito hanno lo stesso
+`status`, e un test che guardasse solo quello passerebbe anche con la funzione
+sbagliata. Della Fase 5: la firma SigV4 contro
 i vettori ufficiali di AWS, e le regole di `loadConfig` che in produzione
 rifiutano lo storage effimero, il CORS vuoto e i provider fake. Della sicurezza:
 l'aritmetica del limitatore con un orologio iniettato — la finestra che si riapre

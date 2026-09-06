@@ -3,6 +3,7 @@ import { useState } from "react";
 import { apiClient } from "../api";
 import { navigate } from "../router";
 import { useAsync } from "../useAsync";
+import { PendingRecordings } from "./PendingRecordings";
 import { ProcedureCard } from "./ProcedureCard";
 
 /**
@@ -72,6 +73,8 @@ export function ListScreen(): React.JSX.Element {
           </button>
         ))}
       </div>
+
+      <PendingRecordings />
 
       {stato.kind === "attesa" && <p className="muto">Carico…</p>}
 

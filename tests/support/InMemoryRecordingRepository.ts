@@ -286,6 +286,13 @@ export class InMemoryRecordingRepository implements RecordingRepository {
     return row === undefined || row.userId !== userId ? null : row;
   }
 
+  async listPending(userId: string, limit: number): Promise<readonly RecordingDetail[]> {
+    return [...this.#recordings.values()]
+      .filter((r) => r.userId === userId && r.status !== RecordingStatus.ESTRATTO)
+      .sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime())
+      .slice(0, limit);
+  }
+
   async requeue(userId: string, id: string, at: Date): Promise<RecordingDetail | null> {
     const row = this.#recordings.get(id);
     if (

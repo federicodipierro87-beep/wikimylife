@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  MAX_PENDING_RECORDINGS,
   extractionContractSchema,
   type CaptureMetadata,
   type ExtractionIssue,
@@ -121,6 +122,8 @@ export interface RecordingsService {
     input: { readonly audio: UploadedAudio; readonly metadata: CaptureMetadata },
   ): Promise<RecordingState>;
   find(userId: string, id: string): Promise<RecordingState>;
+  /** Cio' che e' stato raccontato e non e' ancora una scheda. */
+  pending(userId: string): Promise<readonly RecordingState[]>;
   retry(userId: string, id: string): Promise<RecordingState>;
   /** I byte originali, per il player in fondo alla scheda (§ Fase 4). */
   audio(userId: string, id: string): Promise<UploadedAudio>;
@@ -186,6 +189,11 @@ export function createRecordingsService(deps: RecordingsServiceDeps): Recordings
         throw AppError.notFound("Registrazione non trovata");
       }
       return toRecordingState(detail);
+    },
+
+    async pending(userId: string): Promise<readonly RecordingState[]> {
+      const details = await repo.listPending(userId, MAX_PENDING_RECORDINGS);
+      return details.map(toRecordingState);
     },
 
     async retry(userId: string, id: string): Promise<RecordingState> {

@@ -7,6 +7,7 @@ import {
   Visibility,
   authSessionSchema,
   errorBodySchema,
+  pendingRecordingsSchema,
   recordingStateSchema,
   type CaptureMetadataInput,
   type ExtractionContract,
@@ -918,6 +919,82 @@ describe("fallimenti", () => {
     expect(res.status).toBe(404);
     expect(errorCode(res.body)).toBe("NOT_FOUND");
     expect(await server.prisma.procedure.count()).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cio' che non e' ancora diventato una scheda
+// ---------------------------------------------------------------------------
+
+describe("GET /api/recordings", () => {
+  async function sospese(token: string): Promise<readonly RecordingState[]> {
+    const res = await call(server, "GET", "/api/recordings", { accessToken: token });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return pendingRecordingsSchema.parse(res.body).items;
+  }
+
+  it("elenca una registrazione appena caricata", async () => {
+    const { token } = await signup();
+    const state = await carica(token);
+
+    const items = await sospese(token);
+    expect(items.map((r) => r.id)).toEqual([state.id]);
+    expect(items[0]?.status).toBe(RecordingStatus.BOZZA_AUDIO);
+  });
+
+  it("una registrazione diventata scheda esce dalla lista", async () => {
+    const { token } = await signup();
+    stt.enqueue("qualcosa");
+    llm.enqueue(buildExtractionContract());
+
+    await carica(token);
+    expect((await elabora()).kind).toBe("ESTRATTO");
+
+    // Ha gia' la sua scheda nell'elenco delle procedure: qui direbbe la stessa
+    // cosa una seconda volta.
+    expect(await sospese(token)).toEqual([]);
+  });
+
+  it("una registrazione fallita resta in lista, con l'errore e l'attesa", async () => {
+    const { token } = await signup();
+    stt.failNext();
+
+    const state = await carica(token);
+    await elabora();
+
+    // E' il motivo per cui questa rotta esiste: senza, una registrazione
+    // fallita non compare da nessuna parte — le schede sono l'unica cosa che
+    // l'app elenca, e questa non ne ha prodotta una — quindi non c'e' modo di
+    // sapere che esiste ne' di scoprirne l'id da passare a /retry.
+    const items = await sospese(token);
+    expect(items.map((r) => r.id)).toEqual([state.id]);
+    expect(items[0]?.lastError?.code).toBe(IngestionError.trascrizioneFallita);
+    expect(items[0]?.nextAttemptAt).not.toBeNull();
+  });
+
+  it("non mostra le registrazioni di un altro utente", async () => {
+    const primo = await signup();
+    await carica(primo.token);
+
+    const secondo = await signup();
+    expect(await sospese(secondo.token)).toEqual([]);
+  });
+
+  it("le da' dalla piu' recente", async () => {
+    const { token } = await signup();
+    const vecchia = await carica(token, {
+      metadata: metadata({ recordedAt: "2026-03-01T08:00:00.000Z" }),
+    });
+    const nuova = await carica(token, {
+      metadata: metadata({ recordedAt: "2026-03-01T10:00:00.000Z" }),
+    });
+
+    expect((await sospese(token)).map((r) => r.id)).toEqual([nuova.id, vecchia.id]);
+  });
+
+  it("richiede un token", async () => {
+    const res = await call(server, "GET", "/api/recordings");
+    expect(res.status).toBe(401);
   });
 });
 

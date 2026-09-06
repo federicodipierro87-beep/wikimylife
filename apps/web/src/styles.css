@@ -354,6 +354,84 @@ button:focus-visible {
   padding: 3rem 1rem;
 }
 
+/* --------------------------------------------------------------------------
+   Registrazioni non ancora diventate schede
+   -------------------------------------------------------------------------- */
+
+.sospese {
+  margin-bottom: 1.25rem;
+}
+
+.sospese h2 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 0 0 0.6rem;
+}
+
+.sospesa {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  /* Il bordo sinistro colorato distingue le quattro situazioni senza aggiungere
+     una parola: il testo dice gia' cosa succede, il colore dice quanto e'
+     grave a chi sta scorrendo. */
+  border-left-width: 3px;
+  border-radius: 0.75rem;
+  background: var(--card);
+}
+
+.sospesa--attesa,
+.sospesa--lavorazione {
+  border-left-color: var(--muted);
+}
+
+.sospesa--ritento {
+  border-left-color: var(--warn);
+}
+
+.sospesa--ferma {
+  border-left-color: var(--bad);
+}
+
+.sospesa--duplicato {
+  border-left-color: var(--warn);
+}
+
+.sospesa__stato {
+  margin: 0;
+  font-weight: 600;
+}
+
+.sospesa__dettaglio {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--warn);
+}
+
+.sospesa__trascrizione {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+  font-style: italic;
+  /* Tre righe bastano a riconoscere il vocale; per intero e' un muro di testo
+     su una schermata che deve restare scorribile. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.sospesa .bottone {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+  padding-left: 0;
+}
+
 .paginazione {
   display: flex;
   align-items: center;

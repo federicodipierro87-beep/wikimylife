@@ -1,6 +1,7 @@
-import type { ProcedureDetail, ProcedurePitfall } from "@wikimylife/shared";
+import type { ProcedureDetail, ProcedurePitfall, RecordingState } from "@wikimylife/shared";
 import { describe, expect, it } from "vitest";
 import {
+  avvisoDi,
   badgesOf,
   formatCosto,
   formatDurata,
@@ -237,5 +238,109 @@ describe("sezioniDi", () => {
     );
 
     expect(sezioni.map((s) => s.kind)).toEqual(["step"]);
+  });
+});
+
+/**
+ * Le registrazioni che non sono ancora schede.
+ *
+ * Il caso che conta e' `ritento`: una registrazione appena fallita ha lo stesso
+ * `status` di una appena caricata, e distinguerle e' l'unica ragione per cui
+ * `nextAttemptAt` sta nel contratto. Un test che guardasse solo lo stato
+ * passerebbe anche con la funzione sbagliata.
+ */
+describe("avvisoDi", () => {
+  function rec(over: Partial<RecordingState> = {}): RecordingState {
+    return {
+      id: "rec-1",
+      status: "BOZZA_AUDIO",
+      recordedAt: "2026-03-01T11:00:00.000Z",
+      durationMs: 42_000,
+      mimeType: "audio/webm",
+      sizeBytes: 1024,
+      capturedOffline: false,
+      placeLabel: null,
+      transcript: null,
+      transcriptSource: null,
+      procedureId: null,
+      retryCount: 0,
+      lastError: null,
+      nextAttemptAt: null,
+      duplicate: null,
+      extraction: null,
+      issues: [],
+      updatedAt: "2026-03-01T11:00:00.000Z",
+      ...over,
+    };
+  }
+
+  const errore = { code: "TRASCRIZIONE_FALLITA", message: "Non sono riuscito a sentire l'audio.", at: "2026-03-01T11:59:00.000Z" };
+
+  it("una registrazione appena caricata e' semplicemente in attesa", () => {
+    const a = avvisoDi(rec(), ADESSO);
+    expect(a?.kind).toBe("attesa");
+    // Niente pulsante: non e' successo niente da riprovare, e offrirlo
+    // suggerirebbe che qualcosa sia gia' andato storto.
+    expect(a?.riprovabile).toBe(false);
+  });
+
+  it("distingue un'attesa dopo un fallimento da un'attesa e basta", () => {
+    // Stesso `status` della prova precedente. Cambia solo `nextAttemptAt`.
+    const a = avvisoDi(
+      rec({ lastError: errore, nextAttemptAt: "2026-03-01T12:10:00.000Z" }),
+      ADESSO,
+    );
+    expect(a?.kind).toBe("ritento");
+    expect(a?.testo).toContain("Ci riprovo");
+    expect(a?.dettaglio).toBe(errore.message);
+    // Il pulsante salta il backoff: e' l'unica cosa che puo' ancora cambiare.
+    expect(a?.riprovabile).toBe(true);
+  });
+
+  it("un'attesa gia' scaduta non torna a sembrare una registrazione nuova", () => {
+    const a = avvisoDi(
+      rec({ lastError: errore, nextAttemptAt: "2026-03-01T11:59:30.000Z" }),
+      ADESSO,
+    );
+    expect(a?.kind).toBe("attesa");
+    expect(a?.testo).toBe("Ci riprovo a momenti");
+    expect(a?.riprovabile).toBe(true);
+  });
+
+  it("in lavorazione non si riprova", () => {
+    // Un retry qui sarebbe rifiutato dal server, e il pulsante prometterebbe
+    // qualcosa che non puo' mantenere.
+    const a = avvisoDi(rec({ status: "IN_ELABORAZIONE" }), ADESSO);
+    expect(a?.kind).toBe("lavorazione");
+    expect(a?.riprovabile).toBe(false);
+  });
+
+  it("una registrazione ferma dice perche', con le parole del server", () => {
+    const a = avvisoDi(rec({ status: "ESTRAZIONE_FALLITA", lastError: errore }), ADESSO);
+    expect(a?.kind).toBe("ferma");
+    expect(a?.dettaglio).toBe(errore.message);
+    expect(a?.dettaglio).not.toContain("TRASCRIZIONE_FALLITA");
+    expect(a?.riprovabile).toBe(true);
+  });
+
+  it("un duplicato indica la scheda a cui somiglia e non offre di riprovare", () => {
+    // La deduplicazione e' deterministica: riprovare ricadrebbe nello stesso
+    // verdetto, e un pulsante che riporta al punto di partenza e' peggio di
+    // nessun pulsante.
+    const a = avvisoDi(
+      rec({
+        status: "DUPLICATO_SOSPETTO",
+        duplicate: { procedureId: "p-1", titolo: "Rinnovo del passaporto", similarity: 0.91 },
+      }),
+      ADESSO,
+    );
+    expect(a?.kind).toBe("duplicato");
+    expect(a?.dettaglio).toContain("Rinnovo del passaporto");
+    expect(a?.riprovabile).toBe(false);
+  });
+
+  it("una registrazione estratta non ha niente da dire in questa lista", () => {
+    // Ha gia' la sua scheda: comparirebbe due volte dicendo la stessa cosa.
+    expect(avvisoDi(rec({ status: "ESTRATTO", procedureId: "p-1" }), ADESSO)).toBeNull();
   });
 });

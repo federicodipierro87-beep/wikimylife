@@ -31,6 +31,25 @@ export function createRecordingsRouter(deps: {
     res.status(202).json(state);
   });
 
+  /**
+   * Cio' che e' stato raccontato e non e' ancora una scheda.
+   *
+   * Sta prima di `/:id` perche' Express prova le rotte in ordine di
+   * registrazione, e `/:id` accetterebbe volentieri la stringa vuota di `/`.
+   *
+   * Senza questa rotta il resto della pipeline e' scritto per nessuno: una
+   * registrazione che fallisce non compare in nessuna lista — le schede sono
+   * l'unica cosa che l'app elenca, e una registrazione fallita non ne ha
+   * prodotta una — quindi non c'e' modo di sapere che esiste, ne' di scoprirne
+   * l'id da passare a `/retry`. L'audio era al sicuro e l'errore registrato, ma
+   * per chi ha parlato al telefono era sparito comunque.
+   */
+  router.get("/", async (req, res) => {
+    const { userId } = authContext(req);
+    const items = await deps.recordingsService.pending(userId);
+    res.status(200).json({ items });
+  });
+
   router.get("/:id", async (req, res) => {
     const { userId } = authContext(req);
     const state = await deps.recordingsService.find(userId, req.params.id);

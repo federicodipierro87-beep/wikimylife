@@ -442,6 +442,20 @@ export class PrismaRecordingRepository implements RecordingRepository {
     return row === null ? null : toDetail(row);
   }
 
+  async listPending(userId: string, limit: number): Promise<readonly RecordingDetail[]> {
+    const rows = await this.#prisma.recording.findMany({
+      where: { userId, status: { not: RecordingStatus.ESTRATTO } },
+      // Per `recordedAt` e non per `updatedAt`: l'ordine e' quello in cui le
+      // cose sono state raccontate, che e' l'unico che l'utente ricorda. Con
+      // `updatedAt` un tentativo automatico riordinerebbe la lista da solo,
+      // sotto gli occhi di chi la sta guardando.
+      orderBy: { recordedAt: "desc" },
+      take: limit,
+      include: WITH_DUPLICATE,
+    });
+    return rows.map(toDetail);
+  }
+
   async requeue(userId: string, id: string, at: Date): Promise<RecordingDetail | null> {
     // Non si rimette in coda cio' che e' gia' in volo (IN_ELABORAZIONE) ne' cio'
     // che ha gia' prodotto una scheda (ESTRATTO): nel primo caso avremmo due

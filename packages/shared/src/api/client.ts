@@ -17,8 +17,10 @@ import {
 import { redactionReportSchema, type RedactionReport } from "./redaction.js";
 import {
   RECORDING_UPLOAD_FIELDS,
+  pendingRecordingsSchema,
   recordingStateSchema,
   type CaptureMetadataInput,
+  type PendingRecordings,
   type RecordingState,
 } from "./recordings.js";
 import {
@@ -134,6 +136,8 @@ export interface ApiClient {
     readonly metadata: CaptureMetadataInput;
     readonly filename?: string | undefined;
   }): Promise<RecordingState>;
+  /** Le registrazioni che non sono ancora diventate una scheda. */
+  listPendingRecordings(): Promise<PendingRecordings>;
   getRecording(id: string): Promise<RecordingState>;
   /** Rimette in coda dalla trascrizione. */
   retryRecording(id: string): Promise<RecordingState>;
@@ -438,6 +442,18 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           path: "/api/recordings",
           form,
           schema: recordingStateSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    listPendingRecordings(): Promise<PendingRecordings> {
+      return send(
+        {
+          method: "GET",
+          path: "/api/recordings",
+          schema: pendingRecordingsSchema,
           auth: true,
         },
         true,

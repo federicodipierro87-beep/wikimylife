@@ -147,6 +147,25 @@ export const recordingStateSchema = z
   })
   .strict();
 
+/**
+ * Le registrazioni che non sono ancora diventate una scheda.
+ *
+ * Non pagina, e non e' una svista: e' una lista di cose in sospeso, e se e'
+ * lunga il problema non e' che manca il pulsante «successive». `MAX` esiste
+ * solo per non spedire un archivio intero a chi ha lasciato il worker spento
+ * per un mese.
+ */
+export const pendingRecordingsSchema = z
+  .object({
+    items: z.array(recordingStateSchema),
+  })
+  .strict();
+
+export type PendingRecordings = z.infer<typeof pendingRecordingsSchema>;
+
+/** Quante se ne restituiscono al massimo. */
+export const MAX_PENDING_RECORDINGS = 50;
+
 export type CaptureMetadata = z.infer<typeof captureMetadataSchema>;
 export type CaptureMetadataInput = z.input<typeof captureMetadataSchema>;
 export type ExtractionIssue = z.infer<typeof extractionIssueSchema>;

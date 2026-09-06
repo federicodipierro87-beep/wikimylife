@@ -1,4 +1,9 @@
-import type { ProcedureDetail, ProcedurePitfall, ProcedureSummary } from "@wikimylife/shared";
+import type {
+  ProcedureDetail,
+  ProcedurePitfall,
+  ProcedureSummary,
+  RecordingState,
+} from "@wikimylife/shared";
 
 /**
  * Le decisioni di presentazione, separate dai componenti.
@@ -157,6 +162,96 @@ export function formatQuando(iso: string | null, adesso = new Date()): string | 
   }
 
   return "adesso";
+}
+
+// ---------------------------------------------------------------------------
+// Registrazioni non ancora diventate schede
+// ---------------------------------------------------------------------------
+
+export interface AvvisoRegistrazione {
+  readonly kind: "attesa" | "lavorazione" | "ritento" | "ferma" | "duplicato";
+  /** Cosa sta succedendo, in una riga. */
+  readonly testo: string;
+  /** Perche', quando c'e' un perche'. */
+  readonly dettaglio: string | null;
+  /** Se ha senso offrire «riprova»: cioe' se premerlo puo' cambiare qualcosa. */
+  readonly riprovabile: boolean;
+}
+
+/**
+ * Che cosa dire di una registrazione che non e' ancora una scheda.
+ *
+ * Il caso che giustifica questa funzione e' `ritento`. Una registrazione che ha
+ * appena fallito resta in `BOZZA_AUDIO`, che e' lo stesso stato di una appena
+ * caricata: guardando il solo `status` l'app direbbe «in attesa» per un'ora
+ * dopo il terzo fallimento, cioe' mentirebbe due volte — nascondendo che
+ * qualcosa e' andato storto, e facendo sembrare fermo un ciclo che sta
+ * lavorando. La differenza sta in `nextAttemptAt`, che per questo e' nel
+ * contratto.
+ *
+ * `riprovabile` non e' «il pulsante e' abilitato» ma «premerlo cambia
+ * qualcosa». Durante un'attesa cambia: salta il backoff. In lavorazione no, e
+ * su un duplicato nemmeno — la deduplicazione e' deterministica, quindi
+ * rielaborare lo stesso audio ricade nello stesso verdetto, e un pulsante che
+ * riporta al punto di partenza e' peggio di nessun pulsante.
+ */
+export function avvisoDi(r: RecordingState, adesso = new Date()): AvvisoRegistrazione | null {
+  if (r.status === "ESTRATTO") {
+    // Ha gia' la sua scheda: comparirebbe due volte nella stessa lista.
+    return null;
+  }
+
+  if (r.status === "IN_ELABORAZIONE") {
+    return {
+      kind: "lavorazione",
+      testo: "La sto ascoltando…",
+      dettaglio: null,
+      riprovabile: false,
+    };
+  }
+
+  if (r.status === "DUPLICATO_SOSPETTO") {
+    return {
+      kind: "duplicato",
+      testo: "Sembra una cosa che mi avevi gia' raccontato",
+      dettaglio:
+        r.duplicate === null
+          ? null
+          : `Somiglia a «${r.duplicate.titolo}». Se e' la stessa procedura, aprila e aggiungi li' quello che e' cambiato.`,
+      riprovabile: false,
+    };
+  }
+
+  if (r.status === "ESTRAZIONE_FALLITA") {
+    return {
+      kind: "ferma",
+      testo: "Non sono riuscito a ricavarne una scheda",
+      // Il messaggio del server e non il codice: `TRASCRIZIONE_FALLITA` non e'
+      // una frase, e chi legge non ha il codice sorgente accanto.
+      dettaglio: r.lastError?.message ?? null,
+      riprovabile: true,
+    };
+  }
+
+  // Da qui in giu' e' BOZZA_AUDIO, che vuol dire due cose diverse.
+  const attesa = r.nextAttemptAt === null ? null : new Date(r.nextAttemptAt);
+  if (attesa !== null && !Number.isNaN(attesa.getTime()) && attesa.getTime() > adesso.getTime()) {
+    return {
+      kind: "ritento",
+      testo: `Ci riprovo ${formatQuando(r.nextAttemptAt, adesso) ?? "a breve"}`,
+      dettaglio: r.lastError?.message ?? null,
+      riprovabile: true,
+    };
+  }
+
+  return {
+    kind: "attesa",
+    // Un fallimento gia' scaduto e' ancora un fallimento: dirlo evita che una
+    // registrazione al secondo giro sembri appena arrivata.
+    testo: r.lastError === null ? "In attesa di essere elaborata" : "Ci riprovo a momenti",
+    dettaglio: r.lastError?.message ?? null,
+    riprovabile: r.lastError !== null,
+  };
 }
 
 // ---------------------------------------------------------------------------
