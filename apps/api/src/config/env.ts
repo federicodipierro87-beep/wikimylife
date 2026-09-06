@@ -81,6 +81,42 @@ const baseSchema = z.object({
   SIGNUP_ENABLED: booleanFromString.default(true),
 
   /**
+   * Tentativi ammessi su login, signup e refresh, per IP e per rotta, nella
+   * finestra sotto.
+   *
+   * Dieci al minuto: chi conosce la propria password ne usa uno, chi la ricorda
+   * male tre o quattro, e chi ne prova diecimila si ferma. Il valore e'
+   * configurabile per una ragione sola — un ufficio dietro NAT e' un IP solo, e
+   * quel giorno serve poterlo alzare senza un deploy di codice.
+   */
+  AUTH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
+  AUTH_RATE_LIMIT_WINDOW_SEC: z.coerce.number().int().positive().default(60),
+
+  /**
+   * Quanti proxy stanno davanti all'API. Non un booleano, e la differenza e'
+   * l'intera tenuta del limite dei tentativi.
+   *
+   * `trust proxy: true` dice a Express di fidarsi di TUTTI gli indirizzi in
+   * `X-Forwarded-For` e di prendere il primo da sinistra. Quel primo lo scrive
+   * il client: chiunque puo' mandare `X-Forwarded-For: 1.2.3.4`, cambiarlo a
+   * ogni richiesta, e ottenere un budget nuovo ogni volta. Il limitatore
+   * continuerebbe a funzionare, a rispondere 429 a chi non falsifica niente, e a
+   * non fermare nessuno.
+   *
+   * Con un numero Express conta da destra: con `1` prende l'indirizzo scritto
+   * dall'ultimo proxy — quello di Railway — che e' l'unico che il client non
+   * puo' toccare. Le voci che ha aggiunto lui restano dietro le eventuali
+   * falsificazioni, non davanti.
+   *
+   * Zero in sviluppo: senza proxy `req.ip` e' quello del socket, e
+   * `X-Forwarded-For` va ignorato del tutto. Uno in produzione, che e' la
+   * topologia descritta in «Deploy». Si alza solo aggiungendo un altro proxy
+   * davanti (una CDN, per esempio), e allora va alzato davvero: un valore piu'
+   * basso del numero di salti riporta il problema di prima.
+   */
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).optional(),
+
+  /**
    * Le origini ammesse dal CORS, separate da virgola. Vuoto = nessuna origine
    * esterna, cioe' solo chiamate dalla stessa origine o da riga di comando.
    *
@@ -212,6 +248,8 @@ export interface AuthConfig {
   readonly accessTokenTtlSeconds: number;
   readonly refreshTokenTtlSeconds: number;
   readonly signupEnabled: boolean;
+  /** Millisecondi e conteggio, gia' convertiti per il middleware. */
+  readonly rateLimit: { readonly windowMs: number; readonly max: number };
 }
 
 export interface S3Settings {
@@ -230,6 +268,8 @@ export interface AppConfig {
   readonly databaseUrl: string;
   /** Gia' separate e ripulite: si veda `parseOrigins`. */
   readonly corsOrigins: readonly string[];
+  /** Salti di proxy da scartare per ottenere l'IP del client. Mai un booleano. */
+  readonly trustProxyHops: number;
   readonly auth: AuthConfig;
   readonly providers: {
     readonly transcription: Env["TRANSCRIPTION_PROVIDER"];
@@ -282,11 +322,20 @@ function toConfig(env: Env): AppConfig {
     logLevel: env.LOG_LEVEL,
     databaseUrl: env.DATABASE_URL,
     corsOrigins: parseOrigins(env.CORS_ORIGINS),
+    // Il default segue l'ambiente perche' segue la topologia: in produzione c'e'
+    // il proxy di Railway, in locale non c'e' niente. Chi ne mette un altro
+    // davanti lo dichiara, e nel frattempo nessuno deve ricordarsi una variabile
+    // il cui unico sintomo, se dimenticata, e' un limite che non limita.
+    trustProxyHops: env.TRUST_PROXY_HOPS ?? (env.NODE_ENV === "production" ? 1 : 0),
     auth: {
       accessSecret: env.JWT_ACCESS_SECRET,
       accessTokenTtlSeconds: env.ACCESS_TOKEN_TTL_MIN * 60,
       refreshTokenTtlSeconds: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60,
       signupEnabled: env.SIGNUP_ENABLED,
+      rateLimit: {
+        windowMs: env.AUTH_RATE_LIMIT_WINDOW_SEC * 1000,
+        max: env.AUTH_RATE_LIMIT_MAX,
+      },
     },
     providers: {
       transcription: env.TRANSCRIPTION_PROVIDER,

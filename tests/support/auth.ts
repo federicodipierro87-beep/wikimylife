@@ -12,6 +12,10 @@ export function testAuthConfig(overrides: Partial<AuthConfig> = {}): AuthConfig 
     accessTokenTtlSeconds: 60,
     refreshTokenTtlSeconds: 7 * 24 * 60 * 60,
     signupEnabled: true,
+    // Il servizio di autenticazione non lo legge: il limite e' un middleware
+    // HTTP, e questo campo sta in `AuthConfig` solo perche' e' li' che vive il
+    // resto della configurazione delle credenziali. E' qui per il compilatore.
+    rateLimit: { windowMs: 60_000, max: 10 },
     ...overrides,
   };
 }

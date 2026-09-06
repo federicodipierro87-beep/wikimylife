@@ -229,6 +229,12 @@ export function compose(config: AppConfig, overrides?: {
     now: () => clock.now(),
     version: API_VERSION,
     corsOrigins: config.corsOrigins,
+    // HSTS solo in produzione: e' l'unico ambiente in cui l'API sta dietro
+    // HTTPS, e mandarlo da `http://localhost` avvelenerebbe il browser dello
+    // sviluppatore per un anno. Si veda securityHeaders.ts.
+    hsts: config.nodeEnv === "production",
+    authRateLimit: config.auth.rateLimit,
+    trustProxyHops: config.trustProxyHops,
   });
 
   return {

@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import express, { type Express, type RequestHandler } from "express";
 import { createErrorHandler, notFoundHandler } from "./errors/errorHandler.js";
 import { createCors } from "./http/middleware/cors.js";
+import { createRateLimit } from "./http/middleware/rateLimit.js";
+import { createSecurityHeaders } from "./http/middleware/securityHeaders.js";
 import type { Logger } from "./logger.js";
 import { createAuthRouter } from "./routes/auth.routes.js";
 import { createHealthRouter } from "./routes/health.routes.js";
@@ -34,6 +36,23 @@ export interface AppDeps {
   readonly version: string;
   /** Origini ammesse dal CORS. Vuoto = nessuna chiamata cross-origin. */
   readonly corsOrigins: readonly string[];
+  /** HSTS: solo dove l'API e' servita in HTTPS. Si veda securityHeaders.ts. */
+  readonly hsts: boolean;
+  /**
+   * Tentativi ammessi per IP e per rotta sulle credenziali, in un minuto.
+   *
+   * Iniettato perche' i test end-to-end devono poterlo abbassare: provare il
+   * limite vero significherebbe fare venti login falliti a colpi di argon2id,
+   * e argon2id e' lento apposta.
+   */
+  readonly authRateLimit: { readonly windowMs: number; readonly max: number };
+  /**
+   * Salti di proxy da scartare per arrivare all'IP del client.
+   *
+   * E' il valore da cui dipende che `req.ip` sia falsificabile o no, e quindi
+   * che il limite qui sopra conti qualcosa.
+   */
+  readonly trustProxyHops: number;
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -41,8 +60,12 @@ export function createApp(deps: AppDeps): Express {
   const startedAt = deps.now();
 
   app.disable("x-powered-by");
-  // Dietro il proxy di Railway: senza, req.ip e' sempre quello del proxy.
-  app.set("trust proxy", true);
+  // Un numero, non `true`. `true` direbbe a Express di prendere il primo
+  // indirizzo di `X-Forwarded-For`, che lo scrive il client: chiunque potrebbe
+  // cambiarlo a ogni richiesta e avere un budget nuovo ogni volta. Con un numero
+  // Express conta da destra, e conta le voci che ha aggiunto il proxy. Si veda
+  // `TRUST_PROXY_HOPS` in config/env.ts.
+  app.set("trust proxy", deps.trustProxyHops);
 
   // Un id per richiesta: e' cio' che lega una risposta 500 anonima allo stack
   // che e' finito su stderr.
@@ -57,6 +80,10 @@ export function createApp(deps: AppDeps): Express {
   // arriva al browser come un errore di rete, che non dice niente a nessuno.
   app.use(createCors({ origins: deps.corsOrigins }));
 
+  // Dopo il CORS: un preflight non ha bisogno di sapere che l'API nega gli
+  // iframe, e aggiungere intestazioni a un 204 vuoto non serve a nessuno.
+  app.use(createSecurityHeaders({ hsts: deps.hsts }));
+
   app.use(express.json({ limit: "1mb" }));
 
   app.use(createHealthRouter({
@@ -68,7 +95,13 @@ export function createApp(deps: AppDeps): Express {
 
   app.use(
     "/api/auth",
-    createAuthRouter({ authService: deps.authService, requireAuth: deps.requireAuth }),
+    createAuthRouter({
+      authService: deps.authService,
+      requireAuth: deps.requireAuth,
+      // Quali rotte proteggere lo decide il router: sa lui quali portano
+      // credenziali e quali no.
+      rateLimit: createRateLimit(deps.authRateLimit),
+    }),
   );
 
   app.use(

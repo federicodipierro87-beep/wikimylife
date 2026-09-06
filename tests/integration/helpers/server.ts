@@ -44,6 +44,12 @@ export interface TestServerOptions {
   readonly refreshTokenTtlDays?: number;
   /** Lista separata da virgola, come la variabile d'ambiente vera. */
   readonly corsOrigins?: string;
+  /**
+   * Alzato di default perche' quasi tutti i file fanno decine di login: con il
+   * valore di produzione la suite si autobloccherebbe, e il fallimento
+   * sembrerebbe un problema di autenticazione. Chi prova il limite lo abbassa.
+   */
+  readonly authRateLimitMax?: number;
 }
 
 export async function startTestServer(options: TestServerOptions = {}): Promise<TestServer> {
@@ -56,6 +62,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     REFRESH_TOKEN_TTL_DAYS: String(options.refreshTokenTtlDays ?? 30),
     SIGNUP_ENABLED: String(options.signupEnabled ?? true),
     CORS_ORIGINS: options.corsOrigins ?? "",
+    AUTH_RATE_LIMIT_MAX: String(options.authRateLimitMax ?? 10_000),
   });
 
   const prisma = testPrisma();

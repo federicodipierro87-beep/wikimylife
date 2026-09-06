@@ -106,6 +106,61 @@ describe("loadConfig — sviluppo", () => {
   });
 });
 
+describe("loadConfig — il limite dei tentativi", () => {
+  it("ha un default utilizzabile: chi non lo configura e' comunque protetto", () => {
+    // E' la differenza fra una difesa e un'opzione. Una variabile dimenticata
+    // non deve lasciare `/login` aperto a diecimila tentativi al minuto.
+    const config = loadConfig({ ...MINIMO });
+    expect(config.auth.rateLimit).toEqual({ windowMs: 60_000, max: 10 });
+  });
+
+  it("la finestra si scrive in secondi e arriva in millisecondi", () => {
+    // Nel pannello si scrivono secondi perche' e' l'unita' in cui si ragiona;
+    // il middleware lavora in millisecondi. La conversione sta in un punto
+    // solo, ed e' qui che si prova che non e' sbagliata di mille.
+    const config = loadConfig({ ...MINIMO, AUTH_RATE_LIMIT_WINDOW_SEC: "300" });
+    expect(config.auth.rateLimit.windowMs).toBe(300_000);
+  });
+
+  it("rifiuta lo zero, che disattiverebbe l'autenticazione", () => {
+    // `max: 0` nega ogni richiesta, finestra dopo finestra: nessuno entra piu'
+    // e il log dice «troppi tentativi» al primo. Meglio non partire.
+    expect(errore({ ...MINIMO, AUTH_RATE_LIMIT_MAX: "0" })).toContain("AUTH_RATE_LIMIT_MAX");
+    expect(errore({ ...MINIMO, AUTH_RATE_LIMIT_WINDOW_SEC: "0" })).toContain(
+      "AUTH_RATE_LIMIT_WINDOW_SEC",
+    );
+  });
+
+  it("rifiuta un valore che non e' un numero", () => {
+    expect(errore({ ...MINIMO, AUTH_RATE_LIMIT_MAX: "molti" })).toContain("AUTH_RATE_LIMIT_MAX");
+  });
+});
+
+describe("loadConfig — i salti di proxy", () => {
+  it("in sviluppo nessuno: X-Forwarded-For va ignorato del tutto", () => {
+    expect(loadConfig({ ...MINIMO }).trustProxyHops).toBe(0);
+  });
+
+  it("in produzione uno, che e' la topologia descritta nel README", () => {
+    expect(loadConfig({ ...PRODUZIONE }).trustProxyHops).toBe(1);
+  });
+
+  it("si puo' alzare per una CDN davanti al proxy", () => {
+    expect(loadConfig({ ...PRODUZIONE, TRUST_PROXY_HOPS: "2" }).trustProxyHops).toBe(2);
+  });
+
+  it("si puo' azzerare anche in produzione", () => {
+    // Chi espone l'API senza nessun proxy davanti deve poterlo dire: con `1`
+    // Express prenderebbe una voce di X-Forwarded-For che nessun proxy ha
+    // scritto, cioe' esattamente quella del client.
+    expect(loadConfig({ ...PRODUZIONE, TRUST_PROXY_HOPS: "0" }).trustProxyHops).toBe(0);
+  });
+
+  it("rifiuta un numero negativo", () => {
+    expect(errore({ ...MINIMO, TRUST_PROXY_HOPS: "-1" })).toContain("TRUST_PROXY_HOPS");
+  });
+});
+
 describe("loadConfig — s3", () => {
   it("accetta una configurazione completa", () => {
     const config = loadConfig({ ...PRODUZIONE });

@@ -22,22 +22,35 @@ import type { AuthService } from "../services/auth.service.js";
 export function createAuthRouter(deps: {
   authService: AuthService;
   requireAuth: RequestHandler;
+  /**
+   * Sta sulle tre rotte che accettano un segreto da chi non e' ancora nessuno,
+   * e su nessun'altra.
+   *
+   * `/logout` ne resta fuori perche' martellarlo non da' niente a chi prova: il
+   * token o e' valido — e allora sta revocando la propria sessione — o non lo
+   * e', e la risposta e' identica. `/me` ne resta fuori perche' e' gia' dietro
+   * `requireAuth`, e limitarlo significherebbe far cadere l'app di un utente
+   * legittimo che ricarica la pagina qualche volta di troppo.
+   */
+  rateLimit: RequestHandler;
 }): Router {
   const router = Router();
 
-  router.post("/signup", async (req, res) => {
+  router.post("/signup", deps.rateLimit, async (req, res) => {
     const input = parseBody(signupRequestSchema, req.body);
     const session = await deps.authService.signup(input);
     res.status(201).json(session);
   });
 
-  router.post("/login", async (req, res) => {
+  router.post("/login", deps.rateLimit, async (req, res) => {
     const input = parseBody(loginRequestSchema, req.body);
     const session = await deps.authService.login(input);
     res.status(200).json(session);
   });
 
-  router.post("/refresh", async (req, res) => {
+  // Un refresh token e' una credenziale come una password: se e' indovinabile,
+  // e' indovinabile a colpi di richieste come tutto il resto.
+  router.post("/refresh", deps.rateLimit, async (req, res) => {
     const input = parseBody(refreshRequestSchema, req.body);
     const session = await deps.authService.refresh(input.refreshToken);
     res.status(200).json(session);
