@@ -18,6 +18,7 @@ import {
 import {
   IngestionError,
   MAX_EXTRACTION_ATTEMPTS,
+  MAX_INGESTION_ATTEMPTS,
   createIngestionService,
   type IngestionService,
 } from "../../apps/api/src/services/ingestion.service.js";
@@ -427,6 +428,90 @@ describe("fallimenti che lasciano tutto riprocessabile", () => {
     await h.service.processRecording(id);
 
     expect(h.repo.snapshot(id).retryCount).toBe(2);
+  });
+});
+
+describe("il tetto ai tentativi automatici", () => {
+  /** Fa fallire la trascrizione tante volte quante richiesto. */
+  async function falliscePerVolte(id: string, volte: number): Promise<void> {
+    for (let i = 0; i < volte; i += 1) {
+      h.transcription.failNext();
+      await h.service.processRecording(id);
+    }
+  }
+
+  it("sotto il tetto la riga resta in coda", async () => {
+    const id = await seedConAudio();
+
+    await falliscePerVolte(id, MAX_INGESTION_ATTEMPTS - 1);
+
+    expect(h.repo.snapshot(id).status).toBe(RecordingStatus.BOZZA_AUDIO);
+  });
+
+  it("al tetto esce dalla coda invece di ripartire", async () => {
+    // Senza questo, tornare in BOZZA_AUDIO non e' una seconda occasione ma un
+    // ciclo: `claimNext` prende la piu' vecchia in attesa, e la piu' vecchia in
+    // attesa e' di nuovo questa. Ogni giro e' una chiamata Whisper pagata.
+    const id = await seedConAudio();
+
+    await falliscePerVolte(id, MAX_INGESTION_ATTEMPTS);
+
+    const dopo = h.repo.snapshot(id);
+    expect(dopo.status).toBe(RecordingStatus.ESTRAZIONE_FALLITA);
+    expect(dopo.retryCount).toBe(MAX_INGESTION_ATTEMPTS);
+  });
+
+  it("una volta fermata, la coda non la ripesca piu'", async () => {
+    const id = await seedConAudio();
+    await falliscePerVolte(id, MAX_INGESTION_ATTEMPTS);
+
+    expect(await h.repo.claimNext(h.clock.now())).toBeNull();
+  });
+
+  it("l'audio e' ancora li': non si e' perso niente", async () => {
+    // ESTRAZIONE_FALLITA e' un capolinea per la coda, non per l'utente. Il
+    // riscatto manuale riparte da qui, ed e' l'unica cosa che rende
+    // accettabile fermarsi.
+    const id = await seedConAudio();
+    await falliscePerVolte(id, MAX_INGESTION_ATTEMPTS);
+
+    const dopo = h.repo.snapshot(id);
+    expect(dopo.audioUrl).not.toBe("");
+    expect(await h.storage.exists(dopo.audioUrl)).toBe(true);
+  });
+
+  it("il messaggio dice che si e' smesso, e non solo cosa e' andato storto", async () => {
+    // «Trascrizione fallita» al terzo giro sembra il primo giro. Chi guarda la
+    // scheda deve capire che nessuno riprovera' al posto suo.
+    const id = await seedConAudio();
+    await falliscePerVolte(id, MAX_INGESTION_ATTEMPTS);
+
+    const messaggio = h.repo.snapshot(id).lastErrorMessage ?? "";
+    expect(messaggio).toContain("fallimento simulato");
+    expect(messaggio).toContain("tentativi");
+  });
+
+  it("il riscatto manuale ricompra esattamente un tentativo", async () => {
+    // `requeue` incrementa `retryCount`, quindi il tentativo successivo e' gia'
+    // oltre il tetto e il primo fallimento richiude. Non e' un limite
+    // aggirabile: e' una decisione presa una volta, non un ciclo.
+    const id = await seedConAudio();
+    await falliscePerVolte(id, MAX_INGESTION_ATTEMPTS);
+
+    await h.repo.requeue(USER, id, h.clock.now());
+    expect(h.repo.snapshot(id).status).toBe(RecordingStatus.BOZZA_AUDIO);
+
+    await falliscePerVolte(id, 1);
+    expect(h.repo.snapshot(id).status).toBe(RecordingStatus.ESTRAZIONE_FALLITA);
+  });
+
+  it("il percorso felice non conosce nessun tetto", async () => {
+    // Una riga che ha gia' fallito piu' del tetto e viene rimessa in coda deve
+    // poter arrivare a ESTRATTO: il conteggio non e' una condanna.
+    h.extraction.enqueue(buildExtractionContract());
+    const id = await seedConAudio({ retryCount: 12 });
+
+    expect(await h.service.processRecording(id)).toMatchObject({ kind: "ESTRATTO" });
   });
 });
 

@@ -29,9 +29,11 @@ import { normalizeSteps, validateExtraction } from "./validation/extractionValid
  *
  * PRIMO: lo stadio 1 non fallisce mai. L'audio e' gia' al sicuro prima che
  * questa funzione venga chiamata; qualunque cosa vada storta qui, il Recording
- * torna in `BOZZA_AUDIO` con l'errore scritto sopra e resta riprocessabile. Il
- * solo modo di finire in `ESTRAZIONE_FALLITA` e' il caso previsto dalla §5: due
- * estrazioni di fila che non producono un JSON conforme.
+ * torna in `BOZZA_AUDIO` con l'errore scritto sopra e resta riprocessabile. Si
+ * finisce in `ESTRAZIONE_FALLITA` in due casi soltanto: quello previsto dalla
+ * §5 — due estrazioni di fila che non producono un JSON conforme — e
+ * l'esaurimento di `MAX_INGESTION_ATTEMPTS`, che ferma il ciclo automatico
+ * senza togliere niente al retry chiesto da un umano.
  *
  * SECONDO: si conserva tutto quello che e' costato una chiamata a un modello.
  * La trascrizione si salva appena esiste, anche se l'estrazione poi riesce e la
@@ -57,6 +59,29 @@ export const IngestionError = {
  * risposta, quindi costerebbe soldi e latenza senza cambiare l'esito.
  */
 export const MAX_EXTRACTION_ATTEMPTS = 2;
+
+/**
+ * Quante volte una registrazione puo' tornare in coda DA SOLA.
+ *
+ * Senza questo tetto il ritorno a `BOZZA_AUDIO` e' un ciclo caldo, non una
+ * seconda possibilita': la riga torna in coda, `claimNext` prende la piu'
+ * vecchia in attesa, e la piu' vecchia in attesa e' di nuovo quella. Il worker
+ * ne fa dieci per giro ogni cinque secondi, e ogni giro e' una chiamata a
+ * Whisper pagata per riottenere lo stesso errore. Un audio corrotto costa
+ * finche' qualcuno non se ne accorge; l'API di OpenAI che risponde 429 fa
+ * entrare nel ciclo TUTTA la coda insieme.
+ *
+ * Tre e non uno perche' i fallimenti che tornano in coda sono quasi tutti
+ * transitori — lo storage che non risponde, un timeout, un 503 del modello — e
+ * un solo tentativo trasformerebbe un singhiozzo di rete in una registrazione
+ * ferma. Tre e non dieci perche' oltre il terzo la causa non e' piu'
+ * transitoria, e continuare significa solo pagare.
+ *
+ * Non e' un tetto al retry manuale: `POST /retry` resta sempre possibile e
+ * concede esattamente un tentativo in piu' per ogni volta che un umano lo
+ * chiede. E' la differenza fra una decisione e un ciclo.
+ */
+export const MAX_INGESTION_ATTEMPTS = 3;
 
 export type IngestionOutcome =
   /** Nessun lavoro fatto: un altro worker aveva gia' preso questa riga. */
@@ -386,17 +411,33 @@ export function createIngestionService(deps: IngestionDeps): IngestionService {
               status: RecordingStatus.BOZZA_AUDIO,
             });
 
+      // `retryCount` e' quello con cui la riga e' stata presa: questo tentativo
+      // non e' ancora stato contato, e lo contera' `markFailed`.
+      const attempt = job.retryCount + 1;
+      const esaurita =
+        failure.status === RecordingStatus.BOZZA_AUDIO && attempt >= MAX_INGESTION_ATTEMPTS;
+
+      // Il codice resta quello vero: la UI deve poter dire *cosa* e' andato
+      // storto, non solo che si e' smesso di provare. Cambia solo lo stato, ed
+      // e' cio' che toglie la riga dalla coda.
+      const status = esaurita ? RecordingStatus.ESTRAZIONE_FALLITA : failure.status;
+      const message = esaurita
+        ? `${failure.message} Interrotto dopo ${String(attempt)} tentativi: riprovare dalla scheda della registrazione.`
+        : failure.message;
+
       await repo.markFailed(job.id, {
-        status: failure.status,
+        status,
         code: failure.code,
-        message: failure.message,
+        message,
         at: clock.now(),
       });
 
       logger.error("elaborazione fallita", {
         recordingId: job.id,
         code: failure.code,
-        status: failure.status,
+        status,
+        attempt,
+        esaurita,
         message: failure.message,
       });
 
@@ -404,7 +445,7 @@ export function createIngestionService(deps: IngestionDeps): IngestionService {
         kind: "FALLITO",
         recordingId: job.id,
         code: failure.code,
-        status: failure.status,
+        status,
         issues: failure.issues,
       };
     }
