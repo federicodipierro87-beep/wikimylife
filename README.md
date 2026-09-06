@@ -3,9 +3,11 @@
 Trasforma note vocali in schede-procedura riutilizzabili: registri come hai fatto
 una cosa, e la prossima volta la ritrovi scritta.
 
-Siamo alla **Fase 5 — Deploy**: API e worker su Railway, la build statica su
-Netlify, l'audio su object storage compatibile S3, e il CORS ristretto al solo
-dominio del frontend. Sotto ci sono le fondamenta della Fase 1 (monorepo, schema
+Siamo alla **Fase 5 — Deploy**, più il giro di irrobustimento che l'ha seguita:
+API e worker su Railway, la build statica su Netlify, l'audio su object storage
+compatibile S3, il CORS ristretto al solo dominio del frontend, un limite ai
+tentativi di accesso, le intestazioni di sicurezza con la CSP, e un tetto ai
+tentativi automatici di ingestione. Sotto ci sono le fondamenta della Fase 1 (monorepo, schema
 dati, pgvector, seed, `packages/shared`, autenticazione JWT), la pipeline della
 Fase 2 (upload multipart, worker, validazione deterministica della §5,
 deduplicazione per similarità coseno), le rotte di lettura, modifica e ricerca
@@ -625,7 +627,12 @@ una rete assente che lascia tutto in coda), le regole di presentazione con un
 *adesso* fisso — un test che legge l'orologio di sistema fallisce da solo a
 mezzanotte — e il giro rotta ⇄ hash ⇄ rotta. Della Fase 5: la firma SigV4 contro
 i vettori ufficiali di AWS, e le regole di `loadConfig` che in produzione
-rifiutano lo storage effimero, il CORS vuoto e i provider fake.
+rifiutano lo storage effimero, il CORS vuoto e i provider fake. Della sicurezza:
+l'aritmetica del limitatore con un orologio iniettato — la finestra che si riapre
+a `windowMs` e non un millisecondo prima, i budget separati per IP e per rotta,
+`Retry-After` che compare solo negando, e seicento indirizzi che non restano in
+memoria — e il tetto ai tentativi di ingestione, compreso che il riscatto manuale
+ne ricompri esattamente uno.
 
 Le schermate non hanno test, e non c'è `jsdom` fra le dipendenze. È la ragione
 per cui `format.ts`, `routes.ts` e `uploader.ts` esistono come moduli separati e
@@ -663,6 +670,13 @@ database: le cose che si rompono sono cose dello stack — un preflight che
 attraversa il parser JSON e muore su un corpo vuoto, un `OPTIONS` che finisce nel
 gestore delle rotte inesistenti, un'intestazione impostata dopo che la risposta è
 già partita. Nessuna si vede chiamando la funzione middleware a mano.
+
+Vale lo stesso per `security.e2e.test.ts`: che `req.ip` esista davvero dietro
+Express, che il `429` esca dall'error handler con il corpo del contratto invece
+che come stack, che il middleware sia montato sulle rotte giuste e non su tutte,
+e — il test che conta più degli altri — che un `X-Forwarded-For` inventato non
+compri un budget nuovo. Ogni test riparte da un server nuovo, perché i conteggi
+stanno in memoria di processo e `resetDatabase()` non li tocca.
 
 `DATABASE_URL_TEST` non ha un valore di default, di proposito: i test fanno
 `TRUNCATE`, e un default che puntasse al database di sviluppo lo svuoterebbe in
@@ -800,6 +814,9 @@ significherebbe quattro deploy.
 | `ACCESS_TOKEN_TTL_MIN` | ✓ | | | ✓ | default 15 |
 | `REFRESH_TOKEN_TTL_DAYS` | ✓ | | | ✓ | default 30 |
 | `SIGNUP_ENABLED` | ✓ | | | ✓ | **`false` dopo aver creato il primo utente** |
+| `AUTH_RATE_LIMIT_MAX` | ✓ | | | ✓ | default 10. Da alzare se più persone escono dallo stesso IP |
+| `AUTH_RATE_LIMIT_WINDOW_SEC` | ✓ | | | ✓ | default 60 |
+| `TRUST_PROXY_HOPS` | | | | | default 1 in produzione, 0 altrove. **Si imposta solo aggiungendo un proxy davanti a Railway** |
 | `STORAGE_PROVIDER` | ✓ | ✓ | | ✓ | `s3` in produzione, ed è obbligatorio |
 | `S3_BUCKET` | ✓ | ✓ | | | obbligatoria con `s3` |
 | `S3_REGION` | ✓ | ✓ | | | obbligatoria con `s3`. Su R2: `auto` |
@@ -852,6 +869,147 @@ l'API, che con un `CORS_ORIGINS` provvisorio parte lo stesso.
 
 ---
 
+## Sicurezza in produzione
+
+Tre cose che finché il dominio non è pubblico non si notano, e il giorno dopo
+sono l'unica cosa che conta: contare i tentativi di accesso, dire al browser cosa
+gli è permesso fare, e non ripetere all'infinito una chiamata a pagamento che
+fallisce.
+
+### Il limite dei tentativi
+
+`POST /api/auth/signup`, `/login` e `/refresh` passano da
+`apps/api/src/http/middleware/rateLimit.ts`: finestra fissa, in memoria del
+processo, **dieci tentativi al minuto per IP e per rotta** di default
+(`AUTH_RATE_LIMIT_MAX`, `AUTH_RATE_LIMIT_WINDOW_SEC`). Oltre il limite è un `429`
+con `error.code: "RATE_LIMITED"`, `Retry-After`, e le tre `RateLimit-*` — che ci
+sono anche quando la richiesta passa, così un client attento rallenta da solo
+invece di scoprire il muro sbattendoci.
+
+Quattro decisioni, e il perché:
+
+- **Quaranta righe scritte a mano invece di `express-rate-limit`.** Il pacchetto
+  farebbe la stessa cosa; scriverlo ha costretto a guardare da dove viene
+  `req.ip`, che è il punto sotto.
+- **Finestra fissa, non token bucket.** Il difetto noto è il raddoppio al confine
+  fra due finestre: chi è preciso ottiene `2 × max` a cavallo dello scoccare del
+  minuto. Non cambia niente — la differenza che serve è fra venti tentativi al
+  minuto e diecimila, e venti o quaranta stanno dalla stessa parte.
+- **La chiave è IP + metodo + percorso, non l'email.** Contare per email sembra
+  più preciso e regala due cose a chi attacca: la possibilità di chiudere fuori
+  un utente vero bombardando il suo indirizzo, e la possibilità di distribuire i
+  tentativi su indirizzi email diversi senza mai toccare il limite.
+- **In memoria, non su Redis.** Redis sarebbe un quarto servizio, un'altra
+  variabile e un altro modo di rompersi, per proteggere l'account di una persona.
+  Il prezzo è scritto: con più repliche il limite effettivo è
+  `AUTH_RATE_LIMIT_MAX × repliche`. Con una replica — che è la configurazione —
+  è esatto.
+
+`/logout` e `/me` non sono limitati. Il primo non regala niente a chi lo martella;
+il secondo sta già dietro `requireAuth`, e limitarlo significherebbe rompere
+l'app in mano a un utente legittimo che ricarica.
+
+Le voci scadute si eliminano ogni 500 richieste, dentro la richiesta stessa: un
+`setInterval` terrebbe vivo l'event loop e un processo che non muore su `SIGTERM`
+viene ucciso dalla piattaforma dopo il timeout, ogni singolo deploy.
+
+### `TRUST_PROXY_HOPS`, senza cui niente di tutto questo conta
+
+Un limitatore per IP vale quanto vale l'IP, e dietro un proxy l'IP arriva in
+`X-Forwarded-For`. La prima versione di questo codice aveva
+`app.set("trust proxy", true)`, che è il valore che si trova ovunque e che dice a
+Express di fidarsi di **tutti** gli indirizzi di quell'intestazione e di prendere
+il primo da sinistra. Il primo da sinistra lo scrive il client: bastava mandare
+`X-Forwarded-For: 1.2.3.4` e cambiarlo a ogni richiesta per avere un budget nuovo
+ogni volta. Il limitatore avrebbe continuato a rispondere `429` a chi non
+falsificava niente — cioè a sembrare a posto.
+
+Con un **numero** Express conta da destra, e a destra ci sono le voci che hanno
+scritto i proxy, non il client. `TRUST_PROXY_HOPS` vale `1` in produzione (il
+proxy di Railway) e `0` in sviluppo, dove non c'è nessun proxy e
+`X-Forwarded-For` va ignorato del tutto. Va alzato solo mettendo un'altra cosa
+davanti — una CDN, per esempio — e allora va alzato davvero: un valore più basso
+del numero di salti riporta esattamente il problema di prima.
+
+Il test che tiene in piedi tutti gli altri è in `security.e2e.test.ts`: consuma
+il budget, poi riprova con un `X-Forwarded-For` inventato e si aspetta comunque
+`429`.
+
+### Le intestazioni
+
+L'API manda **cinque** intestazioni (`securityHeaders.ts`): `nosniff`,
+`X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
+`Cross-Origin-Resource-Policy: same-origin`, e `Strict-Transport-Security` **solo
+in produzione**. Quest'ultima condizione non è pignoleria: un browser che
+ricevesse HSTS da `http://localhost` rifiuterebbe il testo in chiaro su *tutto*
+localhost per un anno — Vite compreso, e per progetti che non c'entrano niente.
+
+`Cross-Origin-Resource-Policy: same-origin` sembra contraddire il CORS e non lo
+fa: blocca le richieste `no-cors`, quelle di `<img src>` e `<audio src>`, non
+quelle in modalità CORS. La PWA sta su un'altra origine ma chiede l'audio con
+`fetch` e un header `Authorization`, quindi è per forza CORS e passa. Il che vuol
+dire anche: il giorno in cui il player tornasse a `<audio src={url}>`
+smetterebbe di funzionare, e quella riga è il posto da guardare.
+
+Cinque e non le quindici di `helmet`, perché `helmet` è pensato per un server che
+rende HTML. Questo rende JSON e byte di audio; l'unica pagina la serve Netlify, e
+lì la protezione va scritta in `netlify.toml`. Installarlo sull'API darebbe la
+sensazione di aver coperto il frontend senza averlo coperto, che è il modo più
+efficace di non tornarci mai più sopra.
+
+### La CSP, che sta su Netlify
+
+`netlify.toml` manda la CSP, la `Permissions-Policy` e l'HSTS sul documento,
+perché è il documento che va protetto ed è Netlify a servirlo.
+
+La direttiva è stretta sul serio: `script-src 'self'; style-src 'self'`, **senza
+`'unsafe-inline'` da nessuna parte**. Funziona perché la build non contiene un
+solo script né uno stile inline — Vite mette tutto in file con hash, e nel codice
+non c'è un `style={{...}}`. È fragile e va detto: il primo `<style>` aggiunto a
+`index.html` sparirebbe senza spiegazioni.
+
+Due concessioni, entrambe necessarie:
+
+- `media-src 'self' blob:` — il player scarica l'audio con `fetch` (perché quell
+  URL vuole un header `Authorization`, che un `src` non può portare) e lo passa a
+  `<audio>` come object URL. Senza `blob:` la riproduzione si rompe e il motivo
+  non compare da nessuna parte se non nella console.
+- `connect-src 'self' https:` e non il dominio esatto dell'API, che cambia con il
+  progetto Railway: inchiodarlo qui significherebbe mettere una variabile
+  d'ambiente dentro un file versionato. Resta un limite vero — blocca `http:`,
+  `data:` e `ws:` — ma chi ha un solo deploy fa bene a sostituirlo con l'origine
+  precisa.
+
+`Permissions-Policy` concede `microphone=(self)` e `geolocation=(self)` e nega
+tutto il resto: sono le due cose che la PWA usa davvero.
+
+### Il tetto ai tentativi di ingestione
+
+`MAX_INGESTION_ATTEMPTS = 3` in `ingestion.service.ts`. Al terzo fallimento
+automatico la registrazione passa a `ESTRAZIONE_FALLITA` invece di tornare in
+`BOZZA_AUDIO`.
+
+Serve perché senza, tornare in `BOZZA_AUDIO` non è una seconda occasione ma un
+ciclo: `claimNext` prende la registrazione in attesa più vecchia, e la più
+vecchia in attesa è di nuovo quella. Ogni giro è una chiamata Whisper pagata, e
+il worker ne fa un giro ogni cinque secondi — per sempre, o finché qualcuno non
+guarda la fattura. Un `429` di OpenAI ci mette dentro l'intera coda in una volta.
+
+Tre e non uno, perché la maggior parte dei fallimenti che rimettono in coda sono
+transitori, e un tentativo solo butterebbe via registrazioni che al secondo giro
+sarebbero passate. Tre e non dieci, perché oltre il terzo la causa non è
+transitoria e continuare è solo spesa.
+
+`POST /api/recordings/:id/retry` **non** è soggetto al tetto, ed è voluto:
+`requeue` incrementa `retryCount`, quindi ogni riscatto manuale compra
+esattamente un tentativo e il fallimento successivo richiude. È la differenza fra
+una decisione e un ciclo. `ESTRAZIONE_FALLITA` resta un capolinea per la coda,
+non per l'utente: l'audio è ancora nello storage, e il messaggio d'errore dice
+che si è smesso di riprovare invece di ripetere solo cosa è andato storto — al
+terzo giro «trascrizione fallita» sembra il primo giro.
+
+---
+
 ## Dipendenze
 
 Oltre allo stack imposto (TypeScript, Express, Prisma, Zod, React, Vite, Vitest)
@@ -871,7 +1029,8 @@ Non installate, e il perché:
 | `pino` | un logger JSON su stdout di venti righe |
 | `cors` | trenta righe: `origin: true` non dev'essere scrivibile per sbaglio |
 | `@aws-sdk/client-s3` | SigV4 a mano, novanta righe, provate sui vettori AWS |
-| `helmet` `rate-limit` | non ancora: si veda «cosa non c'è ancora» |
+| `helmet` | cinque intestazioni scritte a mano: le altre dieci proteggono un HTML che l'API non serve |
+| `express-rate-limit` | quaranta righe, e la certezza su cosa viene contato |
 | `eslint` | il test di guardia copre le due regole che ci interessano |
 | `uuid` `nanoid` | `crypto.randomUUID()` |
 | `react-router` | `hashchange`, trenta righe per cinque schermate |
@@ -884,12 +1043,10 @@ Non installate, e il perché:
 
 ## Cosa non c'è ancora, e si sa
 
-- **Nessun rate limiting su `/api/auth/login`.** Con `SIGNUP_ENABLED=false` e un
-  solo utente la superficie è una password, ma resta che nessuno conta i
-  tentativi. È la prima cosa da aggiungere se il dominio diventa pubblico.
-- **Nessun header di sicurezza.** Niente `helmet`, niente CSP: l'API risponde
-  solo JSON e l'HTML lo serve Netlify, quindi il rischio è basso, ma «basso» non
-  è «zero» e la CSP andrebbe scritta in `netlify.toml`.
+- **Il limite dei tentativi sta in memoria del processo.** Con una replica è
+  esatto; con `n` repliche il limite effettivo è `AUTH_RATE_LIMIT_MAX × n`, e un
+  riavvio azzera i conteggi. Un attacco lento e paziente resta possibile: questo
+  ferma la forza bruta, non chi prova dieci password al minuto per un mese.
 - **Il refresh token vive 30 giorni, l'access token 15 minuti.** Un access token
   già emesso resta valido fino alla scadenza anche dopo la revoca della famiglia:
   invalidarlo richiederebbe una lettura del database a ogni richiesta, cioè
@@ -907,9 +1064,11 @@ Non installate, e il perché:
   RRF fonde due classifiche troncate, e la pagina due di una fusione di due
   finestre diverse non è la continuazione della pagina uno. Servirà una strategia
   a cursore, non un `OFFSET`.
-- **Nessun limite al numero di retry.** `retryCount` si incrementa e basta: un
-  audio irrecuperabile può essere riprocessato all'infinito, a spese di chi paga
-  le chiamate ai modelli.
+- **Il tetto ai tentativi non distingue le cause.** Tre fallimenti sono tre
+  fallimenti, che siano tre errori di rete o tre volte lo stesso file corrotto.
+  Un backoff — riprovare dopo un minuto, poi dieci, poi un'ora — sarebbe più
+  gentile con i guasti transitori, e richiederebbe una colonna `nextAttemptAt` e
+  una `claimNext` che la guardi.
 - **La redazione dei dati sensibili (§9) non c'è.** `contieneDatiSensibili` viene
   rilevato e salvato, ma non produce ancora nessun comportamento.
 - **Le schermate non hanno test automatici.** La logica che vale la pena
