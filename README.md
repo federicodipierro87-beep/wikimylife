@@ -76,6 +76,7 @@ tests/          unit (senza Docker) e integration (con Postgres vero).
 docs/           Le deviazioni dalla specifica, con le motivazioni.
 netlify.toml    Netlify serve file e nient'altro: redirect SPA e header.
 apps/*/railway.toml   Come si costruisce e come parte ciascun servizio.
+.github/workflows/ci.yml   Typecheck, unit, integrazione e build a ogni push.
 ```
 
 `packages/shared` si importa come `@wikimylife/shared` grazie ai workspace npm:
@@ -682,6 +683,38 @@ stanno in memoria di processo e `resetDatabase()` non li tocca.
 `TRUNCATE`, e un default che puntasse al database di sviluppo lo svuoterebbe in
 silenzio.
 
+### La CI, e perché sono tre job
+
+`.github/workflows/ci.yml` gira a ogni push su `master` e su ogni pull request.
+
+| Job | Cosa fa | Cosa dimostra |
+|---|---|---|
+| `verifica` | `typecheck` + `npm test` | **senza nessun service container** |
+| `integrazione` | `npm run test:integration` | Postgres con pgvector, migration versionate |
+| `build` | `build:web`, `build:api`, `build:worker` | i tre comandi che girano in produzione |
+
+Il primo non ha il database, e non è una svista: il repository promette che
+`npm test` giri senza Docker, e una promessa che nessuno verifica scade da sola.
+Con un job solo, il giorno in cui un test unitario aprisse una connessione
+nessuno se ne accorgerebbe — il database ci sarebbe, e sarebbe verde.
+
+Due dettagli del job di integrazione. Il database di test lo crea `initdb` con
+`POSTGRES_DB`, perché in locale lo crea `docker/initdb` e lì non si può: i
+service container partono **prima** del checkout, quindi quella cartella non
+esiste ancora sul disco. E `DATABASE_URL` resta deliberatamente non definita —
+il `globalSetup` rifiuta di partire se punta dove punta `DATABASE_URL_TEST`, e
+in CI di database ce n'è uno solo: definirla sarebbe l'unico modo di sbagliare.
+Le migration le applica il `globalSetup` con `migrate deploy` e non un passo del
+workflow, così il percorso provato in CI è lo stesso di chi sviluppa e
+`schema.test.ts` continua a verificare che le migration versionate bastino da
+sole a costruire indice HNSW e colonna generata.
+
+Il job di build gira con `PRISMA_SKIP_POSTINSTALL_GENERATE` e mette `build:web`
+per **primo**, prima che qualunque cosa generi il client Prisma: è la condizione
+esatta di Netlify, dove Postgres non c'è e non deve servire. Un import che
+tirasse dentro Prisma dal frontend diventerebbe rosso lì invece che in un
+deploy.
+
 ---
 
 ## Deploy
@@ -1087,12 +1120,14 @@ Non installate, e il perché:
   riga; l'oggetto S3 resta. È voluto — l'audio è l'originale, la scheda è la
   derivata — ma non c'è nessun processo che tolga i file delle registrazioni
   cancellate davvero, e nessuna lifecycle rule configurata.
-- **Nessuna CI.** Nessuno esegue `npm test` prima di un deploy: Railway e Netlify
-  costruiscono qualunque cosa stia su `master`. Una build che compila e dei test
-  rossi sono compatibili.
+- **La CI non ferma un deploy.** I test girano a ogni push, ma Railway e Netlify
+  costruiscono ciò che sta su `master` appena ci arriva, senza chiedere niente a
+  GitHub: un rosso è una notifica, non un cancello. Farlo diventare un cancello
+  è un'impostazione delle due piattaforme, e sta da quella parte.
 - **Il deploy non è provato da nessun test.** `netlify.toml` e i due
   `railway.toml` sono documentazione eseguibile solo dalle piattaforme: un refuso
-  in `startCommand` si scopre al primo deploy, non prima.
+  in `startCommand` si scopre al primo deploy, non prima. La CI prova i comandi
+  di build, non i file che li invocano.
 
 ---
 
