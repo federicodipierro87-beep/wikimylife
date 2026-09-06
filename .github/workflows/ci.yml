@@ -1,0 +1,149 @@
+# ---------------------------------------------------------------------------
+# CI. Tre job che girano in parallelo, e la ragione per cui sono tre.
+#
+# `verifica` non ha nessun service container, e non e' una svista: il repository
+# promette che `npm test` giri senza Docker, e una promessa che nessuno verifica
+# scade da sola. Se i due gruppi fossero un job solo, il giorno in cui un test
+# unitario cominciasse ad aprire una connessione al database nessuno se ne
+# accorgerebbe — il database ci sarebbe, e sarebbe verde.
+#
+# `build` esegue esattamente i tre comandi che girano su Railway e su Netlify.
+# Non serve a compilare qualcosa che poi si usa: serve a scoprire qui un
+# `tsc -b` rotto o un `vite build` che fallisce, invece che in un deploy.
+#
+# Quello che questo file NON fa: fermare un deploy. Railway e Netlify
+# costruiscono cio' che sta su `master` appena ci arriva, senza chiedere niente
+# a GitHub. Un rosso qui e' una notifica, non un cancello — per farlo diventare
+# un cancello servirebbe una impostazione sulle due piattaforme, che e' roba
+# loro e non di questo repository.
+# ---------------------------------------------------------------------------
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# Un push che ne segue un altro sullo stesso ramo annulla il precedente: i
+# minuti spesi su un commit gia' superato non dicono niente a nessuno.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verifica:
+    name: typecheck e unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Dal file, non da un numero scritto qui: una versione in due posti e'
+          # una versione che prima o poi diverge, e a divergere sara' quella che
+          # nessuno guarda.
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # Esplicito e non lasciato al postinstall di @prisma/client: il client
+      # generato e' cio' da cui dipendono i tipi di meta' del repository, e se
+      # un giorno quel postinstall smettesse di trovare lo schema l'errore
+      # comparirebbe come centinaia di errori di tipo senza causa apparente.
+      - run: npm run db:generate
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+  integrazione:
+    name: integrazione su Postgres
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # La stessa immagine di docker-compose.yml: pgvector non e'
+        # un'estensione che si installa con CREATE EXTENSION su un Postgres
+        # qualunque, il binario deve esserci.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: wikimylife
+          POSTGRES_PASSWORD: wikimylife
+          # In locale il database di test lo crea `docker/initdb`, che qui non
+          # si puo' usare: i service container partono prima del checkout,
+          # quindi quella cartella non esiste ancora sul disco. Lo si ottiene
+          # facendo creare direttamente il database giusto a initdb.
+          POSTGRES_DB: wikimylife_test
+          POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wikimylife -d wikimylife_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL_TEST: postgresql://wikimylife:wikimylife@localhost:5432/wikimylife_test?schema=public
+      # DATABASE_URL resta deliberatamente assente. Il `globalSetup` rifiuta di
+      # partire se le due puntano allo stesso posto — i test fanno TRUNCATE —
+      # e qui di database ce n'e' uno solo: definirla sarebbe l'unico modo di
+      # sbagliare.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run db:generate
+
+      # Le migration le applica il `globalSetup` con `migrate deploy`, non un
+      # passo di questo file: cosi' il percorso provato in CI e' lo stesso che
+      # gira sulla macchina di chi sviluppa, e `schema.test.ts` continua a
+      # verificare che le migration versionate bastino da sole a costruire lo
+      # schema — indice HNSW e colonna generata compresi.
+      - run: npm run test:integration
+
+  build:
+    name: build di produzione
+    runs-on: ubuntu-latest
+
+    env:
+      # La stessa variabile che sta in netlify.toml, e per lo stesso motivo:
+      # senza, il postinstall di @prisma/client genererebbe il client durante
+      # `npm ci`, e i tre build qui sotto girerebbero in una condizione che su
+      # Netlify non esiste. `build:api` e `build:worker` il client se lo
+      # generano da soli, quindi saltarlo non toglie niente a loro.
+      PRISMA_SKIP_POSTINSTALL_GENERATE: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # Per primo, e prima che qualunque cosa generi il client Prisma: qui il
+      # client non esiste proprio sul disco, che e' la condizione di Netlify.
+      # Il giorno in cui il frontend importasse per sbaglio qualcosa che tira
+      # dentro Prisma, questo passo diventerebbe rosso qui invece che in un
+      # deploy.
+      - run: npm run build:web
+
+      - run: npm run build:api
+
+      - run: npm run build:worker
