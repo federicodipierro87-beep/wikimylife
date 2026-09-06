@@ -5,7 +5,7 @@ import { messaggioDi } from "./session";
  * Caricare qualcosa dall'API, con i tre stati che servono e nessuno di piu'.
  *
  * Non e' React Query: qui non c'e' cache condivisa, non c'e' invalidazione fra
- * schermate e non serve — le schermate sono cinque e si aprono una alla volta.
+ * schermate e non serve — le schermate sono sei e si aprono una alla volta.
  * Sono venti righe contro una dipendenza, e restano venti righe finche' non
  * esiste un caso che le richieda diverse.
  *

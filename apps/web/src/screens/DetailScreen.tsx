@@ -108,6 +108,24 @@ function Scheda({
         </p>
       )}
 
+      {p.contieneDatiSensibili && (
+        <div className="avviso avviso--sensibile">
+          <p>
+            Quando l&apos;hai raccontata sono venuti fuori dei dati personali.
+            Finche&apos; restano, questa scheda non puo&apos; diventare pubblica.
+          </p>
+          <button
+            type="button"
+            className="bottone bottone--piatto"
+            onClick={() => {
+              navigate({ name: "redazione", id: p.id });
+            }}
+          >
+            Guarda cosa c&apos;e&apos; dentro
+          </button>
+        </div>
+      )}
+
       {p.status === "DA_RIVEDERE" && (
         <button
           type="button"
@@ -147,6 +165,23 @@ function Scheda({
       ))}
 
       <Conferma procedureId={p.id} onFatto={onCambiata} />
+
+      {/*
+        La passata di redazione resta raggiungibile anche senza il flag: il
+        flag dice cosa ha pensato l'estrazione, non cosa c'e' nel testo — e una
+        scheda corretta a mano dopo l'estrazione non ci ripassa mai.
+      */}
+      {!p.contieneDatiSensibili && (
+        <button
+          type="button"
+          className="bottone bottone--piatto"
+          onClick={() => {
+            navigate({ name: "redazione", id: p.id });
+          }}
+        >
+          Controlla i dati personali prima di condividerla
+        </button>
+      )}
 
       <Origine p={p} />
     </main>

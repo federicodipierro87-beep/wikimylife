@@ -1080,7 +1080,7 @@ Non installate, e il perché:
 | `express-rate-limit` | quaranta righe, e la certezza su cosa viene contato |
 | `eslint` | il test di guardia copre le due regole che ci interessano |
 | `uuid` `nanoid` | `crypto.randomUUID()` |
-| `react-router` | `hashchange`, trenta righe per cinque schermate |
+| `react-router` | `hashchange`, trenta righe per sei schermate |
 | `@tanstack/react-query` | `useAsync`, venti righe: carica e ricarica |
 | `vite-plugin-pwa` `workbox` | un service worker di sessanta righe |
 | `tailwind` e simili | un foglio di stile di 2 kB compressi |

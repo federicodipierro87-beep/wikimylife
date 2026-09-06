@@ -15,6 +15,7 @@ const ROTTE: readonly Route[] = [
   { name: "cerca" },
   { name: "scheda", id: "cku123" },
   { name: "revisione", id: "cku123" },
+  { name: "redazione", id: "cku123" },
 ];
 
 describe("toHash / parseHash", () => {
@@ -47,5 +48,11 @@ describe("toHash / parseHash", () => {
 
   it("tollera lo slash finale", () => {
     expect(parseHash("#/cerca/")).toEqual({ name: "cerca" });
+  });
+
+  it("un terzo segmento sbagliato apre comunque la scheda", () => {
+    // Perdere anche l'id, che era giusto, per un refuso nel segmento dopo
+    // significherebbe rispondere a «non ho capito» con «ricomincia da capo».
+    expect(parseHash("#/scheda/cku123/redazoine")).toEqual({ name: "scheda", id: "cku123" });
   });
 });

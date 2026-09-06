@@ -5,7 +5,7 @@ import { HOME, parseHash, toHash, type Route } from "./routes";
  * Il router, in trenta righe e su `location.hash`.
  *
  * React Router pesa piu' di tutto il resto di questa applicazione, che ha
- * cinque schermate e nessuna rotta annidata. E l'hash risolve gratis il
+ * sei schermate e nessuna rotta annidata. E l'hash risolve gratis il
  * problema che altrimenti andrebbe risolto sul server: `/scheda/abc` su un
  * hosting statico e' un 404 al ricaricamento, e servirebbe una regola di
  * rewrite in piu' su Netlify. Con l'hash il documento e' sempre `index.html`.

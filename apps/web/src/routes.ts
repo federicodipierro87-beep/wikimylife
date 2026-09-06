@@ -15,7 +15,8 @@ export type Route =
   | { readonly name: "lista" }
   | { readonly name: "cerca" }
   | { readonly name: "scheda"; readonly id: string }
-  | { readonly name: "revisione"; readonly id: string };
+  | { readonly name: "revisione"; readonly id: string }
+  | { readonly name: "redazione"; readonly id: string };
 
 export const HOME: Route = { name: "lista" };
 
@@ -31,6 +32,8 @@ export function toHash(route: Route): string {
       return `#/scheda/${encodeURIComponent(route.id)}`;
     case "revisione":
       return `#/scheda/${encodeURIComponent(route.id)}/revisione`;
+    case "redazione":
+      return `#/scheda/${encodeURIComponent(route.id)}/redazione`;
   }
 }
 
@@ -46,9 +49,18 @@ export function parseHash(hash: string): Route {
   }
   if (primo === "scheda" && secondo !== undefined) {
     const id = decodeURIComponent(secondo);
-    return terzo === "revisione" ? { name: "revisione", id } : { name: "scheda", id };
+    if (terzo === "revisione") {
+      return { name: "revisione", id };
+    }
+    if (terzo === "redazione") {
+      return { name: "redazione", id };
+    }
+    // Un terzo segmento che non si riconosce e' comunque una scheda: sbagliare
+    // a scrivere `/redazoine` deve aprire la scheda, non riportare alla lista
+    // perdendo anche l'id che era giusto.
+    return { name: "scheda", id };
   }
   // Qualsiasi cosa non riconosciuta e' la home. Una schermata "404" dentro
-  // un'app di cinque pagine sarebbe piu' codice che valore.
+  // un'app di sei pagine sarebbe piu' codice che valore.
   return HOME;
 }

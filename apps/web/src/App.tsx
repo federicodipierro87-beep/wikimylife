@@ -5,6 +5,7 @@ import { DetailScreen } from "./screens/DetailScreen";
 import { ListScreen } from "./screens/ListScreen";
 import { LoginScreen } from "./screens/LoginScreen";
 import { RecordScreen } from "./screens/RecordScreen";
+import { RedactionScreen } from "./screens/RedactionScreen";
 import { ReviewScreen } from "./screens/ReviewScreen";
 import { SearchScreen } from "./screens/SearchScreen";
 import { SessionProvider, useSession } from "./session";
@@ -61,6 +62,8 @@ function Schermate(): React.JSX.Element {
       return <DetailScreen id={route.id} />;
     case "revisione":
       return <ReviewScreen id={route.id} />;
+    case "redazione":
+      return <RedactionScreen id={route.id} />;
     case "lista":
       return <ListScreen />;
   }
