@@ -21,6 +21,8 @@ export * from "./api/recordings.js";
 export * from "./api/procedures.js";
 export * from "./api/client.js";
 
+export * from "./redaction/detect.js";
+
 export * from "./util/deterministicVector.js";
 export * from "./util/embeddingInput.js";
 export * from "./util/searchText.js";
