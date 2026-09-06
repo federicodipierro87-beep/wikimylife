@@ -715,6 +715,20 @@ esatta di Netlify, dove Postgres non c'è e non deve servire. Un import che
 tirasse dentro Prisma dal frontend diventerebbe rosso lì invece che in un
 deploy.
 
+#### Cosa ha trovato al primo giro
+
+`integrazione` è stato rosso subito, e non per il database: `@wikimylife/shared`
+è esportato da `dist/`, `test` aveva da sempre un `pretest` che lo compila e
+`test:integration` no. Su una macchina dove qualcuno aveva già lanciato un build
+la suite passava; su un checkout pulito nessun test riusciva nemmeno a partire.
+Il seed, che gira come processo separato, importa anche `@wikimylife/api` dal
+suo `dist`: per questo `pretest:integration` è `tsc -b apps/api` e non
+`tsc -b packages/shared`.
+
+Vale la pena scriverlo perché è esattamente il tipo di bug per cui una CI
+esiste: non un test sbagliato, ma una dipendenza vera che nessuno aveva mai
+dichiarato perché sulla macchina di chi la scriveva era già soddisfatta.
+
 ---
 
 ## Deploy
