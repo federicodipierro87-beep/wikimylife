@@ -37,7 +37,15 @@ export class FakeStorageProvider implements StorageProvider {
   get(key: string): Promise<Uint8Array> {
     const found = this.#objects.get(key);
     if (found === undefined) {
-      return Promise.reject(new Error(`FakeStorageProvider: chiave assente ${key}`));
+      // `code: "ENOENT"` come il filesystem e come `S3StorageError` con 404: e'
+      // la forma su cui `oggettoMancante` decide che riprovare non serve. Un
+      // fake che segnalasse l'assenza con un errore anonimo nasconderebbe quel
+      // ramo a ogni test che passa di qui.
+      const assente: NodeJS.ErrnoException = new Error(
+        `FakeStorageProvider: chiave assente ${key}`,
+      );
+      assente.code = "ENOENT";
+      return Promise.reject(assente);
     }
     return Promise.resolve(Uint8Array.from(found.data));
   }

@@ -15,7 +15,7 @@ import type {
 export class FakeTranscriptionProvider implements TranscriptionProvider {
   readonly name = "fake";
   readonly #queue: string[] = [];
-  #failNext = false;
+  #failNext: { readonly error: unknown } | null = null;
   #calls = 0;
 
   enqueue(text: string): this {
@@ -23,8 +23,14 @@ export class FakeTranscriptionProvider implements TranscriptionProvider {
     return this;
   }
 
-  failNext(): this {
-    this.#failNext = true;
+  /**
+   * `error` serve a scegliere *quale* guasto: un errore anonimo torna in coda,
+   * un `ProviderHttpError` con 415 no. Senza parametro resta il guasto generico.
+   */
+  failNext(error?: unknown): this {
+    this.#failNext = {
+      error: error ?? new Error("FakeTranscriptionProvider: fallimento simulato"),
+    };
     return this;
   }
 
@@ -42,7 +48,7 @@ export class FakeTranscriptionProvider implements TranscriptionProvider {
    */
   reset(): this {
     this.#queue.length = 0;
-    this.#failNext = false;
+    this.#failNext = null;
     this.#calls = 0;
     return this;
   }
@@ -50,9 +56,10 @@ export class FakeTranscriptionProvider implements TranscriptionProvider {
   transcribe(input: TranscriptionInput): Promise<TranscriptionResult> {
     this.#calls += 1;
 
-    if (this.#failNext) {
-      this.#failNext = false;
-      return Promise.reject(new Error("FakeTranscriptionProvider: fallimento simulato"));
+    const guasto = this.#failNext;
+    if (guasto !== null) {
+      this.#failNext = null;
+      return Promise.reject(guasto.error);
     }
 
     const queued = this.#queue.shift();

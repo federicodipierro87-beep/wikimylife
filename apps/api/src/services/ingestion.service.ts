@@ -11,6 +11,7 @@ import {
   type TranscriptionProvider,
 } from "@wikimylife/shared";
 import type { Logger } from "../logger.js";
+import { oggettoMancante, richiestaRifiutata } from "./ingestion/definitivo.js";
 import type { Clock } from "./ports/Clock.js";
 import type { RecordingJob, RecordingRepository } from "./ports/RecordingRepository.js";
 import { normalizeSteps, validateExtraction } from "./validation/extractionValidation.js";
@@ -30,10 +31,11 @@ import { normalizeSteps, validateExtraction } from "./validation/extractionValid
  * PRIMO: lo stadio 1 non fallisce mai. L'audio e' gia' al sicuro prima che
  * questa funzione venga chiamata; qualunque cosa vada storta qui, il Recording
  * torna in `BOZZA_AUDIO` con l'errore scritto sopra e resta riprocessabile. Si
- * finisce in `ESTRAZIONE_FALLITA` in due casi soltanto: quello previsto dalla
- * §5 — due estrazioni di fila che non producono un JSON conforme — e
- * l'esaurimento di `MAX_INGESTION_ATTEMPTS`, che ferma il ciclo automatico
- * senza togliere niente al retry chiesto da un umano.
+ * finisce in `ESTRAZIONE_FALLITA` in tre casi soltanto: quello previsto dalla
+ * §5 — due estrazioni di fila che non producono un JSON conforme —
+ * l'esaurimento di `MAX_INGESTION_ATTEMPTS`, e un fallimento che riprovare non
+ * puo' cambiare (`ingestion/definitivo.ts`). Nessuno dei tre toglie niente al
+ * retry chiesto da un umano.
  *
  * SECONDO: si conserva tutto quello che e' costato una chiamata a un modello.
  * La trascrizione si salva appena esiste, anche se l'estrazione poi riesce e la
@@ -76,6 +78,10 @@ export const MAX_EXTRACTION_ATTEMPTS = 2;
  * un solo tentativo trasformerebbe un singhiozzo di rete in una registrazione
  * ferma. Tre e non dieci perche' oltre il terzo la causa non e' piu'
  * transitoria, e continuare significa solo pagare.
+ *
+ * Il tetto conta i tentativi ma non li guarda: e' `ingestion/definitivo.ts` a
+ * togliere dalla coda subito cio' che non arriverebbe al terzo giro con una
+ * risposta diversa dalla prima.
  *
  * Non e' un tetto al retry manuale: `POST /retry` resta sempre possibile e
  * concede esattamente un tentativo in piu' per ogni volta che un umano lo
@@ -221,10 +227,15 @@ export function createIngestionService(deps: IngestionDeps): IngestionService {
     try {
       audio = await deps.storage.get(job.audioUrl);
     } catch (error) {
+      // Lo storage che non risponde e' un guasto che passa; l'oggetto che non
+      // c'e' non compare aspettando.
+      const mancante = oggettoMancante(error);
       throw new StageFailure({
         code: IngestionError.audioNonLeggibile,
-        message: `Audio non recuperabile dallo storage: ${describe(error)}`,
-        status: RecordingStatus.BOZZA_AUDIO,
+        message: mancante
+          ? `Audio assente dallo storage: ${describe(error)} Riprovare non lo fa comparire.`
+          : `Audio non recuperabile dallo storage: ${describe(error)}`,
+        status: mancante ? RecordingStatus.ESTRAZIONE_FALLITA : RecordingStatus.BOZZA_AUDIO,
       });
     }
 
@@ -237,10 +248,15 @@ export function createIngestionService(deps: IngestionDeps): IngestionService {
         vocabulary: TRANSCRIPTION_VOCABULARY,
       });
     } catch (error) {
+      // Un 429, un timeout, un 503: aspettare e' l'unica cosa da fare. Un 415
+      // sull'audio di questa riga: aspettare e' l'unica cosa da non fare.
+      const rifiutata = richiestaRifiutata(error);
       throw new StageFailure({
         code: IngestionError.trascrizioneFallita,
-        message: describe(error),
-        status: RecordingStatus.BOZZA_AUDIO,
+        message: rifiutata
+          ? `${describe(error)} La trascrizione e' stata rifiutata per com'e' fatto questo audio: rimandarlo identico darebbe lo stesso esito.`
+          : describe(error),
+        status: rifiutata ? RecordingStatus.ESTRAZIONE_FALLITA : RecordingStatus.BOZZA_AUDIO,
       });
     }
 
@@ -291,11 +307,17 @@ export function createIngestionService(deps: IngestionDeps): IngestionService {
       } catch (error) {
         // Un errore di trasporto non e' "JSON non conforme": la §5 concede il
         // retry al secondo caso, non al primo. Qui non si e' saputo nulla del
-        // modello, quindi si torna in coda invece di bruciare il tentativo.
+        // modello, quindi si torna in coda invece di bruciare il tentativo —
+        // salvo che il rifiuto riguardi questa trascrizione, per esempio perche'
+        // e' piu' lunga di quanto il modello accetti. Quella non si accorcia da
+        // sola.
+        const rifiutata = richiestaRifiutata(error);
         throw new StageFailure({
           code: IngestionError.estrazioneFallita,
-          message: describe(error),
-          status: RecordingStatus.BOZZA_AUDIO,
+          message: rifiutata
+            ? `${describe(error)} L'estrazione e' stata rifiutata per com'e' fatta questa trascrizione: rimandarla identica darebbe lo stesso esito.`
+            : describe(error),
+          status: rifiutata ? RecordingStatus.ESTRAZIONE_FALLITA : RecordingStatus.BOZZA_AUDIO,
         });
       }
 

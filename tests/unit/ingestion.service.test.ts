@@ -15,6 +15,7 @@ import {
   FakeStorageProvider,
   FakeTranscriptionProvider,
 } from "../../apps/api/src/providers/fake/index.js";
+import { ProviderHttpError } from "../../apps/api/src/providers/http.js";
 import {
   IngestionError,
   MAX_EXTRACTION_ATTEMPTS,
@@ -352,8 +353,10 @@ describe("fallimenti che lasciano tutto riprocessabile", () => {
     expect(h.extraction.calls).toBe(0);
   });
 
-  it("un audio non recuperabile non consuma nessun modello", async () => {
-    // Nessun `storage.put`: la chiave non esiste.
+  it("un audio che non c'e' non consuma nessun modello e non torna in coda", async () => {
+    // Nessun `storage.put`: la chiave non esiste. Non e' lo storage che non
+    // risponde — e' l'oggetto che non c'e', e aspettare un'ora e mezza non lo
+    // fa comparire.
     const recording = h.repo.seedRecording({ userId: USER });
 
     const outcome = await h.service.processRecording(recording.id);
@@ -361,8 +364,9 @@ describe("fallimenti che lasciano tutto riprocessabile", () => {
     expect(outcome).toMatchObject({
       kind: "FALLITO",
       code: IngestionError.audioNonLeggibile,
-      status: RecordingStatus.BOZZA_AUDIO,
+      status: RecordingStatus.ESTRAZIONE_FALLITA,
     });
+    expect(h.repo.snapshot(recording.id).nextAttemptAt).toBeNull();
     expect(h.transcription.calls).toBe(0);
     expect(h.extraction.calls).toBe(0);
   });
@@ -645,6 +649,118 @@ describe("il backoff fra un tentativo e il successivo", () => {
     expect(ritardoDopo(3)).toBe(RITARDI_RITENTATIVO[2]);
     expect(ritardoDopo(99)).toBe(RITARDI_RITENTATIVO[2]);
     expect(ritardoDopo(0)).toBe(RITARDI_RITENTATIVO[0]);
+  });
+});
+
+describe("i fallimenti che riprovare non cambierebbe", () => {
+  /**
+   * Il tetto e il backoff contano i tentativi senza guardarli. Questi test
+   * guardano l'altra meta': un guasto che al terzo giro darebbe la stessa
+   * risposta del primo non deve comprare tre giri.
+   */
+
+  it("un formato che il fornitore rifiuta esce subito dalla coda", async () => {
+    h.transcription.failNext(new ProviderHttpError({ provider: "openai", status: 415, body: "" }));
+    const id = await seedConAudio();
+
+    const outcome = await h.service.processRecording(id);
+
+    expect(outcome).toMatchObject({
+      kind: "FALLITO",
+      code: IngestionError.trascrizioneFallita,
+      status: RecordingStatus.ESTRAZIONE_FALLITA,
+    });
+    // Il codice resta quello vero: la UI deve poter dire *cosa* e' successo, e
+    // «formato rifiutato» e «troppi tentativi» non si riparano allo stesso modo.
+    expect(h.repo.snapshot(id).lastErrorCode).toBe(IngestionError.trascrizioneFallita);
+  });
+
+  it("e non programma nessuna attesa", async () => {
+    // Un `nextAttemptAt` nel futuro su una riga che non tornera' in coda
+    // sarebbe una promessa che nessuno mantiene.
+    h.transcription.failNext(new ProviderHttpError({ provider: "openai", status: 413, body: "" }));
+    const id = await seedConAudio();
+
+    await h.service.processRecording(id);
+
+    expect(h.repo.snapshot(id).nextAttemptAt).toBeNull();
+    expect(await h.repo.claimNext(h.clock.now())).toBeNull();
+  });
+
+  it("il messaggio dice che riprovare non serve", async () => {
+    // E' la sola cosa che distingue, per chi legge la scheda, «non ha ancora
+    // funzionato» da «non funzionera'».
+    h.transcription.failNext(new ProviderHttpError({ provider: "openai", status: 415, body: "" }));
+    const id = await seedConAudio();
+
+    await h.service.processRecording(id);
+
+    expect(h.repo.snapshot(id).lastErrorMessage).toContain("stesso esito");
+  });
+
+  it("un 503 dello stesso fornitore invece aspetta e riprova", async () => {
+    // Il contrasto e' il test: stessa classe di errore, stesso stadio, e l'unica
+    // differenza e' il numero. Senza questo caso, «tutto e' definitivo»
+    // passerebbe i tre test qui sopra.
+    h.transcription.failNext(new ProviderHttpError({ provider: "openai", status: 503, body: "" }));
+    const id = await seedConAudio();
+
+    const outcome = await h.service.processRecording(id);
+
+    expect(outcome).toMatchObject({ status: RecordingStatus.BOZZA_AUDIO });
+    expect(attesaDi(id)).toBe(RITARDI_RITENTATIVO[0]);
+  });
+
+  it("una chiave scaduta lascia alla coda i suoi tentativi", async () => {
+    // Un 401 ferma tutta la coda insieme e si ripara da fuori. Toglierle i
+    // tentativi automatici significherebbe un «riprova» a mano per ogni riga
+    // registrata durante il guasto.
+    h.transcription.failNext(new ProviderHttpError({ provider: "openai", status: 401, body: "" }));
+    const id = await seedConAudio();
+
+    const outcome = await h.service.processRecording(id);
+
+    expect(outcome).toMatchObject({ status: RecordingStatus.BOZZA_AUDIO });
+  });
+
+  it("vale anche per l'estrazione, e non brucia il retry della §5", async () => {
+    // Una trascrizione piu' lunga di quanto il modello accetti non si accorcia
+    // al secondo giro. Il tentativo della §5 resta comunque non consumato: qui
+    // il modello non ha risposto niente da validare.
+    h.extraction.failNext(new ProviderHttpError({ provider: "anthropic", status: 413, body: "" }));
+    const id = await seedConAudio();
+
+    const outcome = await h.service.processRecording(id);
+
+    expect(h.extraction.calls).toBe(1);
+    expect(outcome).toMatchObject({
+      kind: "FALLITO",
+      code: IngestionError.estrazioneFallita,
+      status: RecordingStatus.ESTRAZIONE_FALLITA,
+    });
+  });
+
+  it("la trascrizione salvata resta salvata", async () => {
+    // Definitivo vuol dire «non riprovare», non «butta via cio' che e' costato».
+    h.transcription.enqueue("Racconto completo della procedura.");
+    h.extraction.failNext(new ProviderHttpError({ provider: "anthropic", status: 400, body: "" }));
+    const id = await seedConAudio();
+
+    await h.service.processRecording(id);
+
+    expect(h.repo.snapshot(id).transcript).toBe("Racconto completo della procedura.");
+  });
+
+  it("il riscatto a mano funziona lo stesso", async () => {
+    // Il giudizio riguarda il ciclo automatico. Se il fornitore intanto ha
+    // imparato a leggere quel formato, una persona deve poter riprovare.
+    h.transcription.failNext(new ProviderHttpError({ provider: "openai", status: 415, body: "" }));
+    const id = await seedConAudio();
+    await h.service.processRecording(id);
+
+    await h.repo.requeue(USER, id, h.clock.now());
+
+    expect(await h.repo.claimNext(h.clock.now())).toMatchObject({ id });
   });
 });
 

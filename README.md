@@ -802,7 +802,16 @@ memoria — e il tetto ai tentativi di ingestione, compreso che il riscatto manu
 ne ricompri esattamente uno e che il backoff sia una vera attesa: dopo un
 fallimento la riga resta in `BOZZA_AUDIO` ma la coda la ignora, il secondo
 fallimento aspetta più del primo, e prendere la riga o riscattarla a mano
-cancella l'attesa. Della redazione: i rilevatori presi uno per uno, con
+cancella l'attesa. Accanto, quali fallimenti valga la pena riprovare, dove il
+caso che tiene onesto tutto il resto è quello negativo: senza un `503` che invece
+aspetta, «tutto è definitivo» passerebbe ogni altro test del blocco, e senza il
+`401` che resta transitorio nessuno si accorgerebbe di aver trasformato una
+chiave scaduta in un «riprova» a mano per ogni riga della coda. La distinzione si
+prova due volte: sulla funzione, con gli errori costruiti dalle classi vere dei
+provider — riconoscerli da `name` e `status` significa che un rename non rompe
+niente finché qualcuno non lo guarda — e sulla pipeline, dove ciò che conta è che
+la riga esca dalla coda *senza* un `nextAttemptAt` nel futuro, che sarebbe una
+promessa che nessuno mantiene. Della redazione: i rilevatori presi uno per uno, con
 i codici fiscali e gli IBAN validi accanto ai loro gemelli sbagliati di un
 carattere — un test che provi solo che il formato giusto passa non dimostra che
 il checksum venga guardato — e il servizio, dove conta soprattutto ciò che *non*
@@ -1294,6 +1303,40 @@ pensato per una macchina sarebbe punirlo per aver guardato. Per lo stesso motivo
 indistinguibile da un blocco, e un'interfaccia che non sa dirlo invita a premere
 «riprova» proprio mentre il tempo sta già facendo il suo lavoro.
 
+**Tre tentativi distanziati sono la risposta giusta a un guasto passeggero, e
+un'ora e mezza di finta speranza per tutto il resto.** Un `429` passa da sé e
+aspettare è l'unica cosa sensata; un audio che il fornitore rifiuta perché è in
+un formato che non sa leggere darà la stessa risposta al terzo giro che al primo,
+e nel frattempo la registrazione risulta «in lavorazione» a chi l'ha fatta.
+`services/ingestion/definitivo.ts` toglie dalla coda subito ciò che riprovare non
+cambierebbe: un `400`, `413`, `415` o `422` da un fornitore — stati che parlano
+del contenuto della richiesta e non del server che la riceve — e un oggetto che
+lo storage non ha (404 da S3, `ENOENT` dal filesystem).
+
+La classificazione è sbilanciata di proposito. Chiamare «transitorio» qualcosa di
+definitivo costa novanta minuti di tentativi inutili e finisce comunque in
+`ESTRAZIONE_FALLITA`: è esattamente ciò che succedeva prima, quindi non peggiora
+niente. Chiamare «definitivo» qualcosa di transitorio toglie invece i tentativi
+automatici, e riaverli richiede una persona che apra l'app — una volta per riga,
+se la causa era comune a tutta la coda. Per questo `401` e `403` restano
+transitori benché sembrino definitivi: una chiave scaduta si ripara con una
+variabile d'ambiente, e quei novanta minuti sono la finestra per accorgersene
+senza che nessuno perda niente. Per lo stesso motivo un `404` da un fornitore
+resta transitorio — url o modello sbagliati, cioè ancora configurazione — mentre
+un `404` dallo storage no, perché lì significa che l'oggetto non c'è.
+
+Il modulo non importa `ProviderHttpError` né `S3StorageError`: riconosce gli
+errori da `name` e `status`, perché il servizio di ingestione non dipende da
+nessuna implementazione di provider ed è quell'indipendenza a renderlo provabile
+senza chiavi API. Il test invece costruisce gli errori con le classi vere, così
+un rename le fa divergere e qualcuno se ne accorge.
+
+Il codice d'errore resta quello vero anche quando lo stato diventa
+`ESTRAZIONE_FALLITA`: «formato rifiutato» e «troppi tentativi» non si riparano
+allo stesso modo, e la scheda deve poterlo dire. Cambia il messaggio, che aggiunge
+che rimandare la stessa cosa darebbe lo stesso esito — l'unica riga che distingue,
+per chi legge, «non ha ancora funzionato» da «non funzionerà».
+
 ---
 
 ## Dipendenze
@@ -1350,14 +1393,15 @@ Non installate, e il perché:
   RRF fonde due classifiche troncate, e la pagina due di una fusione di due
   finestre diverse non è la continuazione della pagina uno. Servirà una strategia
   a cursore, non un `OFFSET`.
-- **Il tetto ai tentativi continua a non distinguere le cause.** Il backoff ha
-  risolto la metà che riguarda il tempo — tre tentativi adesso sono spalmati su
-  un'ora e mezza invece che su un quarto di minuto — ma non quella che riguarda
-  il perché: un `429` e un file audio corrotto consumano lo stesso budget e
-  aspettano lo stesso minuto, anche se il secondo fallirà identico fra un'ora.
-  Distinguerli vorrebbe dire classificare gli errori dei provider in
-  «transitori» e «definitivi», e quella classificazione è indovinata finché non
-  la si misura su fallimenti veri.
+- **Delle cause di fallimento si riconoscono solo quelle dichiarate.** Un
+  fornitore che rifiuta il contenuto con un `400`, `413`, `415` o `422` esce
+  subito dalla coda; tutto il resto continua a comprare tre tentativi. Ma i
+  guasti definitivi che non si annunciano con uno di quei quattro numeri esistono
+  — un `500` che nasconde un audio illeggibile, un `200` con un corpo che non si
+  interpreta — e per quelli l'ora e mezza si paga ancora. Allungare l'elenco
+  richiede di misurare fallimenti veri, non di indovinarli: finché non ci sono,
+  ogni aggiunta rischia di togliere i tentativi automatici a chi ne aveva
+  bisogno.
 - **Della §9 c'è la metà deterministica.** Il blocco alla pubblicazione e la
   passata su codici fiscali, IBAN, email e telefoni esistono; l'«assistita
   dall'LLM per il resto» no. Nomi di persona, indirizzi di casa, il numero di

@@ -18,7 +18,7 @@ import {
 export class FakeExtractionProvider implements ExtractionProvider {
   readonly name = "fake";
   readonly #queue: unknown[] = [];
-  #failNext = false;
+  #failNext: { readonly error: unknown } | null = null;
   #calls = 0;
   #lastInput: ExtractionInput | null = null;
 
@@ -27,8 +27,9 @@ export class FakeExtractionProvider implements ExtractionProvider {
     return this;
   }
 
-  failNext(): this {
-    this.#failNext = true;
+  /** Come in `FakeTranscriptionProvider`: `error` sceglie quale guasto simulare. */
+  failNext(error?: unknown): this {
+    this.#failNext = { error: error ?? new Error("FakeExtractionProvider: fallimento simulato") };
     return this;
   }
 
@@ -43,7 +44,7 @@ export class FakeExtractionProvider implements ExtractionProvider {
   /** Come in `FakeTranscriptionProvider`: una sola istanza per file di e2e. */
   reset(): this {
     this.#queue.length = 0;
-    this.#failNext = false;
+    this.#failNext = null;
     this.#calls = 0;
     this.#lastInput = null;
     return this;
@@ -53,9 +54,10 @@ export class FakeExtractionProvider implements ExtractionProvider {
     this.#calls += 1;
     this.#lastInput = input;
 
-    if (this.#failNext) {
-      this.#failNext = false;
-      return Promise.reject(new Error("FakeExtractionProvider: fallimento simulato"));
+    const guasto = this.#failNext;
+    if (guasto !== null) {
+      this.#failNext = null;
+      return Promise.reject(guasto.error);
     }
 
     const queued = this.#queue.length > 0 ? this.#queue.shift() : this.#defaultFor(input);
