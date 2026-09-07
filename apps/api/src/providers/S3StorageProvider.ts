@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import type { PutObjectInput, StorageProvider, StoredObject } from "@wikimylife/shared";
+import type {
+  ListObjectsInput,
+  ListedPage,
+  PutObjectInput,
+  StorageProvider,
+  StoredObject,
+} from "@wikimylife/shared";
+import { parseListObjectsV2 } from "./s3/listResult.js";
 import { EMPTY_PAYLOAD_SHA256, encodeKey, signRequest } from "./s3/sigv4.js";
 
 /**
@@ -88,13 +95,23 @@ export class S3StorageProvider implements StorageProvider {
     return new URL(`${this.#origin}${this.#prefix}/${encodeKey(key)}`);
   }
 
+  /**
+   * La URL del bucket, senza chiave: e' cio' su cui si interroga l'elenco.
+   *
+   * In stile virtual-hosted il percorso e' `/` e basta; in path style e' il
+   * nome del bucket. In entrambi i casi non finisce con una barra di troppo,
+   * che la richiesta canonica firmerebbe e S3 non riconoscerebbe.
+   */
+  #urlDelBucket(): URL {
+    return new URL(`${this.#origin}${this.#prefix === "" ? "/" : this.#prefix}`);
+  }
+
   async #send(
     operazione: string,
     method: string,
-    key: string,
+    url: URL,
     body?: { readonly data: Uint8Array; readonly mimeType: string },
   ): Promise<Response> {
-    const url = this.#urlFor(key);
     const headers = signRequest({
       method,
       url,
@@ -126,7 +143,7 @@ export class S3StorageProvider implements StorageProvider {
   }
 
   async put(input: PutObjectInput): Promise<StoredObject> {
-    await this.#send("put", "PUT", input.key, {
+    await this.#send("put", "PUT", this.#urlFor(input.key), {
       data: input.data,
       mimeType: input.mimeType,
     });
@@ -140,7 +157,7 @@ export class S3StorageProvider implements StorageProvider {
   }
 
   async get(key: string): Promise<Uint8Array> {
-    const risposta = await this.#send("get", "GET", key);
+    const risposta = await this.#send("get", "GET", this.#urlFor(key));
     if (risposta.status === 404) {
       throw new S3StorageError("get", 404, `chiave assente: ${key}`);
     }
@@ -150,11 +167,44 @@ export class S3StorageProvider implements StorageProvider {
   async delete(key: string): Promise<void> {
     // Un 404 su una cancellazione non e' un guasto: lo stato voluto e' che la
     // chiave non ci sia, ed e' gia' cosi'.
-    await this.#send("delete", "DELETE", key);
+    await this.#send("delete", "DELETE", this.#urlFor(key));
   }
 
   async exists(key: string): Promise<boolean> {
-    const risposta = await this.#send("exists", "HEAD", key);
+    const risposta = await this.#send("exists", "HEAD", this.#urlFor(key));
     return risposta.ok;
+  }
+
+  /**
+   * `ListObjectsV2`, cioe' una GET sul bucket con `list-type=2`.
+   *
+   * Il segnalibro entra nella query e quindi nella firma: non e' un'opaca
+   * stringa da rimandare indietro cosi' com'e', e sbagliarne la codifica
+   * percentuale produce un `SignatureDoesNotMatch` invece di una seconda
+   * pagina. `URLSearchParams` codifica gli spazi come `+`, che la richiesta
+   * canonica di AWS vuole invece come `%20`; per questo la query si costruisce
+   * con `set` e la firma la ricodifica da sola con `uriEncode`.
+   *
+   * Un 404 qui non e' l'assenza di una chiave, e' l'assenza del bucket: e'
+   * l'unico posto dove la tolleranza di `#send` verso i 404 sarebbe una bugia,
+   * perche' restituirebbe una pagina vuota — cioe' «il bucket non contiene
+   * niente» — a chi sta per concludere che tutto e' spazzatura.
+   */
+  async list(input: ListObjectsInput = {}): Promise<ListedPage> {
+    const url = this.#urlDelBucket();
+    url.searchParams.set("list-type", "2");
+    if (input.prefix !== undefined && input.prefix !== "") {
+      url.searchParams.set("prefix", input.prefix);
+    }
+    if (input.continuationToken !== undefined) {
+      url.searchParams.set("continuation-token", input.continuationToken);
+    }
+
+    const risposta = await this.#send("list", "GET", url);
+    if (risposta.status === 404) {
+      throw new S3StorageError("list", 404, `bucket assente: ${this.#config.bucket}`);
+    }
+
+    return parseListObjectsV2(await risposta.text());
   }
 }

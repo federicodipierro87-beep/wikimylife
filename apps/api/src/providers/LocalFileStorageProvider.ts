@@ -1,6 +1,9 @@
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 import type {
+  ListObjectsInput,
+  ListedObject,
+  ListedPage,
   PutObjectInput,
   StorageProvider,
   StoredObject,
@@ -74,5 +77,51 @@ export class LocalFileStorageProvider implements StorageProvider {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Una sola pagina, sempre: il filesystem non ha un motivo per spezzarla.
+   *
+   * `readdir` ricorsivo su una cartella che non esiste ancora non e' un guasto —
+   * significa che non e' stato ancora caricato niente — e restituire un elenco
+   * vuoto e' la risposta esatta. Le barre si normalizzano a `/` perche' su
+   * Windows `readdir` le dà come `\`, e una chiave con la barra rovescia non
+   * combacerebbe con la stessa chiave scritta nel database da un altro sistema
+   * operativo.
+   *
+   * L'ordinamento è quello del filesystem, cioè nessuno in particolare: chi
+   * chiama non deve dipenderne, come non può dipendere da quello di S3.
+   */
+  async list(input: ListObjectsInput = {}): Promise<ListedPage> {
+    let voci: string[];
+    try {
+      voci = await readdir(this.#root, { recursive: true });
+    } catch {
+      return { objects: [], continuationToken: undefined };
+    }
+
+    const prefix = input.prefix ?? "";
+    const objects: ListedObject[] = [];
+
+    for (const voce of voci) {
+      const key = voce.split(sep).join("/");
+      if (!key.startsWith(prefix)) {
+        continue;
+      }
+      const info = await stat(join(this.#root, voce)).catch(() => null);
+      // Le cartelle non sono oggetti: in uno storage a chiavi non esistono, e
+      // farle comparire qui vorrebbe dire proporre a chi pulisce di cancellare
+      // la cartella di un utente perche' «nessuna riga la nomina».
+      if (info === null || !info.isFile()) {
+        continue;
+      }
+      objects.push({
+        key,
+        sizeBytes: info.size,
+        lastModified: info.mtime.toISOString(),
+      });
+    }
+
+    return { objects, continuationToken: undefined };
   }
 }
