@@ -39,6 +39,8 @@ interface Banco {
   readonly service: StorageSweepService;
   /** Le liste di chiavi arrivate al database, una per interrogazione. */
   readonly chiamate: (readonly string[])[];
+  /** Gli orfani annunciati, in ordine. */
+  readonly orfaniVisti: string[];
   /** Quanti oggetti c'erano ancora nello storage a ogni orfano annunciato. */
   readonly allAnnuncio: number[];
   readonly erroriCancellazione: string[];
@@ -58,6 +60,7 @@ function banco(): Banco {
   const storage = new FakeStorageProvider("memory://sweep", () => clock.now());
   const dati = new InMemoryRecordingRepository();
   const chiamate: (readonly string[])[] = [];
+  const orfaniVisti: string[] = [];
   const allAnnuncio: number[] = [];
   const erroriCancellazione: string[] = [];
   const incancellabili = new Set<string>();
@@ -82,8 +85,6 @@ function banco(): Banco {
       },
     },
     clock,
-    onOrfano: () => allAnnuncio.push(storage.size),
-    onErroreCancellazione: ({ key }) => erroriCancellazione.push(key),
   });
 
   return {
@@ -91,6 +92,7 @@ function banco(): Banco {
     clock,
     service,
     chiamate,
+    orfaniVisti,
     allAnnuncio,
     erroriCancellazione,
     async carica(key: string, etaMs = 0): Promise<void> {
@@ -106,7 +108,15 @@ function banco(): Banco {
     rendiIncancellabile(key: string): void {
       incancellabili.add(key);
     },
-    esegui: (options?: SweepOptions) => service.esegui(options),
+    esegui: (options?: SweepOptions) =>
+      service.esegui({
+        ...options,
+        onOrfano: (object) => {
+          orfaniVisti.push(object.key);
+          allAnnuncio.push(storage.size);
+        },
+        onErroreCancellazione: ({ key }) => erroriCancellazione.push(key),
+      }),
   };
 }
 
@@ -153,7 +163,7 @@ describe("la scopa: cosa risparmia", () => {
     const esito = await b.esegui({ cancella: true });
 
     expect(esito.nominati).toBe(1);
-    expect(esito.orfani).toEqual([]);
+    expect(esito.orfani).toBe(0);
     expect(b.storage.keys).toEqual([key]);
   });
 
@@ -166,7 +176,7 @@ describe("la scopa: cosa risparmia", () => {
     const esito = await b.esegui({ cancella: true });
 
     expect(esito.troppoRecenti).toBe(1);
-    expect(esito.orfani).toEqual([]);
+    expect(esito.orfani).toBe(0);
     expect(b.storage.keys).toEqual([key]);
   });
 
@@ -176,7 +186,7 @@ describe("la scopa: cosa risparmia", () => {
     const esito = await b.esegui();
 
     expect(esito.troppoRecenti).toBe(0);
-    expect(esito.orfani).toHaveLength(1);
+    expect(esito.orfani).toBe(1);
   });
 
   it("non tocca — e non chiede nemmeno al database — cio' che non ha la nostra forma", async () => {
@@ -186,7 +196,7 @@ describe("la scopa: cosa risparmia", () => {
 
     expect(esito.esaminati).toBe(1);
     expect(esito.estranei).toBe(1);
-    expect(esito.orfani).toEqual([]);
+    expect(esito.orfani).toBe(0);
     expect(b.chiamate).toEqual([]);
     expect(b.storage.size).toBe(1);
   });
@@ -194,7 +204,7 @@ describe("la scopa: cosa risparmia", () => {
   it("su un bucket vuoto non interroga il database e non solleva", async () => {
     const esito = await b.esegui({ cancella: true });
 
-    expect(esito).toMatchObject({ esaminati: 0, orfani: [], cancellati: 0, falliti: 0 });
+    expect(esito).toMatchObject({ esaminati: 0, orfani: 0, cancellati: 0, falliti: 0 });
     expect(b.chiamate).toEqual([]);
   });
 
@@ -204,7 +214,7 @@ describe("la scopa: cosa risparmia", () => {
 
     const esito = await b.esegui();
 
-    expect(esito.orfani.map((o) => o.key)).toEqual([key]);
+    expect(b.orfaniVisti).toEqual([key]);
     expect(esito.cancellati).toBe(0);
     expect(b.storage.keys).toEqual([key]);
   });
@@ -235,16 +245,17 @@ describe("la scopa: cosa cancella", () => {
       nominati: 1,
       estranei: 1,
       troppoRecenti: 1,
+      orfani: 1,
       cancellati: 1,
       falliti: 0,
       byteOrfani: 3,
     });
-    expect(esito.orfani.map((o) => o.key)).toEqual([orfano]);
+    expect(b.orfaniVisti).toEqual([orfano]);
     expect([...b.storage.keys].sort()).toEqual([estraneo, nominato, recente].sort());
   });
 
   it("annuncia ogni orfano prima che sia stato cancellato qualcosa", async () => {
-    // Chi stampa l'elenco deve poter fermare la passata guardandolo, e un
+    // Chi legge l'elenco deve poter fermare la passata guardandolo, e un
     // annuncio che arrivasse a cancellazione avvenuta sarebbe un necrologio.
     await b.carica(chiave(1), 10 * GIORNO);
     await b.carica(chiave(2), 10 * GIORNO);
@@ -276,8 +287,8 @@ describe("la scopa: cosa cancella", () => {
     const key = chiave(1);
     await b.carica(key, 60 * 60 * 1000);
 
-    expect((await b.esegui()).orfani).toEqual([]);
-    expect((await b.esegui({ graceMs: 60_000 })).orfani).toHaveLength(1);
+    expect((await b.esegui()).orfani).toBe(0);
+    expect((await b.esegui({ graceMs: 60_000 })).orfani).toBe(1);
   });
 
   it("guarda solo il prefisso che gli si passa", async () => {
@@ -287,7 +298,7 @@ describe("la scopa: cosa cancella", () => {
     const esito = await b.esegui({ prefix: "u2/", cancella: true });
 
     expect(esito.esaminati).toBe(1);
-    expect(esito.orfani.map((o) => o.key)).toEqual([chiave(2, "u2")]);
+    expect(b.orfaniVisti).toEqual([chiave(2, "u2")]);
     expect(b.storage.keys).toEqual([chiave(1, "u1")]);
   });
 
@@ -299,7 +310,7 @@ describe("la scopa: cosa cancella", () => {
 
     b.clock.advanceDays(2);
 
-    expect((await b.esegui()).orfani.map((o) => o.key)).toEqual([key]);
+    expect((await b.esegui()).orfani).toBe(1);
   });
 });
 
@@ -317,7 +328,7 @@ describe("la scopa: la regola 1 quando il database non risponde", () => {
     // Nessuna cancellazione, e nemmeno un annuncio: senza risposta dal
     // database nessuno di questi oggetti e' stato dichiarato orfano.
     expect([...b.storage.keys].sort()).toEqual([...chiavi].sort());
-    expect(b.allAnnuncio).toEqual([]);
+    expect(b.orfaniVisti).toEqual([]);
   });
 });
 
@@ -346,7 +357,7 @@ describe("la scopa: pagine e blocchi", () => {
     const esito = await b.esegui();
 
     expect(esito.esaminati).toBe(4);
-    expect(esito.orfani).toHaveLength(4);
+    expect(esito.orfani).toBe(4);
   });
 
   it("interroga il database a blocchi propri, anche se lo storage risponde tutto in una volta", async () => {
@@ -360,7 +371,7 @@ describe("la scopa: pagine e blocchi", () => {
     const esito = await b.esegui();
 
     expect(esito.esaminati).toBe(1200);
-    expect(esito.orfani).toHaveLength(1200);
+    expect(esito.orfani).toBe(1200);
     expect(b.chiamate.map((c) => c.length)).toEqual([500, 500, 200]);
     // Ogni chiave chiesta una volta sola, nessuna dimenticata.
     expect(new Set(b.chiamate.flat()).size).toBe(1200);
@@ -376,5 +387,45 @@ describe("la scopa: pagine e blocchi", () => {
     await b.esegui();
 
     expect(b.chiamate.map((c) => c.length)).toEqual([30]);
+  });
+
+  it("cancella mentre scorre, senza saltare le pagine che restano", async () => {
+    // Il caso che il segnalibro deve reggere. Con milleduecento oggetti e pagine
+    // da cento, il primo blocco viene cancellato dopo la quinta pagina: da li'
+    // in poi si chiedono pagine di un bucket che si sta accorciando sotto i
+    // piedi. Con un segnalibro posizionale ne salterebbe cinquecento — mai
+    // guardati, quindi mai cancellati, e nessuno se ne accorgerebbe se non
+    // contando.
+    const b = banco();
+    b.storage.pageSize = 100;
+    for (let n = 1; n <= 1200; n += 1) {
+      await b.carica(chiave(n), 10 * GIORNO);
+    }
+
+    const esito = await b.esegui({ cancella: true });
+
+    expect(esito.esaminati).toBe(1200);
+    expect(esito.cancellati).toBe(1200);
+    expect(b.storage.size).toBe(0);
+  });
+
+  it("non tiene in memoria piu' di un blocco di orfani", async () => {
+    // La proprieta' che il riassunto non porta l'elenco: ottocento orfani, e
+    // alla fine il servizio ne ha in mano un conteggio e nient'altro. Chi li
+    // voleva li ha ricevuti strada facendo.
+    const b = banco();
+    for (let n = 1; n <= 800; n += 1) {
+      await b.carica(chiave(n), 10 * GIORNO);
+    }
+
+    const esito = await b.esegui();
+
+    expect(esito.orfani).toBe(800);
+    expect(b.orfaniVisti).toHaveLength(800);
+    // Il primo blocco e' stato annunciato prima che il secondo fosse chiesto al
+    // database: gli annunci non aspettano la fine.
+    expect(b.orfaniVisti.slice(0, 500)).toEqual(
+      Array.from({ length: 500 }, (_, i) => chiave(i + 1)),
+    );
   });
 });

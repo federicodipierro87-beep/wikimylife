@@ -249,26 +249,15 @@ export function compose(config: AppConfig, overrides?: {
     },
   });
 
+  // Senza osservatori, al contrario degli altri servizi: gli orfani li annuncia
+  // a chi ha chiesto la passata, e chi chiede una passata e' uno solo per
+  // processo. Cablarli qui vorrebbe dire deciderne la destinazione una volta per
+  // tutte, e la destinazione buona — il registro, lo schermo — dipende da chi ha
+  // dato il comando.
   const storageSweepService = createStorageSweepService({
     storage: providers.storage,
     repo: recordingRepo,
     clock,
-    // Ogni orfano lascia una riga prima che qualcuno lo cancelli. Se la passata
-    // muore a meta', questo registro e' l'unico posto in cui resta scritto quali
-    // chiavi sono sparite: il rapporto finale, a quel punto, non viene stampato.
-    onOrfano: (object) => {
-      logger.info("orfano trovato", {
-        key: object.key,
-        sizeBytes: object.sizeBytes,
-        lastModified: object.lastModified,
-      });
-    },
-    // Stessa scelta di `onOrphanedAudio`, dall'altro capo: li' resta indietro una
-    // chiave perche' la riga e' gia' sparita, qui perche' il bucket ha detto di
-    // no. In entrambi i casi l'unica cosa da fare e' lasciarne il nome scritto.
-    onErroreCancellazione: ({ key, error }) => {
-      logger.error("orfano non cancellato", { key, error });
-    },
   });
 
   const procedureRepo = new PrismaProcedureRepository(prisma);

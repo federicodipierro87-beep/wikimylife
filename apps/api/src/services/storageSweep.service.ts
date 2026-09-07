@@ -55,6 +55,21 @@ import type { RecordingRepository } from "./ports/RecordingRepository.js";
  * comando che cancella per default trasforma un errore di configurazione — il
  * `DATABASE_URL` di un altro ambiente, per dire — in una perdita di dati
  * irreversibile invece che in una stampa sbagliata.
+ *
+ * ## Cosa NON resta in memoria
+ *
+ * Il riassunto porta quanti orfani ci sono, non quali. L'elenco lo riceve
+ * `onOrfano` mentre la passata procede, uno per volta, e chi lo vuole se lo
+ * stampa o se lo scrive: tenerlo qui per restituirlo alla fine avrebbe voluto
+ * dire un oggetto in memoria per ogni chiave orfana del bucket, cioe' la stessa
+ * cosa che la paginazione di `list` esiste per evitare. Il caso peggiore e'
+ * anche il primo: un bucket trascurato a lungo e' fatto quasi solo di orfani.
+ *
+ * Per la stessa ragione si cancella blocco per blocco invece che alla fine.
+ * Cancellare mentre si scorre e' sicuro perche' il segnalibro di `list` dice
+ * dopo quale oggetto riprendere e non a quale posizione — su un elenco
+ * posizionale ogni chiave tolta ne farebbe saltare una mai guardata — ed e' una
+ * condizione dichiarata in `ListObjectsInput`, non una speranza.
  */
 
 /**
@@ -96,8 +111,8 @@ export interface SweepSummary {
   readonly estranei: number;
   /** Quanti sono orfani ma troppo recenti per la soglia. */
   readonly troppoRecenti: number;
-  /** Gli orfani da cancellare, o cancellati. */
-  readonly orfani: readonly ListedObject[];
+  /** Quanti orfani ha trovato. Quali, lo ha detto `onOrfano` strada facendo. */
+  readonly orfani: number;
   /** Byte che gli orfani occupano. */
   readonly byteOrfani: number;
   /** Quanti sono stati cancellati davvero. Zero se `cancella` era falso. */
@@ -114,18 +129,24 @@ export interface SweepOptions {
   /** Quanto deve essere vecchio un orfano per essere tale. */
   readonly graceMs?: number;
   readonly prefix?: string | undefined;
+  /**
+   * Ogni orfano, appena trovato e prima che il suo blocco venga cancellato.
+   *
+   * E' l'unico modo di sapere quali fossero: il riassunto arriva alla fine, e
+   * una passata interrotta a meta' — o un processo che muore — non arriva alla
+   * fine. Chi cancella deve lasciare scritto cosa, mentre lo fa.
+   */
+  readonly onOrfano?: (object: ListedObject) => void;
+  readonly onErroreCancellazione?: (input: {
+    readonly key: string;
+    readonly error: unknown;
+  }) => void;
 }
 
 export interface StorageSweepDeps {
   readonly storage: StorageProvider;
   readonly repo: Pick<RecordingRepository, "findExistingAudioKeys">;
   readonly clock: Clock;
-  /** Chiamato per ogni orfano trovato, prima di ogni eventuale cancellazione. */
-  readonly onOrfano?: (object: ListedObject) => void;
-  readonly onErroreCancellazione?: (input: {
-    readonly key: string;
-    readonly error: unknown;
-  }) => void;
 }
 
 export interface StorageSweepService {
@@ -143,20 +164,23 @@ export function createStorageSweepService(deps: StorageSweepDeps): StorageSweepS
       let nominati = 0;
       let estranei = 0;
       let troppoRecenti = 0;
+      let orfani = 0;
       let cancellati = 0;
       let falliti = 0;
       let byteOrfani = 0;
-      const orfani: ListedObject[] = [];
 
       /**
-       * Confronta un blocco di candidati con il database.
+       * Confronta un blocco di candidati con il database, e cancella i suoi
+       * orfani prima di passare al blocco dopo.
        *
-       * Un errore qui NON si ignora e non si salta: e' la regola 1. Se questa
-       * chiamata fallisse in silenzio, ogni chiave del blocco risulterebbe non
-       * nominata, cioe' orfana, cioe' da cancellare.
+       * Un errore della prima riga NON si ignora e non si salta: e' la regola 1.
+       * Se questa chiamata fallisse in silenzio, ogni chiave del blocco
+       * risulterebbe non nominata, cioe' orfana, cioe' da cancellare.
        */
       const confronta = async (blocco: readonly ListedObject[]): Promise<void> => {
         const esistenti = await deps.repo.findExistingAudioKeys(blocco.map((o) => o.key));
+
+        const daCancellare: ListedObject[] = [];
 
         for (const oggetto of blocco) {
           if (esistenti.has(oggetto.key)) {
@@ -167,9 +191,27 @@ export function createStorageSweepService(deps: StorageSweepDeps): StorageSweepS
             troppoRecenti += 1;
             continue;
           }
-          orfani.push(oggetto);
+          orfani += 1;
           byteOrfani += oggetto.sizeBytes;
-          deps.onOrfano?.(oggetto);
+          // Prima l'annuncio, poi la cancellazione, e mai il contrario: il
+          // riassunto arriva alla fine, e chi muore a meta' non ci arriva.
+          options.onOrfano?.(oggetto);
+          if (cancella) {
+            daCancellare.push(oggetto);
+          }
+        }
+
+        for (const oggetto of daCancellare) {
+          try {
+            await deps.storage.delete(oggetto.key);
+            cancellati += 1;
+          } catch (error: unknown) {
+            // Una chiave che non si lascia cancellare non ferma le altre: la
+            // passata successiva la ritrovera' identica, ed e' esattamente
+            // quello che deve succedere.
+            falliti += 1;
+            options.onErroreCancellazione?.({ key: oggetto.key, error });
+          }
         }
       };
 
@@ -206,21 +248,6 @@ export function createStorageSweepService(deps: StorageSweepDeps): StorageSweepS
 
       if (candidati.length > 0) {
         await confronta(candidati);
-      }
-
-      if (cancella) {
-        for (const oggetto of orfani) {
-          try {
-            await deps.storage.delete(oggetto.key);
-            cancellati += 1;
-          } catch (error: unknown) {
-            // Una chiave che non si lascia cancellare non ferma le altre: la
-            // passata successiva la ritrovera' identica, ed e' esattamente
-            // quello che deve succedere.
-            falliti += 1;
-            deps.onErroreCancellazione?.({ key: oggetto.key, error });
-          }
-        }
       }
 
       return {

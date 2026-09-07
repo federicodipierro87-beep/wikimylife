@@ -96,6 +96,56 @@ describe("FakeStorageProvider.list", () => {
     expect(seconda.continuationToken).toBeUndefined();
   });
 
+  it("il segnalibro regge se qualcuno cancella mentre scorre", async () => {
+    // La condizione che rende sicura la scopa: cancellare una pagina prima di
+    // chiedere quella dopo non deve far saltare le chiavi non ancora guardate.
+    // Con un segnalibro posizionale ogni chiave tolta ne farebbe scivolare una
+    // fuori dall'elenco senza che nessuno la veda; per questo il token dice
+    // dopo QUALE oggetto riprendere, non a quale posizione.
+    const storage = new FakeStorageProvider();
+    storage.pageSize = 2;
+    for (const n of [1, 2, 3, 4, 5, 6]) {
+      await storage.put({ key: `u1/${String(n)}.webm`, data: AUDIO, mimeType: "audio/webm" });
+    }
+
+    const viste: string[] = [];
+    let token: string | undefined;
+    let giri = 0;
+    do {
+      const pagina = await storage.list({ continuationToken: token });
+      token = pagina.continuationToken;
+      for (const oggetto of pagina.objects) {
+        viste.push(oggetto.key);
+        await storage.delete(oggetto.key);
+      }
+      giri += 1;
+    } while (token !== undefined && giri < 10);
+
+    expect(viste).toEqual([
+      "u1/1.webm",
+      "u1/2.webm",
+      "u1/3.webm",
+      "u1/4.webm",
+      "u1/5.webm",
+      "u1/6.webm",
+    ]);
+    expect((await storage.list()).objects).toEqual([]);
+  });
+
+  it("riscrivere una chiave non la sposta in fondo all'elenco", async () => {
+    // Altrimenti una chiave riscritta durante una passata verrebbe guardata due
+    // volte, o mai piu' se il segnalibro l'aveva gia' superata.
+    const storage = new FakeStorageProvider();
+    await storage.put({ key: "u1/a.webm", data: AUDIO, mimeType: "audio/webm" });
+    await storage.put({ key: "u1/b.webm", data: AUDIO, mimeType: "audio/webm" });
+    await storage.put({ key: "u1/a.webm", data: new Uint8Array([9]), mimeType: "audio/webm" });
+
+    const pagina = await storage.list();
+
+    expect(pagina.objects.map((o) => o.key)).toEqual(["u1/a.webm", "u1/b.webm"]);
+    expect(pagina.objects[0]?.sizeBytes).toBe(1);
+  });
+
   it("touch sposta indietro la data senza toccare i byte", async () => {
     const storage = new FakeStorageProvider();
     await storage.put({ key: "u1/a.webm", data: AUDIO, mimeType: "audio/webm" });

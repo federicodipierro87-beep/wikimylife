@@ -26,10 +26,11 @@ export class FakeStorageProvider implements StorageProvider {
   readonly name = "fake";
   readonly #objects = new Map<
     string,
-    { data: Uint8Array; mimeType: string; lastModified: string }
+    { data: Uint8Array; mimeType: string; lastModified: string; seq: number }
   >();
   readonly #baseUrl: string;
   readonly #now: () => Date;
+  #nextSeq = 1;
 
   /** Quante chiavi per pagina. `Infinity` = una pagina sola. */
   pageSize = Number.POSITIVE_INFINITY;
@@ -42,10 +43,14 @@ export class FakeStorageProvider implements StorageProvider {
   put(input: PutObjectInput): Promise<StoredObject> {
     // Copia difensiva: chi ha passato il buffer potrebbe riusarlo.
     const data = Uint8Array.from(input.data);
+    // Riscrivere una chiave non la sposta in fondo all'elenco: su S3 la
+    // posizione dipende dal nome, non da quando ci si e' scritto sopra.
+    const seq = this.#objects.get(input.key)?.seq ?? this.#nextSeq++;
     this.#objects.set(input.key, {
       data,
       mimeType: input.mimeType,
       lastModified: this.#now().toISOString(),
+      seq,
     });
     return Promise.resolve({
       key: input.key,
@@ -81,35 +86,52 @@ export class FakeStorageProvider implements StorageProvider {
   }
 
   /**
-   * Il segnalibro e' l'indice della prossima chiave, in chiaro.
+   * Il segnalibro e' il numero d'ordine dell'ultima chiave restituita.
    *
-   * S3 manda una stringa opaca, e imitarla — codificando in base64, per dire —
-   * avrebbe reso il fake piu' somigliante e i test meno leggibili, senza
-   * cambiare di una riga cio' che il chiamante puo' fare con quel valore:
-   * rimandarlo indietro.
+   * NON e' la posizione della prossima: la differenza conta, ed e' la ragione
+   * per cui questo numero esiste al posto di un indice. Chi elenca per decidere
+   * cosa cancellare cancella mentre scorre, e con un indice ogni oggetto tolto
+   * farebbe scivolare indietro tutti quelli dopo — la pagina successiva ne
+   * salterebbe altrettanti, in silenzio, e sarebbero proprio quelli che nessuno
+   * ha ancora guardato. Un segnalibro che dice «riprendi dopo questo» sopravvive
+   * alle cancellazioni, ed e' la stessa proprieta' del token di ListObjectsV2,
+   * che riprende dopo una chiave e non da una posizione.
    *
-   * L'ordine e' quello di inserimento, che e' cio' che `Map` garantisce. S3
-   * ordina per chiave; nessuno dei due e' un ordine su cui chi pulisce possa
-   * appoggiarsi, ed e' bene che i due non coincidano.
+   * Resta in chiaro invece che opaco come quello di S3: codificarlo avrebbe reso
+   * il fake piu' somigliante e i test meno leggibili, senza cambiare di una riga
+   * cio' che il chiamante puo' farne — rimandarlo indietro.
+   *
+   * L'ordine e' quello di inserimento; S3 ordina per chiave. Nessuno dei due e'
+   * un ordine su cui chi pulisce possa appoggiarsi, ed e' bene che i due non
+   * coincidano.
    */
   list(input: ListObjectsInput = {}): Promise<ListedPage> {
     const prefix = input.prefix ?? "";
-    const tutte = [...this.#objects.entries()].filter(([key]) => key.startsWith(prefix));
+    const dopo = input.continuationToken === undefined ? 0 : Number(input.continuationToken);
 
-    const da = input.continuationToken === undefined ? 0 : Number(input.continuationToken);
-    const a = da + this.pageSize;
+    const tutte = [...this.#objects.entries()].filter(
+      ([key, o]) => key.startsWith(prefix) && o.seq > dopo,
+    );
 
-    const objects: ListedObject[] = tutte
-      .slice(da, a === Number.POSITIVE_INFINITY ? undefined : a)
-      .map(([key, o]) => ({
-        key,
-        sizeBytes: o.data.byteLength,
-        lastModified: o.lastModified,
-      }));
+    const pagina = tutte.slice(
+      0,
+      this.pageSize === Number.POSITIVE_INFINITY ? undefined : this.pageSize,
+    );
+
+    const objects: ListedObject[] = pagina.map(([key, o]) => ({
+      key,
+      sizeBytes: o.data.byteLength,
+      lastModified: o.lastModified,
+    }));
+
+    const ultima = pagina[pagina.length - 1];
 
     return Promise.resolve({
       objects,
-      continuationToken: a < tutte.length ? String(a) : undefined,
+      continuationToken:
+        ultima === undefined || pagina.length === tutte.length
+          ? undefined
+          : String(ultima[1].seq),
     });
   }
 

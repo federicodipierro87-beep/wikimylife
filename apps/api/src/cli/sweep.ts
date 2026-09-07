@@ -68,11 +68,28 @@ async function main(): Promise<void> {
       cancella: comando.cancella,
       graceMs: comando.graceMs,
       prefix: comando.prefix,
+      // Riga per riga mentre la passata va avanti, e non un elenco alla fine:
+      // il servizio non tiene gli orfani in memoria apposta, e su un bucket
+      // trascurato a lungo l'elenco sarebbe il bucket. Il registro riceve gli
+      // stessi nomi, ed e' l'unica prova che resta se la passata muore a meta' —
+      // il riassunto, a quel punto, non viene mai stampato.
+      onOrfano: (object) => {
+        process.stdout.write(`${formatOrfano(object)}\n`);
+        logger.info("orfano trovato", {
+          key: object.key,
+          sizeBytes: object.sizeBytes,
+          lastModified: object.lastModified,
+        });
+      },
+      // Stessa scelta di `onOrphanedAudio`, dall'altro capo: li' resta indietro
+      // una chiave perche' la riga e' gia' sparita, qui perche' il bucket ha
+      // detto di no. In entrambi i casi non c'e' altro da fare che lasciarne il
+      // nome scritto.
+      onErroreCancellazione: ({ key, error }) => {
+        logger.error("orfano non cancellato", { key, error });
+      },
     });
 
-    for (const orfano of esito.orfani) {
-      process.stdout.write(`${formatOrfano(orfano)}\n`);
-    }
     process.stdout.write(formatSummary(esito, comando.cancella));
 
     // Un fallimento di cancellazione non e' un guasto della passata, ma non e'

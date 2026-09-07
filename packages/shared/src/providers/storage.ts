@@ -44,6 +44,11 @@ export interface ListObjectsInput {
   readonly prefix?: string | undefined;
   /**
    * Il segnalibro restituito dalla pagina precedente. Assente = si comincia.
+   *
+   * Dice DOPO QUALE OGGETTO riprendere, e non a quale posizione: la differenza
+   * si vede solo quando qualcuno cancella mentre scorre — che e' esattamente
+   * cio' per cui questo elenco esiste. Un segnalibro posizionale farebbe saltare
+   * tanti oggetti mai guardati quanti ne sono stati tolti, senza dirlo.
    */
   readonly continuationToken?: string | undefined;
 }

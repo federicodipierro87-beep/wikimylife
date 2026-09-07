@@ -109,7 +109,7 @@ const vuoto: SweepSummary = {
   nominati: 0,
   estranei: 0,
   troppoRecenti: 0,
-  orfani: [],
+  orfani: 0,
   byteOrfani: 0,
   cancellati: 0,
   falliti: 0,
@@ -123,10 +123,7 @@ describe("il rapporto", () => {
   });
 
   it("dice come cancellare, quando ha solo guardato", () => {
-    const testo = formatSummary(
-      { ...vuoto, esaminati: 1, orfani: [orfano], byteOrfani: 2048 },
-      false,
-    );
+    const testo = formatSummary({ ...vuoto, esaminati: 1, orfani: 1, byteOrfani: 2048 }, false);
     expect(testo).toContain("--cancella");
     expect(testo).not.toContain("cancellati");
   });
@@ -137,11 +134,11 @@ describe("il rapporto", () => {
   });
 
   it("conta i falliti solo se ce ne sono", () => {
-    const bene = formatSummary({ ...vuoto, orfani: [orfano], cancellati: 1 }, true);
+    const bene = formatSummary({ ...vuoto, orfani: 1, cancellati: 1 }, true);
     expect(bene).toContain("cancellati");
     expect(bene).not.toContain("falliti");
 
-    const male = formatSummary({ ...vuoto, orfani: [orfano], cancellati: 0, falliti: 1 }, true);
+    const male = formatSummary({ ...vuoto, orfani: 1, cancellati: 0, falliti: 1 }, true);
     expect(male).toContain("falliti");
   });
 });

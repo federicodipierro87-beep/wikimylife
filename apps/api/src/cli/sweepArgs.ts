@@ -148,7 +148,7 @@ export function formatSummary(summary: SweepSummary, cancella: boolean): string 
     riga("nominati", summary.nominati, "una riga li nomina"),
     riga("estranei", summary.estranei, "non hanno la forma di una chiave nostra"),
     riga("recenti", summary.troppoRecenti, "piu' giovani della soglia"),
-    riga("orfani", summary.orfani.length, formatBytes(summary.byteOrfani)),
+    riga("orfani", summary.orfani, formatBytes(summary.byteOrfani)),
   ];
 
   if (cancella) {
@@ -158,7 +158,7 @@ export function formatSummary(summary: SweepSummary, cancella: boolean): string 
         riga("falliti", summary.falliti, "restano dove sono, la prossima passata li ritrova"),
       );
     }
-  } else if (summary.orfani.length > 0) {
+  } else if (summary.orfani > 0) {
     righe.push("", "Non e' stato cancellato niente. Per farlo davvero: --cancella");
   }
 

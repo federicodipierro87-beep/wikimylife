@@ -1248,11 +1248,21 @@ copre un modo diverso di sbagliare:
    condizioni ed è comunque roba di qualcuno.
 
 Il rapporto va su stdout e il registro su stderr, così `npm run sweep > elenco.txt`
-lascia un elenco leggibile. Ogni orfano viene scritto nel registro *prima* che
-qualcosa venga cancellato: se la passata muore a metà, quelle righe sono l'unica
-prova di quali chiavi siano sparite. L'uscita è `2` per una riga di comando
-sbagliata, `1` se qualche cancellazione è fallita — e una chiave che non si lascia
-cancellare non ferma le altre, perché la passata dopo la ritrova identica.
+lascia un elenco leggibile. Ogni orfano viene scritto *mentre* la passata procede
+e *prima* che il suo blocco venga cancellato: se muore a metà, quelle righe sono
+l'unica prova di quali chiavi siano sparite, perché il riassunto finale non
+arriva mai. L'uscita è `2` per una riga di comando sbagliata, `1` se qualche
+cancellazione è fallita — e una chiave che non si lascia cancellare non ferma le
+altre, perché la passata dopo la ritrova identica.
+
+Il riassunto dice **quanti** orfani, non quali: la passata non ne tiene in memoria
+più di un blocco per volta, e cancella blocco per blocco invece che alla fine. Il
+caso peggiore è anche il primo — un bucket trascurato a lungo è fatto quasi solo
+di orfani — e tenerne l'elenco vorrebbe dire caricare in memoria il bucket, cioè
+la cosa che la paginazione di `list` esiste per evitare. Cancellare mentre si
+scorre è sicuro perché il segnalibro di `list` dice *dopo quale oggetto*
+riprendere e non *a quale posizione*: su un elenco posizionale ogni chiave tolta
+ne farebbe saltare una mai guardata.
 
 Il servizio sta in `apps/api/src/services/storageSweep.service.ts` e non è legato
 al comando: il giorno in cui lo si vuole pianificare, il worker è il posto e non
