@@ -62,9 +62,11 @@ export class InMemoryProcedureRepository implements ProcedureRepository {
   /** Liste che i due canali restituiranno, programmate dal test. */
   fullTextResult: readonly ScoredProcedureId[] = [];
   semanticResult: readonly ScoredProcedureId[] = [];
-  /** Gli argomenti dell'ultima chiamata, per asserire il moltiplicatore. */
+  /** Gli argomenti dell'ultima chiamata, per asserire la finestra dei canali. */
   lastFullTextOptions: { limit: number; scope?: Scope | undefined } | null = null;
   lastSemanticOptions: { limit: number; scope?: Scope | undefined } | null = null;
+  /** Quante righe la ricerca ha davvero idratato: e' li' che sta il costo. */
+  lastSummaryIds: readonly string[] = [];
 
   seed(input: SeedProcedure): ProcedureDetailRow {
     const id = input.id ?? nextId();
@@ -268,6 +270,7 @@ export class InMemoryProcedureRepository implements ProcedureRepository {
     userId: string,
     ids: readonly string[],
   ): Promise<readonly ProcedureSummaryRow[]> {
+    this.lastSummaryIds = ids;
     // Ordine arbitrario di proposito, come in SQL: e' il servizio a doverlo
     // ristabilire, e un test che passasse solo perche' qui l'ordine e' quello
     // giusto non proverebbe niente.

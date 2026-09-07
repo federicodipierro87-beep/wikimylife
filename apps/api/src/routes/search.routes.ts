@@ -12,10 +12,12 @@ import type { SearchService } from "../services/search.service.js";
  * restituisce comunque, ordinato. Meglio un 400 esplicito che una lista di
  * risultati casuali con un punteggio accanto.
  *
- * Non c'e' `offset`: la seconda pagina di una ricerca fusa non e' stabile —
- * l'ordine dipende dalle due liste intere, e ripetere la query per saltare i
- * primi venti significa rifare entrambe le interrogazioni e la fusione. Se
- * servira' un "carica altri", si fara' allargando `limit`.
+ * `offset` c'e', e arriva fino a `SEARCH_MAX_DEPTH`. Sfogliare una ricerca fusa
+ * e' stabile solo perche' la finestra che i due canali restituiscono non dipende
+ * da `limit`: la classifica e' la stessa a ogni pagina, e saltarne i primi venti
+ * elementi vuol dire leggerne venti in meno, non venti in piu'. Il tetto non e'
+ * una prudenza sul costo — le pagine costano tutte uguale — ma il confine oltre
+ * il quale la fusione non ha piu' nulla da ordinare.
  */
 export function createSearchRouter(deps: {
   searchService: SearchService;

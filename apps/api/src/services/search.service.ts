@@ -1,8 +1,9 @@
-import type {
-  EmbeddingProvider,
-  SearchHit,
-  SearchQuery,
-  SearchResult,
+import {
+  SEARCH_MAX_DEPTH,
+  type EmbeddingProvider,
+  type SearchHit,
+  type SearchQuery,
+  type SearchResult,
 } from "@wikimylife/shared";
 import type { Clock } from "./ports/Clock.js";
 import type { ProcedureRepository, ScoredProcedureId } from "./ports/ProcedureRepository.js";
@@ -14,15 +15,31 @@ import { confrontaPerRilevanza, fuseRankings } from "./search/fusion.js";
  *
  * Tre passi: due interrogazioni indipendenti, una fusione, una lettura.
  *
- * ## Perche' si chiede piu' del necessario a ciascun canale
+ * ## Perche' a ciascun canale si chiede sempre lo stesso numero di righe
  *
- * Se l'utente vuole 20 risultati, ogni canale ne restituisce
- * `limit * MOLTIPLICATORE`. La ragione e' il modo stesso in cui funziona RRF:
- * una scheda che sta ventunesima nel full-text e prima nella semantica dovrebbe
- * finire in cima, ma se al full-text avessimo chiesto solo venti righe non
- * sapremmo nemmeno che il testo la contiene, e la classificheremmo come
- * `SEMANTICA` invece che `ENTRAMBE`. Il costo e' qualche riga in piu' da due
- * indici; il beneficio e' che l'accordo fra canali viene visto davvero.
+ * A ciascun canale si chiedono `SEARCH_MAX_DEPTH` righe: una finestra fissa, non
+ * un multiplo di quelle che l'utente ha chiesto. Le ragioni sono due, e la
+ * seconda e' arrivata dopo.
+ *
+ * La prima e' il modo stesso in cui funziona RRF: una scheda che sta ventunesima
+ * nel full-text e prima nella semantica dovrebbe finire in cima, ma se al
+ * full-text avessimo chiesto solo venti righe non sapremmo nemmeno che il testo
+ * la contiene, e la classificheremmo come `SEMANTICA` invece che `ENTRAMBE`. Il
+ * costo e' qualche riga in piu' da due indici; il beneficio e' che l'accordo fra
+ * canali viene visto davvero.
+ *
+ * La seconda e' la paginazione. Finche' la finestra valeva `limit * 3`, la
+ * classifica fusa dipendeva dalla dimensione della pagina: chiedere venti
+ * risultati e chiederne cinquanta produceva due ordinamenti diversi, e la
+ * seconda pagina non era la continuazione della prima. Con una finestra fissa la
+ * fusione e' funzione dei soli `q`, `scope` e dati: `offset` diventa un indice
+ * dentro una lista che non si muove, e costa uguale a qualsiasi profondita' —
+ * saltare ottanta risultati non e' leggere ottanta righe in piu', perche' le
+ * righe si leggono solo per la pagina che si serve.
+ *
+ * Il prezzo e' dichiarato invece che nascosto: oltre `SEARCH_MAX_DEPTH` non si
+ * sfoglia. Cio' che nessuno dei due canali ha messo fra i suoi primi cento non
+ * entra nella fusione, e nessuna pagina lo farebbe comparire.
  *
  * ## Cosa succede se l'embedding non si puo' calcolare
  *
@@ -32,11 +49,6 @@ import { confrontaPerRilevanza, fuseRankings } from "./search/fusion.js";
  * renda inutilizzabile la funzione principale dell'app su dati che sono gia'
  * tutti in casa.
  */
-
-/** Quante righe chiedere a ciascun canale, in rapporto a quelle richieste. */
-const MOLTIPLICATORE_CANALE = 3;
-/** Tetto assoluto: oltre, RRF non cambia piu' le prime venti posizioni. */
-const MAX_PER_CANALE = 100;
 
 export interface SearchService {
   search(userId: string, query: SearchQuery): Promise<SearchResult>;
@@ -55,9 +67,8 @@ export function createSearchService(deps: SearchServiceDeps): SearchService {
 
   return {
     async search(userId: string, query: SearchQuery): Promise<SearchResult> {
-      const perCanale = Math.min(query.limit * MOLTIPLICATORE_CANALE, MAX_PER_CANALE);
       const options = {
-        limit: perCanale,
+        limit: SEARCH_MAX_DEPTH,
         ...(query.scope === undefined ? {} : { scope: query.scope }),
       };
 
@@ -74,21 +85,31 @@ export function createSearchService(deps: SearchServiceDeps): SearchService {
         })(),
       ]);
 
-      const fused = fuseRankings({ fullText, semantic });
-      if (fused.length === 0) {
-        return { q: query.q, items: [] };
-      }
+      // La classifica servibile e' una sola, e ogni pagina e' una finestra sulla
+      // stessa: e' questo che rende `offset` un indice e non una scommessa.
+      const servibili = fuseRankings({ fullText, semantic }).slice(0, SEARCH_MAX_DEPTH);
+      const fine = query.offset + query.limit;
+      const hasMore = servibili.length > fine;
 
       // Si tagliano gli id PRIMA di leggere le righe: idratare cento schede per
       // mostrarne venti sarebbe lavoro buttato, e la fusione ha gia' deciso
       // l'ordine di rilevanza.
-      const vincitori = fused.slice(0, query.limit);
+      const vincitori = servibili.slice(query.offset, fine);
+      if (vincitori.length === 0) {
+        return { q: query.q, items: [], limit: query.limit, offset: query.offset, hasMore };
+      }
       const righe = await repo.summariesByIds(
         userId,
         vincitori.map((f) => f.id),
       );
       const perId = new Map(righe.map((r) => [r.id, r]));
 
+      // Il riordino per freschezza vale dentro la pagina, non fra pagine: due
+      // schede a pari punteggio che cadono ai lati del taglio non si incontrano
+      // mai. Confrontarle vorrebbe dire idratare tutte e cento le candidate a
+      // ogni ricerca — e sarebbe pagare l'intera profondita' per rifinire un
+      // pareggio. Cio' che la paginazione promette e' che nessuna scheda si
+      // ripeta e nessuna sparisca, e quello lo garantisce il taglio sugli id.
       const adesso = clock.now();
       const items: SearchHit[] = vincitori
         .flatMap((f) => {
@@ -117,7 +138,10 @@ export function createSearchService(deps: SearchServiceDeps): SearchService {
           matchedBy: f.matchedBy,
         }));
 
-      return { q: query.q, items };
+      // `hasMore` guarda `servibili`, non `items`: se una scheda e' stata
+      // cancellata fra la fusione e l'idratazione la pagina esce piu' corta di
+      // `limit`, ma la successiva esiste lo stesso e va offerta.
+      return { q: query.q, items, limit: query.limit, offset: query.offset, hasMore };
     },
   };
 }

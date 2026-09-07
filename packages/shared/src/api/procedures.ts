@@ -370,11 +370,32 @@ export const SearchMatch = {
 export const SEARCH_PAGE_SIZE = 20;
 export const SEARCH_PAGE_SIZE_MAX = 50;
 
+/**
+ * Quante schede la ricerca considera, in tutto.
+ *
+ * E' un numero solo perche' fa due mestieri che devono restare uguali: quante
+ * righe si chiedono a ciascuno dei due canali, e quante ne resta dopo la
+ * fusione. Chiederne cento per canale e servirne cento fuse e' il punto in cui
+ * una scheda centesima nel full-text puo' ancora arrivare prima, se la semantica
+ * l'ha messa in cima.
+ *
+ * Serve che sia una costante, e non un multiplo di `limit`: e' la finestra fissa
+ * a rendere la classifica fusa la stessa a ogni pagina, e quindi `offset` un
+ * indice esatto invece di un salto dentro una lista che nel frattempo si e'
+ * riordinata.
+ *
+ * Il limite e' quello del metodo, non della paginazione: cio' che nessuno dei
+ * due canali ha messo fra i suoi primi cento non entra nella fusione e non
+ * esiste, a nessuna pagina. Dichiararlo qui e' l'unico modo di non prometterlo.
+ */
+export const SEARCH_MAX_DEPTH = 100;
+
 export const searchQuerySchema = z
   .object({
     q: z.string().trim().min(2).max(300),
     scope: z.enum(scopeValues).optional(),
     limit: z.coerce.number().int().min(1).max(SEARCH_PAGE_SIZE_MAX).default(SEARCH_PAGE_SIZE),
+    offset: z.coerce.number().int().min(0).max(SEARCH_MAX_DEPTH).default(0),
   })
   .strict();
 
@@ -393,6 +414,18 @@ export const searchResultSchema = z
   .object({
     q: z.string(),
     items: z.array(searchHitSchema),
+    limit: z.number().int(),
+    offset: z.number().int(),
+    /**
+     * C'e' almeno un'altra pagina.
+     *
+     * Non un `total`, come nella lista: la ricerca sa quante schede sono entrate
+     * nella fusione, non quante ne esistono. Un numero qui verrebbe letto come
+     * «risultati trovati» e sarebbe falso ogni volta che i canali hanno
+     * troncato. Un booleano dice l'unica cosa che si sa davvero, ed e' anche
+     * l'unica che serve a decidere se disegnare il pulsante.
+     */
+    hasMore: z.boolean(),
   })
   .strict();
 

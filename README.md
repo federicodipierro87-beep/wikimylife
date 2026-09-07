@@ -176,7 +176,7 @@ GET    /api/procedures/:id             scheda completa con tutte le relazioni
 PATCH  /api/procedures/:id             modifica manuale
 DELETE /api/procedures/:id             soft delete → ARCHIVIATA
 POST   /api/procedures/:id/executions  registra un'esecuzione (§8)
-GET    /api/search?q=                  ricerca ibrida (§7)
+GET    /api/search?q=                  ricerca ibrida (§7), paginata con offset
 ```
 
 **Le liste nascondono il cestino, ma non lo cancellano.** `DELETE` porta la
@@ -234,6 +234,34 @@ Due dettagli che sembrano piccoli e non lo sono:
 Se il provider di embedding cade, la ricerca **risponde lo stesso** col solo
 full-text e lascia una riga di warning nei log. I dati sono già tutti in casa: un
 timeout esterno non deve rendere inutilizzabile la funzione principale dell'app.
+
+**La finestra che si chiede ai due canali è fissa, e per questo si può
+sfogliare.** Per un po' ciascun canale restituiva `limit * 3` righe, con un tetto
+a cento: sembrava un'ottimizzazione ragionevole — chiedi in proporzione a quanto
+ti serve — ed era invece la ragione per cui `GET /api/search` non poteva avere un
+`offset`. Se la finestra dipende da `limit`, la classifica fusa dipende dalla
+dimensione della pagina: chiedere venti risultati e chiederne cinquanta produce
+due ordinamenti diversi, e la seconda pagina non è la continuazione della prima
+ma un pezzo di un'altra lista. Con una finestra fissa a `SEARCH_MAX_DEPTH` la
+fusione torna a essere una funzione dei soli `q`, `scope` e dati: `offset`
+diventa un indice dentro una lista che non si muove.
+
+Il vantaggio non è solo la correttezza. Un `OFFSET` SQL fa scartare al database
+le righe saltate, e la pagina cinque costa più della prima; qui la profondità
+sposta una finestra già in memoria e le righe si leggono soltanto per la pagina
+che si serve, quindi `offset=80` costa esattamente quanto `offset=0`. Il prezzo è
+il tetto, ed è dichiarato: oltre `SEARCH_MAX_DEPTH` non si sfoglia, perché ciò
+che nessuno dei due canali ha messo fra i suoi primi cento non è entrato nella
+fusione e nessuna pagina lo farebbe comparire. Il limite è del metodo, non della
+paginazione — chiedere `offset=1000` prende un `400` invece di una pagina vuota
+che sembrerebbe la fine dei risultati.
+
+La risposta porta `limit`, `offset` e **`hasMore`**, non un `total` come la lista.
+La lista conta righe e sa quante ne esistono; la ricerca sa solo quante ne sono
+entrate nella fusione, e un numero lì verrebbe letto come «risultati trovati» e
+sarebbe falso ogni volta che i canali hanno troncato. Un booleano dice l'unica
+cosa che si sa davvero, ed è anche l'unica che serve a decidere se disegnare il
+pulsante.
 
 ### Il full-text è denormalizzato di proposito
 
@@ -775,7 +803,10 @@ Fase 3: la composizione di `searchText()`, la fusione RRF come funzione pura (ch
 l'accordo batta l'eccellenza in un canale solo, l'ordinamento a parità, il
 degrado con un canale vuoto), le regole §8 e §9 del servizio delle procedure, e
 l'orchestrazione della ricerca — incluso il provider di embedding che cade e non
-deve portarsi via la risposta. Della Fase 4: lo svuotamento della coda (ordine di
+deve portarsi via la risposta, e la finestra che i due canali ricevono, che deve
+restare la stessa qualunque siano `limit` e `offset`: è quell'invariante, e non
+il taglio della pagina, a rendere la seconda pagina la continuazione della prima.
+Della Fase 4: lo svuotamento della coda (ordine di
 invio, `drain()` rientrante, un 401 che marca invece di riprovare all'infinito,
 una rete assente che lascia tutto in coda), le regole di presentazione con un
 *adesso* fisso — un test che legge l'orologio di sistema fallisce da solo a
@@ -867,6 +898,16 @@ spaiate non faccia `500`. Il canale semantico lì tace, perché il
 `FakeEmbeddingProvider` produce vettori quasi ortogonali: un test scrive a mano
 nella colonna l'embedding della query stessa, così il percorso SQL semantico —
 indice, cast, pavimento, fusione — resta comunque esercitato.
+
+Lì sta anche l'unico test che può smentire la paginazione. Che il servizio tagli
+la classifica dove deve lo dice il test in memoria; che la classifica sia *la
+stessa* fra una richiesta e l'altra lo può dire solo Postgres. Cinque schede,
+tre pagine da due, e si conta l'unione: se l'ordine dei canali non fosse
+deterministico, o se la finestra dipendesse ancora da `limit`, una scheda
+comparirebbe due volte e un'altra nessuna. Le cinque si creano in serie e non in
+parallelo, perché `updatedAt` è ciò che rompe i pareggi di `ts_rank_cd` e cinque
+scritture concorrenti se lo giocherebbero a caso — rendendo non ripetibile
+proprio la cosa che il test misura.
 
 La redazione ha lì il suo test che conta: crea una scheda con un codice fiscale
 nel titolo, la cerca e la trova, redige, ricerca di nuovo e si aspetta zero
@@ -1389,10 +1430,20 @@ Non installate, e il perché:
   una `PATCH` sulla scheda indicata da `duplicateOfId`, leggendo l'estrazione
   dalla registrazione. Non esiste una rotta che unisca le due in un colpo solo,
   ed è voluto: la fusione è una decisione, e va vista prima di essere scritta.
-- **La ricerca non pagina.** `GET /api/search` ha un `limit` e nessun `offset`:
-  RRF fonde due classifiche troncate, e la pagina due di una fusione di due
-  finestre diverse non è la continuazione della pagina uno. Servirà una strategia
-  a cursore, non un `OFFSET`.
+- **La ricerca pagina fino a cento risultati, e non oltre.** `offset` c'è ed è
+  esatto, ma solo dentro la finestra che i due canali restituiscono: una scheda
+  che non sta fra le prime cento né per testo né per vettori non compare a nessuna
+  pagina. Per un archivio personale è un tetto che quasi nessuno tocca, e superarlo
+  non è questione di paginare meglio — vorrebbe dire cambiare il metodo, perché è
+  la fusione stessa a lavorare su liste troncate.
+- **Fra una pagina e l'altra il pareggio non si rompe.** Dentro una pagina, due
+  schede a pari punteggio RRF si ordinano per freschezza e poi per numero di
+  esecuzioni; ai lati del taglio no, perché le righe si leggono solo per la pagina
+  che si serve e due candidate su pagine diverse non si incontrano mai. Confrontarle
+  significherebbe idratare tutte e cento le candidate a ogni ricerca, cioè pagare
+  l'intera profondità per rifinire un pareggio. Ciò che la paginazione garantisce
+  è che nessuna scheda si ripeta e nessuna sparisca; l'ordine *fine* vale nella
+  pagina.
 - **Delle cause di fallimento si riconoscono solo quelle dichiarate.** Un
   fornitore che rifiuta il contenuto con un `400`, `413`, `415` o `422` esce
   subito dalla coda; tutto il resto continua a comprare tre tentativi. Ma i

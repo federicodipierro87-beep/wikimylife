@@ -23,11 +23,15 @@ const MIN_CARATTERI = 2;
 export function SearchScreen(): React.JSX.Element {
   const [testo, setTesto] = useState("");
   const [query, setQuery] = useState("");
+  const [offset, setOffset] = useState(0);
 
   useEffect(() => {
     const pulito = testo.trim();
     const timer = setTimeout(() => {
       setQuery(pulito.length >= MIN_CARATTERI ? pulito : "");
+      // Cambiata la domanda, la pagina tre della domanda di prima non vuol dire
+      // piu' niente: si riparte dalla prima.
+      setOffset(0);
     }, RITARDO_MS);
     return () => {
       clearTimeout(timer);
@@ -38,8 +42,8 @@ export function SearchScreen(): React.JSX.Element {
     () =>
       query === ""
         ? Promise.resolve(null)
-        : apiClient.search({ q: query, limit: SEARCH_PAGE_SIZE }),
-    [query],
+        : apiClient.search({ q: query, limit: SEARCH_PAGE_SIZE, offset }),
+    [query, offset],
   );
 
   return (
@@ -87,9 +91,7 @@ export function SearchScreen(): React.JSX.Element {
       {stato.kind === "pronto" && stato.dato !== null && (
         <>
           <p className="muto" aria-live="polite">
-            {stato.dato.items.length === 0
-              ? `Niente per «${stato.dato.q}».`
-              : `${String(stato.dato.items.length)} risultati per «${stato.dato.q}».`}
+            {riassunto(stato.dato)}
           </p>
 
           <ul className="elenco">
@@ -106,8 +108,79 @@ export function SearchScreen(): React.JSX.Element {
               </li>
             ))}
           </ul>
+
+          <Paginazione
+            risultato={stato.dato}
+            onOffset={(nuovo) => {
+              setOffset(nuovo);
+              window.scrollTo({ top: 0 });
+            }}
+          />
         </>
       )}
     </main>
+  );
+}
+
+/**
+ * Quanti risultati, o quali.
+ *
+ * Sulla prima e unica pagina il numero e' un conteggio vero e si dice cosi'.
+ * Appena si sfoglia diventa una frazione di qualcosa di cui non si sa il totale
+ * — la ricerca conosce le schede entrate nella fusione, non quante ne esistono —
+ * e allora si dichiara l'intervallo, che e' l'unica cosa esatta.
+ */
+function riassunto(r: SearchResult): string {
+  if (r.items.length === 0) {
+    return r.offset === 0 ? `Niente per «${r.q}».` : `Non c'e' altro per «${r.q}».`;
+  }
+  if (r.offset === 0 && !r.hasMore) {
+    return `${String(r.items.length)} risultati per «${r.q}».`;
+  }
+  return `Risultati ${String(r.offset + 1)}–${String(r.offset + r.items.length)} per «${r.q}».`;
+}
+
+/**
+ * Avanti e indietro, come nell'elenco, ma senza il «di quanti».
+ *
+ * L'elenco sa il totale perche' conta righe; la ricerca no, e mettere un numero
+ * li' in mezzo vorrebbe dire inventarlo. `hasMore` basta: e' esattamente la
+ * risposta alla sola domanda che il pulsante pone.
+ */
+function Paginazione({
+  risultato,
+  onOffset,
+}: {
+  risultato: SearchResult;
+  onOffset: (offset: number) => void;
+}): React.JSX.Element | null {
+  if (risultato.offset === 0 && !risultato.hasMore) {
+    return null;
+  }
+
+  return (
+    <nav className="paginazione">
+      <button
+        type="button"
+        className="bottone bottone--piatto"
+        disabled={risultato.offset === 0}
+        onClick={() => {
+          onOffset(Math.max(0, risultato.offset - risultato.limit));
+        }}
+      >
+        Precedenti
+      </button>
+      <span className="muto">Pagina {String(risultato.offset / risultato.limit + 1)}</span>
+      <button
+        type="button"
+        className="bottone bottone--piatto"
+        disabled={!risultato.hasMore}
+        onClick={() => {
+          onOffset(risultato.offset + risultato.limit);
+        }}
+      >
+        Successive
+      </button>
+    </nav>
   );
 }

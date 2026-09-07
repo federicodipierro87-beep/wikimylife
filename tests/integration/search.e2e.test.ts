@@ -295,6 +295,8 @@ describe("fusione e ordinamento", () => {
     const result = await cerca(token, "q=casellario&limit=1");
 
     expect(result.items).toHaveLength(1);
+    expect(result.limit).toBe(1);
+    expect(result.offset).toBe(0);
   });
 
   it("espone punteggio, obsolescenza e riepilogo su ogni risultato", async () => {
@@ -308,6 +310,84 @@ describe("fusione e ordinamento", () => {
     expect(hit?.obsoleta).toBe(false);
     expect(hit?.numeroPassi).toBeGreaterThan(0);
     expect(hit?.tag.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Sfogliare, contro gli indici veri.
+ *
+ * Il test in memoria prova che il servizio tagli la classifica dove deve. Qui si
+ * prova la cosa che solo Postgres puo' smentire: che la classifica sia *la
+ * stessa* fra una richiesta e l'altra. Se l'ordine dei due canali non fosse
+ * deterministico, o se la finestra dipendesse ancora da `limit`, l'unione delle
+ * tre pagine conterrebbe una scheda due volte e un'altra nessuna — ed e'
+ * esattamente cio' che questo test conta.
+ */
+describe("paginazione", () => {
+  /** Cinque schede che condividono una parola e non si somigliano abbastanza da
+   *  farsi deduplicare a vicenda. */
+  async function cinquePratiche(token: string): Promise<readonly string[]> {
+    const luoghi = ["comune", "tribunale", "prefettura", "questura", "consolato"];
+    const ids: string[] = [];
+    // In serie e non in parallelo: `updatedAt` e' il criterio che rompe i
+    // pareggi di `ts_rank_cd`, e cinque scritture concorrenti se lo giocherebbero
+    // a caso, rendendo l'ordine — e quindi le pagine — non ripetibile.
+    for (const dove of luoghi) {
+      ids.push(
+        await creaScheda(token, {
+          titolo: `Depositare la pratica in ${dove}`,
+          trigger: `Serve consegnare un documento al ${dove}`,
+          tag: [dove],
+        }),
+      );
+    }
+    return ids;
+  }
+
+  it("tre pagine coprono i risultati una volta ciascuno", async () => {
+    const token = await signup();
+    const create = await cinquePratiche(token);
+
+    const [una, due, tre] = await Promise.all([
+      cerca(token, "q=pratica&limit=2&offset=0"),
+      cerca(token, "q=pratica&limit=2&offset=2"),
+      cerca(token, "q=pratica&limit=2&offset=4"),
+    ]);
+
+    const sfogliati = [...una.items, ...due.items, ...tre.items].map((i) => i.id);
+    expect(sfogliati).toHaveLength(5);
+    expect(new Set(sfogliati)).toEqual(new Set(create));
+  });
+
+  it("annuncia l'ultima pagina come ultima", async () => {
+    const token = await signup();
+    await cinquePratiche(token);
+
+    expect((await cerca(token, "q=pratica&limit=2&offset=0")).hasMore).toBe(true);
+    expect((await cerca(token, "q=pratica&limit=2&offset=4")).hasMore).toBe(false);
+  });
+
+  it("oltre la fine risponde vuoto, non con un errore", async () => {
+    const token = await signup();
+    await dueSchede(token);
+
+    const result = await cerca(token, "q=casellario&offset=40");
+
+    expect(result.items).toEqual([]);
+    expect(result.hasMore).toBe(false);
+  });
+
+  it("rifiuta una profondita' che il metodo non puo' mantenere", async () => {
+    // Meglio un 400 che una pagina vuota indistinguibile dalla fine dei
+    // risultati: la ricerca non ha nulla da ordinare oltre `SEARCH_MAX_DEPTH`.
+    const token = await signup();
+
+    const res = await call(server, "GET", "/api/search?q=casellario&offset=1000", {
+      accessToken: token,
+    });
+
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
   });
 });
 
