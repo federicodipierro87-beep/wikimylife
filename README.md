@@ -319,7 +319,7 @@ di stile compreso.
 
 ```
 apps/web/src/
-  recording/   MediaRecorder, GPS, coda IndexedDB, svuotamento, contesto React
+  recording/   MediaRecorder, GPS, coda IndexedDB, svuotamento, disco pieno, contesto React
   screens/     login, registrazione, lista, ricerca, scheda, revisione, redazione
   format.ts    le regole di presentazione, pure e testate
   routes.ts    rotta ⇄ hash, puro e testato
@@ -343,6 +343,34 @@ Ogni operazione apre la propria transazione, perché una transazione tenuta viva
 attraverso un `await` si auto-annulla, e attende `oncomplete` invece del
 successo della singola richiesta, perché una `put` può riuscire mentre la
 transazione fallisce sulla quota del disco.
+
+**Quando quella quota finisce, l'audio non si perde.** È il caso che rende
+falsa la promessa della §2, e non dipende da noi: la quota di IndexedDB la
+decide il browser per origine, la stringe quando il dispositivo si riempie, e
+non la annuncia — l'unico segnale è una scrittura rifiutata, che arriva dopo lo
+stop, quando l'unica copia della registrazione è una variabile locale.
+Trattenerla è tutta la differenza fra «l'audio non è su disco» e «l'audio non
+esiste più»: resta in memoria, diventa un avviso sopra la barra bassa, e da lì
+ha tre uscite — riprovare, scaricare il file, buttarlo. Nessuna delle tre è
+quella giusta, ed è il motivo per cui le sceglie l'utente.
+
+**Il tetto alla coda è il rifiuto di registrare.** Finché c'è una registrazione
+non salvata, `start()` non parte: registrarne un'altra significherebbe quasi
+certamente non poter salvare nemmeno quella, e intanto tenere due file in
+memoria invece di uno. È scomodo apposta. Un tetto che cancella le
+registrazioni vecchie per fare posto alle nuove sarebbe la stessa perdita di
+dati, decisa da noi invece che dal browser.
+
+**Lo scaricamento è l'unica via d'uscita che esiste davvero.** Se il browser non
+ha spazio, nessun posto del browser ne ha: né un'altra coda, né la memoria, che
+sparisce chiudendo la scheda. Il filesystem del dispositivo è un budget diverso,
+e ci si arriva con un `<a download>` e un nome che contiene data e ora — fra una
+settimana, in una cartella Download, `registrazione.webm` non dice a nessuno
+quale pomeriggio fosse. Il pulsante «riprova» invece compare solo quando è
+mancato lo spazio: se IndexedDB non c'è proprio — Firefox in navigazione
+privata — riprovare fallisce identico, e offrirlo sarebbe una bugia. Distinguere
+i due casi vuol dire guardare `error.name`, e includere i due nomi di Gecko
+accanto a `QuotaExceededError`, perché il messaggio è localizzato e il nome no.
 
 **Lo svuotamento distingue i guasti che passano da quelli che non passano.** Un
 401 o un 413 non migliorano riprovando: la riga resta in coda marcata con
@@ -735,7 +763,13 @@ mezzanotte — e il giro rotta ⇄ hash ⇄ rotta. Fra le regole di presentazion
 quella che conta di più è cosa dire di una registrazione che non è ancora una
 scheda: una appena caricata e una che ha appena fallito hanno lo stesso
 `status`, e un test che guardasse solo quello passerebbe anche con la funzione
-sbagliata. Della Fase 5: la firma SigV4 contro
+sbagliata. Sempre della Fase 4, il rifiuto di IndexedDB: distinguere «non c'è
+spazio» da «IndexedDB non c'è» decide se all'utente compare il pulsante che gli
+salverebbe l'audio, e la distinzione sta in tre nomi di errore — uno standard e
+due di Gecko — che nessuno controlla a mano. Accanto, il nome del file
+scaricato, che deve restare un nome anche quando la data non si legge:
+un'eccezione lì dentro sarebbe l'audio che non esce dal browser.
+Della Fase 5: la firma SigV4 contro
 i vettori ufficiali di AWS, e le regole di `loadConfig` che in produzione
 rifiutano lo storage effimero, il CORS vuoto e i provider fake. Della sicurezza:
 l'aritmetica del limitatore con un orologio iniettato — la finestra che si riapre
@@ -754,8 +788,9 @@ vecchia danno `409` invece di tagliare a caso, e il flag è ancora acceso quando
 tutto è stato applicato.
 
 Le schermate non hanno test, e non c'è `jsdom` fra le dipendenze. È la ragione
-per cui `format.ts`, `routes.ts` e `uploader.ts` esistono come moduli separati e
-privi di DOM: lì sta tutto ciò che si può sbagliare in silenzio, e
+per cui `format.ts`, `routes.ts`, `uploader.ts` e `salvataggio.ts` esistono come
+moduli separati e privi di DOM: lì sta tutto ciò che si può sbagliare in
+silenzio, e
 `tsconfig.tests.json` non carica nemmeno la libreria DOM, così un modulo che
 nomina `window` non è importabile da un test e la separazione non può marcire.
 
@@ -1291,9 +1326,14 @@ Non installate, e il perché:
   verificare è stata spinta fuori dai componenti apposta, ma resta che nessuno
   controlla che il pulsante di registrazione sia collegato al microfono se non
   premendolo.
-- **La coda offline non ha un tetto.** Registrare per un pomeriggio senza rete
-  riempie IndexedDB finché il browser non rifiuta la scrittura, e in quel caso
-  l'errore si vede ma la registrazione è persa.
+- **La coda offline non sa quanto spazio le resta.** La registrazione rifiutata
+  non si perde più — resta in memoria, con lo scaricamento accanto — ma il
+  rifiuto arriva ancora dopo lo stop, quando l'utente ha già parlato per dieci
+  minuti. Saperlo prima vorrebbe dire `navigator.storage.estimate()`, che dà
+  `quota` e `usage` per l'origine: numeri approssimati e aggiornati con ritardo,
+  ma sufficienti a dire «non c'è più posto» prima di accendere il microfono
+  invece che dopo averlo spento. Finché non c'è, l'unica difesa è quella che
+  scatta a danno avvenuto.
 - **L'audio si scarica passando dall'API.** `GET /api/recordings/:id/audio` legge
   da S3 e ristreamma: semplice, autenticato con lo stesso token di tutto il
   resto, e paga la banda due volte. Un URL prefirmato eviterebbe il doppio salto,

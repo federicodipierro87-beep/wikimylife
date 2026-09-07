@@ -809,13 +809,18 @@ button:focus-visible {
   flex: 0 0 auto;
 }
 
-/* Sopra la barra e non dentro: e' un avviso di stato, non una voce di
-   navigazione, e non deve rubare il posto a un pulsante. */
-.coda {
+/* Sopra la barra e non dentro: sono avvisi di stato, non voci di navigazione,
+   e non devono rubare il posto a un pulsante. In un unico contenitore perche'
+   due `position: fixed` alla stessa altezza si coprirebbero a vicenda, e una
+   registrazione non salvata mentre la coda si carica e' uno stato normale. */
+.avvisi-bassi {
   position: fixed;
   left: 0;
   right: 0;
   bottom: calc(var(--barra-h) + env(safe-area-inset-bottom));
+}
+
+.coda {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -825,4 +830,31 @@ button:focus-visible {
   border-top: 1px solid var(--line);
   font-size: 0.82rem;
   color: var(--muted);
+}
+
+/* Piu' rumoroso della coda, e apposta: la coda si sistema da sola, questo no.
+   E' l'unico punto dell'app in cui chiudere la scheda perde un dato. */
+.non-salvata {
+  padding: 0.7rem 1rem;
+  background: var(--card);
+  border-top: 2px solid var(--bad);
+}
+
+.non-salvata__motivo {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--bad);
+}
+
+.non-salvata__quando {
+  margin: 0.25rem 0 0;
+  font-size: 0.78rem;
+}
+
+.non-salvata__azioni {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
 }

@@ -1,9 +1,10 @@
-import type { Coordinates } from "@wikimylife/shared";
+import type { Coordinates, QueuedRecording } from "@wikimylife/shared";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { apiClient } from "../api";
 import { GeolocationAdapter } from "./GeolocationAdapter";
 import { IndexedDbUploadQueue } from "./IndexedDbUploadQueue";
 import { MediaRecorderAdapter } from "./MediaRecorderAdapter";
+import { motivoDi, nomeFileDi, spazioEsaurito } from "./salvataggio";
 import { createUploader, type Uploader } from "./uploader";
 
 /**
@@ -31,12 +32,45 @@ import { createUploader, type Uploader } from "./uploader";
  * `useRef` e non variabili di modulo: due montaggi in `StrictMode` non devono
  * condividere un `MediaRecorder` a meta' registrazione, e un giorno un test
  * potra' iniettarne altri senza toccare l'ordine degli import.
+ *
+ * ## Il tetto alla coda e' il rifiuto di registrare
+ *
+ * IndexedDB non e' infinito e non dice quanto manca: la quota per origine la
+ * decide il browser, la stringe quando il dispositivo si riempie, e l'unico
+ * segnale che si riceve e' una scrittura rifiutata. Fino a poco fa quel rifiuto
+ * arrivava dopo lo stop, quando l'unica copia dell'audio era la variabile
+ * locale di `stop()`: l'utente vedeva un errore e la registrazione spariva con
+ * la funzione.
+ *
+ * Adesso l'audio rifiutato resta in memoria e diventa `nonSalvata`, con tre
+ * uscite — riprovare dopo aver liberato spazio, scaricare il file, buttarlo — e
+ * finche' e' li' `start()` rifiuta di registrare ancora. E' un tetto scomodo di
+ * proposito: un tetto che cancella le registrazioni vecchie per fare posto alle
+ * nuove sarebbe la stessa perdita di dati di prima, decisa da noi invece che
+ * dal browser. La memoria non e' un posto sicuro — chiudere la scheda perde
+ * tutto — ed e' esattamente il motivo per cui l'avviso e' vistoso e lo
+ * scaricamento sta li' accanto.
  */
 
 export type CaptureState =
   | { readonly kind: "ferma" }
   | { readonly kind: "in-corso"; readonly elapsedMs: number }
   | { readonly kind: "salvataggio" };
+
+/**
+ * Un audio che esiste solo in memoria perche' il browser ha rifiutato di
+ * scriverlo. Non contiene i byte: quelli restano in un ref, e metterli nello
+ * stato di React significherebbe copiarli a ogni render.
+ */
+export interface RegistrazioneNonSalvata {
+  /** ISO 8601, orologio del dispositivo. */
+  readonly recordedAt: string;
+  readonly durationMs: number;
+  /** Cosa e' successo, in una riga leggibile. */
+  readonly motivo: string;
+  /** `true` se e' mancato lo spazio: liberarne puo' far riuscire un secondo tentativo. */
+  readonly spazio: boolean;
+}
 
 export interface Capture {
   readonly state: CaptureState;
@@ -45,12 +79,20 @@ export interface Capture {
   readonly online: boolean;
   /** `false` quando il browser non ha `MediaRecorder` o il microfono e' negato. */
   readonly supportata: boolean;
+  /** L'audio che non e' riuscito ad arrivare su disco, se ce n'e' uno. */
+  readonly nonSalvata: RegistrazioneNonSalvata | null;
   start(): Promise<void>;
   /** Restituisce l'id locale accodato. Non aspetta il caricamento. */
   stop(): Promise<string>;
   cancel(): Promise<void>;
   /** Il pulsante «riprova» dell'indicatore. */
   riprova(): Promise<void>;
+  /** Riprova a scrivere in coda l'audio non salvato. Non lancia: aggiorna il motivo. */
+  riscrivi(): Promise<void>;
+  /** Porta l'audio non salvato fuori dal browser, nella cartella Download. */
+  scarica(): void;
+  /** Rinuncia all'audio non salvato. E' una decisione dell'utente, non dell'app. */
+  scarta(): void;
 }
 
 const CaptureContext = createContext<Capture | null>(null);
@@ -74,10 +116,17 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
     coords: null,
     label: null,
   });
+  /**
+   * L'audio che il disco ha rifiutato. E' un ref e non uno stato perche' sono
+   * megabyte: React non deve confrontarli, e nessun render deve dipendere da
+   * loro. Cio' che l'interfaccia deve sapere sta in `nonSalvata`.
+   */
+  const inSospeso = useRef<Omit<QueuedRecording, "attempts" | "lastError"> | null>(null);
 
   const [state, setState] = useState<CaptureState>({ kind: "ferma" });
   const [inCoda, setInCoda] = useState(0);
   const [online, setOnline] = useState(() => navigator.onLine);
+  const [nonSalvata, setNonSalvata] = useState<RegistrazioneNonSalvata | null>(null);
 
   const aggiornaConteggio = useCallback((): void => {
     queue.current
@@ -138,6 +187,16 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
   }, [state.kind]);
 
   const start = useCallback(async (): Promise<void> => {
+    // Registrare sopra un audio che non si e' potuto salvare significa quasi
+    // certamente non poter salvare nemmeno questo, e intanto tenere due file in
+    // memoria invece di uno. Meglio fermarsi qui, dove c'e' ancora qualcosa da
+    // salvare, che due schermate piu' avanti quando non c'e' piu'.
+    if (inSospeso.current !== null) {
+      throw new Error(
+        "C'e' una registrazione non salvata: scaricala o scartala prima di registrarne un'altra.",
+      );
+    }
+
     // Il GPS parte adesso e deposita il risultato nel ref quando arriva.
     // Nessuno lo aspetta, ne' qui ne' allo stop.
     luogo.current = { coords: null, label: null };
@@ -161,7 +220,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
       const { coords, label } = luogo.current;
 
       const id = nuovoId();
-      await queue.current.enqueue({
+      const item = {
         id,
         audio: chunk.data,
         mimeType: chunk.mimeType,
@@ -174,7 +233,25 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
         // Il dispositivo e' l'unico che lo sa: al server la richiesta appare
         // online comunque, perche' e' arrivata.
         capturedOffline: !navigator.onLine,
-      });
+      };
+
+      try {
+        await queue.current.enqueue(item);
+      } catch (error: unknown) {
+        // Trattenere `item` e' tutto cio' che separa «l'audio non e' su disco»
+        // da «l'audio non esiste piu'»: uscire di qui senza farlo lo lascerebbe
+        // al garbage collector.
+        inSospeso.current = item;
+        setNonSalvata({
+          recordedAt: item.recordedAt,
+          durationMs: item.durationMs,
+          motivo: motivoDi(error),
+          spazio: spazioEsaurito(error),
+        });
+        // Rilanciato con il messaggio leggibile: chi ha premuto stop lo vede
+        // subito dov'e', senza aspettare di guardare l'avviso in basso.
+        throw new Error(motivoDi(error));
+      }
 
       // Da qui in poi l'audio e' salvo e l'app si puo' chiudere. Tutto cio' che
       // segue e' senza `await` di proposito.
@@ -197,18 +274,69 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
     aggiornaConteggio();
   }, [aggiornaConteggio]);
 
+  const riscrivi = useCallback(async (): Promise<void> => {
+    const item = inSospeso.current;
+    if (item === null) {
+      return;
+    }
+    try {
+      await queue.current.enqueue(item);
+    } catch (error: unknown) {
+      // Non rilancia: il pulsante che chiama questa e' dentro l'avviso, e
+      // l'avviso e' gia' il posto dove il fallimento si legge. L'audio resta
+      // dov'era.
+      setNonSalvata((corrente) =>
+        corrente === null
+          ? null
+          : { ...corrente, motivo: motivoDi(error), spazio: spazioEsaurito(error) },
+      );
+      return;
+    }
+    inSospeso.current = null;
+    setNonSalvata(null);
+    aggiornaConteggio();
+    void uploader.current.drain();
+  }, [aggiornaConteggio]);
+
+  const scarica = useCallback((): void => {
+    const item = inSospeso.current;
+    if (item === null) {
+      return;
+    }
+    const url = URL.createObjectURL(new Blob([new Uint8Array(item.audio)], { type: item.mimeType }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = nomeFileDi(item.recordedAt, item.mimeType);
+    link.click();
+    // Revocare subito annulla lo scaricamento su piu' di un browser: l'URL
+    // serve finche' il download non e' partito davvero, e un minuto e' molto
+    // piu' di quanto occorra a un file locale.
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 60_000);
+  }, []);
+
+  const scarta = useCallback((): void => {
+    inSospeso.current = null;
+    setNonSalvata(null);
+  }, []);
+
   const value = useMemo<Capture>(
     () => ({
       state,
       inCoda,
       online,
       supportata: recorder.current.isSupported(),
+      nonSalvata,
       start,
       stop,
       cancel,
       riprova,
+      riscrivi,
+      scarica,
+      scarta,
     }),
-    [state, inCoda, online, start, stop, cancel, riprova],
+    [state, inCoda, online, nonSalvata, start, stop, cancel, riprova, riscrivi, scarica, scarta],
   );
 
   return <CaptureContext.Provider value={value}>{children}</CaptureContext.Provider>;

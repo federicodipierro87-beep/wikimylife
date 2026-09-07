@@ -1,3 +1,4 @@
+import { formatDurataAudio, formatQuando } from "./format";
 import { CaptureProvider, useCapture } from "./recording/CaptureProvider";
 import { navigate, useRoute } from "./router";
 import type { Route } from "./routes";
@@ -75,6 +76,10 @@ function Schermate(): React.JSX.Element {
  * In basso e non in alto perche' si usa con il pollice. E' anche il posto dove
  * l'indicatore di upload non blocca niente: la §2 chiede che il caricamento sia
  * «non bloccante», che in pratica vuol dire «visibile senza essere un dialogo».
+ *
+ * L'unica eccezione e' l'avviso di registrazione non salvata, che segue le
+ * stesse coordinate ma non e' altrettanto discreto: e' l'unico stato dell'app
+ * in cui chiudere la scheda perde qualcosa per sempre.
  */
 function BarraBassa(): React.JSX.Element {
   const capture = useCapture();
@@ -82,26 +87,32 @@ function BarraBassa(): React.JSX.Element {
 
   return (
     <>
-      {capture.inCoda > 0 && (
-        <div className="coda" role="status">
-          <span>
-            {capture.online
-              ? `Carico ${String(capture.inCoda)} registrazion${capture.inCoda === 1 ? "e" : "i"}…`
-              : `${String(capture.inCoda)} in attesa di rete`}
-          </span>
-          {capture.online && (
-            <button
-              type="button"
-              className="bottone bottone--piatto"
-              onClick={() => {
-                void capture.riprova();
-              }}
-            >
-              Riprova
-            </button>
-          )}
-        </div>
-      )}
+      {/* Impilati insieme perche' capitano insieme: una registrazione che non
+          si e' potuta salvare non ferma la coda che si sta caricando. */}
+      <div className="avvisi-bassi">
+        <NonSalvata />
+
+        {capture.inCoda > 0 && (
+          <div className="coda" role="status">
+            <span>
+              {capture.online
+                ? `Carico ${String(capture.inCoda)} registrazion${capture.inCoda === 1 ? "e" : "i"}…`
+                : `${String(capture.inCoda)} in attesa di rete`}
+            </span>
+            {capture.online && (
+              <button
+                type="button"
+                className="bottone bottone--piatto"
+                onClick={() => {
+                  void capture.riprova();
+                }}
+              >
+                Riprova
+              </button>
+            )}
+          </div>
+        )}
+      </div>
 
       <nav className="barra">
         <button
@@ -136,5 +147,66 @@ function BarraBassa(): React.JSX.Element {
         </button>
       </nav>
     </>
+  );
+}
+
+/**
+ * L'audio che il telefono non ha voluto scrivere.
+ *
+ * Tre pulsanti e nessuna scorciatoia: nessuno dei tre e' quello «giusto», e
+ * sceglierlo per l'utente vorrebbe dire buttare la sua registrazione o tenerla
+ * in memoria per sempre. Il primo — riprovare — c'e' solo quando e' mancato lo
+ * spazio, perche' e' l'unico caso in cui premerlo puo' cambiare qualcosa: se
+ * IndexedDB non c'e' proprio, riprovare fallisce identico.
+ *
+ * `role="alert"` e non `status`: interrompere la lettura e' proporzionato,
+ * perche' e' l'unico avviso dell'app che non aspetta.
+ */
+function NonSalvata(): React.JSX.Element | null {
+  const capture = useCapture();
+  const reg = capture.nonSalvata;
+  if (reg === null) {
+    return null;
+  }
+
+  return (
+    <div className="non-salvata" role="alert">
+      <p className="non-salvata__motivo">{reg.motivo}</p>
+      <p className="non-salvata__quando muto">
+        {formatDurataAudio(reg.durationMs)} · registrata {formatQuando(reg.recordedAt)}.
+        L&apos;audio c&apos;e&apos; ancora, ma solo finche&apos; l&apos;app resta aperta.
+      </p>
+      <div className="non-salvata__azioni">
+        {reg.spazio && (
+          <button
+            type="button"
+            className="bottone"
+            onClick={() => {
+              void capture.riscrivi();
+            }}
+          >
+            Riprova a salvare
+          </button>
+        )}
+        <button
+          type="button"
+          className="bottone"
+          onClick={() => {
+            capture.scarica();
+          }}
+        >
+          Scarica il file
+        </button>
+        <button
+          type="button"
+          className="bottone bottone--piatto"
+          onClick={() => {
+            capture.scarta();
+          }}
+        >
+          Scarta
+        </button>
+      </div>
+    </div>
   );
 }
