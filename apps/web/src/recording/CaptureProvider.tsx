@@ -5,6 +5,7 @@ import { GeolocationAdapter } from "./GeolocationAdapter";
 import { IndexedDbUploadQueue } from "./IndexedDbUploadQueue";
 import { MediaRecorderAdapter } from "./MediaRecorderAdapter";
 import { motivoDi, nomeFileDi, spazioEsaurito } from "./salvataggio";
+import { valutaSpazio, type Spazio } from "./spazio";
 import { createUploader, type Uploader } from "./uploader";
 
 /**
@@ -50,6 +51,14 @@ import { createUploader, type Uploader } from "./uploader";
  * dal browser. La memoria non e' un posto sicuro — chiudere la scheda perde
  * tutto — ed e' esattamente il motivo per cui l'avviso e' vistoso e lo
  * scaricamento sta li' accanto.
+ *
+ * Quella difesa pero' scatta a danno avvenuto: quando l'utente lo scopre ha
+ * gia' parlato per dieci minuti. `stimaSpazio()` chiede al browser quanto
+ * manca e permette di dirlo prima — ma solo di dirlo. La stima e' arrotondata
+ * apposta per non diventare un'impronta digitale, e un divieto costruito sopra
+ * un numero cosi' impedirebbe di registrare a chi lo spazio ce l'ha. Fra
+ * un'attesa sbagliata e una registrazione mai fatta, la seconda e' la perdita
+ * peggiore.
  */
 
 export type CaptureState =
@@ -81,6 +90,8 @@ export interface Capture {
   readonly supportata: boolean;
   /** L'audio che non e' riuscito ad arrivare su disco, se ce n'e' uno. */
   readonly nonSalvata: RegistrazioneNonSalvata | null;
+  /** Quanto spazio dice di avere il browser. Avvisa, non impedisce. */
+  readonly spazio: Spazio;
   start(): Promise<void>;
   /** Restituisce l'id locale accodato. Non aspetta il caricamento. */
   stop(): Promise<string>;
@@ -96,6 +107,25 @@ export interface Capture {
 }
 
 const CaptureContext = createContext<Capture | null>(null);
+
+/**
+ * Quanto spazio dice di avere il browser, o `null` se non lo dice.
+ *
+ * `navigator.storage` manca su Safari vecchi e in ogni contesto non sicuro, e
+ * `estimate()` puo' lanciare o restituire campi assenti: tre modi diversi di
+ * dire «non lo so», che per chi chiama sono lo stesso caso.
+ */
+async function stimaSpazio(): Promise<{ usage: number; quota: number } | null> {
+  if (typeof navigator.storage?.estimate !== "function") {
+    return null;
+  }
+  try {
+    const { usage, quota } = await navigator.storage.estimate();
+    return typeof usage === "number" && typeof quota === "number" ? { usage, quota } : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Un id locale che esiste prima del server: e' il nome del file nella coda. */
 function nuovoId(): string {
@@ -127,6 +157,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
   const [inCoda, setInCoda] = useState(0);
   const [online, setOnline] = useState(() => navigator.onLine);
   const [nonSalvata, setNonSalvata] = useState<RegistrazioneNonSalvata | null>(null);
+  const [spazio, setSpazio] = useState<Spazio>({ kind: "ignoto" });
 
   const aggiornaConteggio = useCallback((): void => {
     queue.current
@@ -137,6 +168,13 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
         // a zero. E' un'imprecisione dell'interfaccia, non un motivo per
         // rompere la schermata.
       });
+
+    // Attaccato al conteggio e non a un intervallo: lo spazio libero cambia
+    // quando la coda cambia, cioe' quando si registra e quando si carica.
+    // Chiederlo ogni pochi secondi costerebbe senza dire niente di nuovo.
+    void stimaSpazio().then((s) => {
+      setSpazio(valutaSpazio(s));
+    });
   }, []);
 
   const uploader = useRef<Uploader>(
@@ -328,6 +366,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
       online,
       supportata: recorder.current.isSupported(),
       nonSalvata,
+      spazio,
       start,
       stop,
       cancel,
@@ -336,7 +375,20 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
       scarica,
       scarta,
     }),
-    [state, inCoda, online, nonSalvata, start, stop, cancel, riprova, riscrivi, scarica, scarta],
+    [
+      state,
+      inCoda,
+      online,
+      nonSalvata,
+      spazio,
+      start,
+      stop,
+      cancel,
+      riprova,
+      riscrivi,
+      scarica,
+      scarta,
+    ],
   );
 
   return <CaptureContext.Provider value={value}>{children}</CaptureContext.Provider>;

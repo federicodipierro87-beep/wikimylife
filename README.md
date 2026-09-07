@@ -372,6 +372,26 @@ privata — riprovare fallisce identico, e offrirlo sarebbe una bugia. Distingue
 i due casi vuol dire guardare `error.name`, e includere i due nomi di Gecko
 accanto a `QuotaExceededError`, perché il messaggio è localizzato e il nome no.
 
+**Lo spazio si dice prima, ma non diventa un divieto.**
+`navigator.storage.estimate()` dà `usage` e `quota` per l'origine, e da lì si
+ricavano i minuti di parlato che ci stanno ancora: sotto i dieci compare un
+avviso sopra il pulsante, e compare *prima* di premerlo — che è tutto il punto,
+perché la difesa precedente scatta a danno avvenuto, quando l'utente ha già
+parlato. Un avviso e non un blocco perché quel numero non è una misura: i
+browser lo arrotondano apposta per non farne un'impronta digitale, la quota è
+una previsione sullo spazio libero del disco, e un altro programma può occuparlo
+un secondo dopo. Uno «spazio esaurito» sbagliato che impedisce di registrare
+sarebbe la peggiore delle due perdite — un salvataggio fallito adesso ha una via
+d'uscita, una registrazione mai fatta no. Per lo stesso motivo `null` in ingresso
+— Safari senza `storage`, contesto non sicuro, `estimate()` che lancia — resta
+«non lo so» e non diventa mai «è pieno». La stima si aggiorna quando cambia la
+coda e non a intervalli: lo spazio libero si muove quando si registra e quando
+si carica, e chiederlo ogni cinque secondi costerebbe senza dire niente di
+nuovo. I byte al secondo sono una costante prudente, perché `MediaRecorder` non
+dichiara il bitrate che userà e i browser non concordano: sovrastimare fa
+comparire l'avviso un po' presto, sottostimare lo fa comparire quando non serve
+più.
+
 **Lo svuotamento distingue i guasti che passano da quelli che non passano.** Un
 401 o un 413 non migliorano riprovando: la riga resta in coda marcata con
 l'errore, così l'utente la vede. Una rete assente o un 500 fermano il giro e
@@ -768,7 +788,10 @@ spazio» da «IndexedDB non c'è» decide se all'utente compare il pulsante che 
 salverebbe l'audio, e la distinzione sta in tre nomi di errore — uno standard e
 due di Gecko — che nessuno controlla a mano. Accanto, il nome del file
 scaricato, che deve restare un nome anche quando la data non si legge:
-un'eccezione lì dentro sarebbe l'audio che non esce dal browser.
+un'eccezione lì dentro sarebbe l'audio che non esce dal browser. E il conto
+dello spazio residuo, dove ciò che conta di più è che «non lo so» non diventi
+mai «è pieno»: un browser senza `storage.estimate` non deve spaventare nessuno,
+e una quota `Infinity` non deve produrre un numero di minuti infinito.
 Della Fase 5: la firma SigV4 contro
 i vettori ufficiali di AWS, e le regole di `loadConfig` che in produzione
 rifiutano lo storage effimero, il CORS vuoto e i provider fake. Della sicurezza:
@@ -788,9 +811,9 @@ vecchia danno `409` invece di tagliare a caso, e il flag è ancora acceso quando
 tutto è stato applicato.
 
 Le schermate non hanno test, e non c'è `jsdom` fra le dipendenze. È la ragione
-per cui `format.ts`, `routes.ts`, `uploader.ts` e `salvataggio.ts` esistono come
-moduli separati e privi di DOM: lì sta tutto ciò che si può sbagliare in
-silenzio, e
+per cui `format.ts`, `routes.ts`, `uploader.ts`, `salvataggio.ts` e `spazio.ts`
+esistono come moduli separati e privi di DOM: lì sta tutto ciò che si può
+sbagliare in silenzio, e
 `tsconfig.tests.json` non carica nemmeno la libreria DOM, così un modulo che
 nomina `window` non è importabile da un test e la separazione non può marcire.
 
@@ -1326,14 +1349,19 @@ Non installate, e il perché:
   verificare è stata spinta fuori dai componenti apposta, ma resta che nessuno
   controlla che il pulsante di registrazione sia collegato al microfono se non
   premendolo.
-- **La coda offline non sa quanto spazio le resta.** La registrazione rifiutata
-  non si perde più — resta in memoria, con lo scaricamento accanto — ma il
-  rifiuto arriva ancora dopo lo stop, quando l'utente ha già parlato per dieci
-  minuti. Saperlo prima vorrebbe dire `navigator.storage.estimate()`, che dà
-  `quota` e `usage` per l'origine: numeri approssimati e aggiornati con ritardo,
-  ma sufficienti a dire «non c'è più posto» prima di accendere il microfono
-  invece che dopo averlo spento. Finché non c'è, l'unica difesa è quella che
-  scatta a danno avvenuto.
+- **I minuti che restano sono una stima, non una misura.** L'avviso sopra il
+  pulsante di registrazione moltiplica lo spazio libero per una costante di byte
+  al secondo decisa a tavolino, perché `MediaRecorder` non dichiara il bitrate
+  che userà. Su un browser che comprime meglio della costante l'avviso compare
+  con dieci minuti di anticipo inutile; su uno che comprime peggio arriva tardi.
+  Misurarlo davvero si potrebbe — la coda conosce durata e byte di ogni
+  registrazione che ci è passata — ma vorrebbe dire tenere una media che al primo
+  avvio non esiste ancora, cioè proprio quando serve.
+- **Un audio non salvato vive solo finché l'app è aperta.** Se IndexedDB rifiuta
+  la scrittura, la registrazione resta in memoria con tre uscite accanto, ma
+  chiudere la scheda prima di sceglierne una la perde comunque. Non c'è modo di
+  fare altrimenti: il posto durevole che avrebbe dovuto accoglierla è
+  esattamente quello che ha detto di no.
 - **L'audio si scarica passando dall'API.** `GET /api/recordings/:id/audio` legge
   da S3 e ristreamma: semplice, autenticato con lo stesso token di tutto il
   resto, e paga la banda due volte. Un URL prefirmato eviterebbe il doppio salto,

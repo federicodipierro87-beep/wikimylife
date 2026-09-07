@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { formatDurataAudio } from "../format";
 import { useCapture } from "../recording/CaptureProvider";
+import { avvisoSpazio } from "../recording/spazio";
 import { navigate } from "../router";
 import { messaggioDi } from "../session";
 
@@ -21,6 +22,10 @@ export function RecordScreen(): React.JSX.Element {
 
   const inCorso = capture.state.kind === "in-corso";
   const salvataggio = capture.state.kind === "salvataggio";
+  // Prima di premere e non dopo aver parlato: e' tutta la ragione per cui
+  // questo avviso esiste. Durante la registrazione sparisce, perche' a
+  // microfono acceso non c'e' piu' niente da decidere.
+  const spazio = inCorso ? null : avvisoSpazio(capture.spazio);
 
   async function premi(): Promise<void> {
     setErrore(null);
@@ -97,6 +102,12 @@ export function RecordScreen(): React.JSX.Element {
         <p className="avviso">
           Sei offline. La registrazione si salva sul telefono e parte da sola
           quando torna la rete.
+        </p>
+      )}
+
+      {spazio !== null && (
+        <p className="avviso avviso--spazio" role="status">
+          {spazio}
         </p>
       )}
     </main>

@@ -570,7 +570,8 @@ button:focus-visible {
   color: var(--bad);
 }
 
-.avviso--obsoleta {
+.avviso--obsoleta,
+.avviso--spazio {
   border-color: var(--warn);
   color: var(--warn);
 }
