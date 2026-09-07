@@ -517,4 +517,19 @@ export class PrismaRecordingRepository implements RecordingRepository {
     }
     return { kind: "CANCELLATA", audioUrl: row.audioUrl };
   }
+
+  async findExistingAudioKeys(keys: readonly string[]): Promise<ReadonlySet<string>> {
+    // Un `IN ()` vuoto e' SQL non valido su qualche motore e una tabella intera
+    // scansionata su qualche altro. Qui non serve chiedere niente.
+    if (keys.length === 0) {
+      return new Set<string>();
+    }
+
+    const rows = await this.#prisma.recording.findMany({
+      where: { audioUrl: { in: [...keys] } },
+      select: { audioUrl: true },
+    });
+
+    return new Set(rows.map((r) => r.audioUrl));
+  }
 }

@@ -335,4 +335,20 @@ export class InMemoryRecordingRepository implements RecordingRepository {
     // il test "la scheda sopravvive" passerebbe contro una finzione compiacente.
     return { kind: "CANCELLATA", audioUrl: row.audioUrl };
   }
+
+  /**
+   * L'intersezione fra le chiavi chieste e quelle che una riga nomina.
+   *
+   * Restituisce solo cio' che era nell'input, come il `WHERE audioUrl IN (...)`
+   * dell'originale: chi chiama tratta l'assenza da questo insieme come «nessuno
+   * lo rivendica», e un fake che aggiungesse chiavi mai chieste renderebbe quel
+   * confronto piu' facile di quanto sia.
+   *
+   * Nessun `userId`, come nell'originale, ed e' il punto: la scopa guarda un
+   * bucket, non una persona.
+   */
+  async findExistingAudioKeys(keys: readonly string[]): Promise<ReadonlySet<string>> {
+    const nominate = new Set([...this.#recordings.values()].map((r) => r.audioUrl));
+    return new Set(keys.filter((key) => nominate.has(key)));
+  }
 }

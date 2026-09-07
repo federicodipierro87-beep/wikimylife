@@ -227,4 +227,20 @@ export interface RecordingRepository {
    * procedura e non l'audio.
    */
   deleteForUser(userId: string, id: string): Promise<DeleteRecordingOutcome>;
+
+  /**
+   * Quali di queste chiavi sono ancora nominate da una riga.
+   *
+   * L'unica query del progetto che non porta un `userId`, e va detto perche':
+   * chi la usa non sta guardando i dati di qualcuno, sta guardando un bucket. La
+   * domanda e' «questo oggetto appartiene a qualcuno?», e restringerla a un
+   * utente darebbe la risposta sbagliata proprio per gli oggetti che
+   * interessano — quelli il cui proprietario non si sa piu' quale fosse.
+   *
+   * Restituisce cio' che c'e' e non cio' che manca, perche' l'insieme delle
+   * chiavi mandate lo conosce gia' chi chiama: invertirlo qui vorrebbe dire
+   * fidarsi che il repository abbia ricevuto l'elenco intero, e una risposta
+   * troncata diventerebbe una lista di cose da cancellare.
+   */
+  findExistingAudioKeys(keys: readonly string[]): Promise<ReadonlySet<string>>;
 }
