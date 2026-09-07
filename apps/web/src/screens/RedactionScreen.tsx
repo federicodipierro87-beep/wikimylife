@@ -45,6 +45,10 @@ const NOMI: Record<RedactionProposal["kind"], string> = {
   IBAN: "IBAN",
   EMAIL: "email",
   TELEFONO: "telefono",
+  NOME_PERSONA: "nome",
+  INDIRIZZO: "indirizzo",
+  IDENTIFICATIVO: "identificativo",
+  ALTRO: "dato personale",
 };
 
 export function RedactionScreen({ id }: { id: string }): React.JSX.Element {

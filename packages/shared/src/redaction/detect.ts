@@ -44,16 +44,28 @@ export const sensitivePlaceholder: Record<SensitiveKind, string> = {
   TELEFONO: "[telefono]",
 };
 
-export interface SensitiveMatch {
-  readonly kind: SensitiveKind;
+/**
+ * Un tratto di testo e cio' che lo sostituirebbe, senza dire chi l'ha trovato.
+ *
+ * `applyRedactions` chiede questo e non un `SensitiveMatch` perche' e' tutto
+ * quello che le serve: le proposte assistite della §9 non hanno un
+ * `SensitiveKind` — il nome di una persona non e' uno dei quattro formati — e
+ * costringerle a fingerne uno per poter passare di qui sarebbe una bugia detta
+ * al compilatore per non allargare un tipo di tre campi.
+ */
+export interface TextSpan {
   /** Indice del primo carattere, in unita' di `String.prototype.slice`. */
   readonly start: number;
   /** Indice del primo carattere DOPO il dato. */
   readonly end: number;
-  /** Il testo esatto trovato, cosi' come compare. */
-  readonly value: string;
   /** Cio' che lo sostituirebbe se l'utente confermasse. */
   readonly replacement: string;
+}
+
+export interface SensitiveMatch extends TextSpan {
+  readonly kind: SensitiveKind;
+  /** Il testo esatto trovato, cosi' come compare. */
+  readonly value: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +359,7 @@ export function detectSensitive(testo: string): readonly SensitiveMatch[] {
  */
 export function applyRedactions(
   testo: string,
-  matches: readonly SensitiveMatch[],
+  matches: readonly TextSpan[],
 ): string {
   const ordinati = [...matches].sort((a, b) => b.start - a.start);
 

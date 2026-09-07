@@ -13,12 +13,21 @@ import {
   type ProcedureDetail,
   type ProcedureList,
   type ProcedureSummary,
+  type RedactionAssistance,
+  type RedactionProposal,
+  type RedactionProvider,
   type RedactionReport,
   type UpdateProcedureBody,
 } from "@wikimylife/shared";
 import { AppError } from "../errors/AppError.js";
 import type { Clock } from "./ports/Clock.js";
-import { idProposti, patchDiRedazione, proposteDi } from "./redaction/proposals.js";
+import {
+  campiRedigibili,
+  patchDiRedazione,
+  proposteAssistiteDi,
+  proposteDi,
+  risolviConferme,
+} from "./redaction/proposals.js";
 import type {
   AddExecutionData,
   ProcedureDetailRow,
@@ -159,6 +168,25 @@ export interface ProceduresServiceDeps {
   readonly repo: ProcedureRepository;
   readonly embeddings: EmbeddingProvider;
   readonly clock: Clock;
+  /**
+   * La meta' assistita della §9, se questa installazione ce l'ha.
+   *
+   * Opzionale davvero, non per comodita' dei test: senza, la redazione propone
+   * i quattro formati con un checksum e non i nomi, che e' esattamente cio' che
+   * faceva prima. Un port obbligatorio avrebbe costretto chiunque non voglia
+   * mandare le proprie schede a un modello a configurarne uno finto per far
+   * partire il processo.
+   */
+  readonly redaction?: RedactionProvider | undefined;
+  /**
+   * Il provider configurato che non risponde.
+   *
+   * Come per la ricerca semantica: la richiesta riesce lo stesso, degradata, e
+   * la degradazione deve lasciare una traccia — altrimenti una passata monca e
+   * una passata completa si vedono uguali, e la differenza la scopre chi
+   * pubblica una scheda con dentro il nome di un cliente.
+   */
+  readonly onRedactionUnavailable?: ((error: unknown) => void) | undefined;
 }
 
 export function createProceduresService(deps: ProceduresServiceDeps): ProceduresService {
@@ -253,6 +281,47 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
     return toProcedureDetail(updated, clock.now());
   }
 
+  /**
+   * Le proposte che vengono dal modello, e cosa dire se non ne vengono.
+   *
+   * L'errore non risale. Una passata di redazione che fallisce del tutto
+   * perche' un fornitore ha risposto 503 lascerebbe l'utente senza nemmeno gli
+   * IBAN, che sono li' e non hanno bisogno di nessuno per essere trovati: la
+   * meta' che funziona da sola deve continuare a funzionare da sola. Cio' che
+   * non si puo' fare e' tacere, e per questo l'esito torna insieme alle
+   * proposte invece di essere dedotto dal fatto che non ce ne siano — una
+   * scheda pulita e un modello morto producono lo stesso elenco vuoto.
+   */
+  async function assistenzaDi(row: ProcedureDetailRow): Promise<{
+    readonly proposte: readonly RedactionProposal[];
+    readonly assistenza: RedactionAssistance;
+  }> {
+    const provider = deps.redaction;
+    if (provider === undefined) {
+      return { proposte: [], assistenza: "NON_CONFIGURATA" };
+    }
+
+    const campi = campiRedigibili(row);
+    if (campi.length === 0) {
+      // Una scheda senza testo non ha niente da leggere, e chiedere lo stesso
+      // sarebbe una chiamata a pagamento per farsi rispondere «niente».
+      return { proposte: [], assistenza: "ESEGUITA" };
+    }
+
+    try {
+      const esito = await provider.suggest({
+        campi: campi.map((c) => ({ campo: c.campo, testo: c.testo })),
+      });
+      return {
+        proposte: proposteAssistiteDi(row, esito.findings),
+        assistenza: "ESEGUITA",
+      };
+    } catch (error: unknown) {
+      deps.onRedactionUnavailable?.(error);
+      return { proposte: [], assistenza: "NON_RIUSCITA" };
+    }
+  }
+
   return {
     async list(userId: string, query: ListProceduresQuery): Promise<ProcedureList> {
       const page = await repo.list(userId, {
@@ -343,9 +412,22 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
      */
     async proposeRedaction(userId: string, id: string): Promise<RedactionReport> {
       const row = await detailOrThrow(userId, id);
+      const certe = proposteDi(row);
+
+      // La passata deterministica non aspetta quella assistita: se il modello
+      // non risponde, l'utente riceve i codici fiscali che avrebbe ricevuto
+      // comunque invece di un errore al posto di tutto.
+      const { proposte: assistite, assistenza } = await assistenzaDi(row);
+
       return {
         procedureId: row.id,
-        proposte: [...proposteDi(row)],
+        // Prima le certe. Non e' un ordinamento per importanza — cio' che conta
+        // di piu' e' spesso proprio un nome — ma per fatica: le prime si
+        // guardano in un attimo perche' un checksum ha gia' risposto, e
+        // arrivare alle ipotesi con l'elenco facile alle spalle e' diverso da
+        // arrivarci in mezzo.
+        proposte: [...certe, ...assistite],
+        assistenza,
         contieneDatiSensibili: row.contieneDatiSensibili,
       };
     },
@@ -367,20 +449,24 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
       body: ApplyRedactionBody,
     ): Promise<ProcedureDetail> {
       const row = await detailOrThrow(userId, id);
-      const disponibili = idProposti(row);
+      const esito = risolviConferme(row, body.conferme);
 
       // Tutto o niente. Un id che non si ritrova significa che il testo e'
       // cambiato fra la lettura e questa chiamata: gli offset degli altri id
       // valgono per una versione della scheda che non esiste piu', e applicarli
       // lo stesso cancellerebbe caratteri scelti guardando un altro testo.
-      const sconosciute = body.conferme.filter((c) => !disponibili.has(c));
-      if (sconosciute.length > 0) {
+      if (esito.kind === "SCADUTE") {
         throw AppError.conflict(
-          `La scheda e' cambiata da quando hai chiesto le proposte: ${String(sconosciute.length)} conferme non corrispondono piu' a niente. Rileggi le proposte e riprova`,
+          `La scheda e' cambiata da quando hai chiesto le proposte: ${String(esito.quante)} conferme non corrispondono piu' a niente. Rileggi le proposte e riprova`,
+        );
+      }
+      if (esito.kind === "SOVRAPPOSTE") {
+        throw AppError.conflict(
+          "Due conferme insistono sullo stesso tratto di testo: rileggi le proposte e riprova",
         );
       }
 
-      const patch = patchDiRedazione(row, new Set(body.conferme));
+      const patch = patchDiRedazione(row, esito.perCampo);
       return aggiorna(userId, id, patch);
     },
   };

@@ -10,6 +10,7 @@ export * from "./providers/transcription.js";
 export * from "./providers/extraction.js";
 export * from "./providers/storage.js";
 export * from "./providers/embedding.js";
+export * from "./providers/redaction.js";
 
 export * from "./adapters/recorder.js";
 export * from "./adapters/location.js";
@@ -23,6 +24,7 @@ export * from "./api/redaction.js";
 export * from "./api/client.js";
 
 export * from "./redaction/detect.js";
+export * from "./redaction/assisted.js";
 
 export * from "./util/deterministicVector.js";
 export * from "./util/embeddingInput.js";

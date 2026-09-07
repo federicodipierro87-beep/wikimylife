@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assistedKindValues, proposalOriginValues } from "../redaction/assisted.js";
 import { sensitiveKindValues } from "../redaction/detect.js";
 
 /**
@@ -27,11 +28,35 @@ import { sensitiveKindValues } from "../redaction/detect.js";
  * gli id che ritrova: se qualcuno ha modificato la scheda nel frattempo, gli
  * offset non tornano, l'id non si ritrova e la POST fallisce invece di
  * cancellare un pezzo di testo diverso da quello che l'utente aveva guardato.
+ *
+ * Le proposte assistite hanno una forma piu' lunga —
+ * `titolo:12:11:NOME_PERSONA:9f86d081` — perche' il ricalcolo li' non e'
+ * possibile: richiamare il modello darebbe un elenco simile ma non identico, e
+ * una conferma su cinque sparirebbe fra la GET e la POST per il solo fatto che
+ * il modello ha cambiato idea. Al posto del ricalcolo c'e' l'impronta: campo,
+ * offset, lunghezza e le prime cifre dello sha256 del valore. Il server rilegge
+ * quei caratteri e li confronta con l'impronta, e applica solo se combaciano.
+ * La garanzia e' la stessa di prima — non si cancella mai un testo diverso da
+ * quello che l'utente ha guardato — ottenuta verificando invece che rifacendo.
  */
 export const redactionProposalSchema = z
   .object({
     id: z.string().min(1),
-    kind: z.enum(sensitiveKindValues),
+    /**
+     * I quattro tipi con un formato e i quattro senza, in un campo solo.
+     *
+     * Tenerli separati in due liste di proposte avrebbe costretto ogni pezzo di
+     * interfaccia a saperlo, e la §9 chiede una passata, non due.
+     */
+    kind: z.enum([...sensitiveKindValues, ...assistedKindValues]),
+    /**
+     * Se dietro la proposta c'e' un checksum o un modello.
+     *
+     * L'interfaccia lo mostra e non lo nasconde dietro un ordinamento: una
+     * proposta assistita e' un'ipotesi, e chi la conferma deve saperlo mentre la
+     * conferma, non doverlo dedurre dal tipo.
+     */
+    origine: z.enum(proposalOriginValues),
     /** Il percorso nel documento: `titolo`, `steps.2.azione`, `refs.0.valore`. */
     campo: z.string().min(1),
     /** Lo stesso percorso in italiano, per l'interfaccia: «Passo 3 — azione». */
@@ -52,10 +77,24 @@ export const redactionProposalSchema = z
   })
   .strict();
 
+/**
+ * Se la meta' assistita ha girato, e se no perche'.
+ *
+ * Un `boolean` direbbe «no» allo stesso modo a chi non l'ha mai configurata e a
+ * chi ce l'ha configurata e in questo momento non risponde. Sono due cose
+ * diverse per chi guarda le proposte: nel primo caso l'elenco che ha davanti e'
+ * completo per quel che questa installazione sa fare, nel secondo e' monco e
+ * conviene riprovare fra un minuto prima di pubblicare.
+ */
+export const redactionAssistanceValues = ["ESEGUITA", "NON_CONFIGURATA", "NON_RIUSCITA"] as const;
+
+export type RedactionAssistance = (typeof redactionAssistanceValues)[number];
+
 export const redactionReportSchema = z
   .object({
     procedureId: z.string().min(1),
     proposte: z.array(redactionProposalSchema),
+    assistenza: z.enum(redactionAssistanceValues),
     /**
      * Il flag della scheda, ripetuto qui perche' e' la ragione per cui questa
      * rotta viene chiamata e perche' cio' che l'utente deve decidere alla fine
