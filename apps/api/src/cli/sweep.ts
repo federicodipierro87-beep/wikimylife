@@ -63,11 +63,28 @@ async function main(): Promise<void> {
     prefix: comando.prefix ?? null,
   });
 
+  // Ctrl-C su una passata lunga da' il rapporto di quel che si e' fatto finora,
+  // invece di lasciare in mano soltanto le righe gia' scorse via. Fermarsi non
+  // lascia niente in sospeso — la passata dopo ricomincia da capo — quindi non
+  // c'e' ragione di far scegliere fra aspettare la fine e ammazzare il processo.
+  let procedi = true;
+  process.on("SIGINT", () => {
+    if (!procedi) {
+      // Il secondo Ctrl-C e' di chi non vuole aspettare nemmeno il blocco in
+      // corso. Registrare un gestore ha tolto di mezzo quello di Node, quindi
+      // se non lo si rimette qui il secondo Ctrl-C non fa piu' niente.
+      process.exit(130);
+    }
+    procedi = false;
+    process.stderr.write("\ninterruzione richiesta, chiudo il blocco in corso\n");
+  });
+
   try {
     const esito = await composition.storageSweepService.esegui({
       cancella: comando.cancella,
       graceMs: comando.graceMs,
       prefix: comando.prefix,
+      continua: () => procedi,
       // Riga per riga mentre la passata va avanti, e non un elenco alla fine:
       // il servizio non tiene gli orfani in memoria apposta, e su un bucket
       // trascurato a lungo l'elenco sarebbe il bucket. Il registro riceve gli
@@ -94,8 +111,9 @@ async function main(): Promise<void> {
 
     // Un fallimento di cancellazione non e' un guasto della passata, ma non e'
     // nemmeno un successo: chi la esegue da uno script deve poterlo sapere
-    // senza rileggere il rapporto.
-    if (esito.falliti > 0) {
+    // senza rileggere il rapporto. Una passata interrotta vale lo stesso, e per
+    // una ragione piu' forte: i suoi numeri non sono il conto del bucket.
+    if (esito.falliti > 0 || esito.interrotta) {
       process.exitCode = 1;
     }
   } catch (error) {

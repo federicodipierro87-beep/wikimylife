@@ -86,8 +86,10 @@ export interface Composition {
   readonly ingestionService: IngestionService;
   /**
    * Nessuna rotta lo espone, e non e' una dimenticanza: e' l'unico servizio che
-   * cancella file guardando il bucket invece della sessione di qualcuno. Lo
-   * chiama `cli/sweep.ts`, cioe' una persona.
+   * cancella file guardando il bucket invece della sessione di qualcuno, e una
+   * rotta lo renderebbe raggiungibile con una sessione. Lo chiamano in due, e
+   * nessuno dei due passa dall'HTTP: `cli/sweep.ts`, cioe' una persona, e il
+   * worker, che lo fa da solo solo se `SWEEP_MODE` glielo dice.
    */
   readonly storageSweepService: StorageSweepService;
   readonly providers: Providers;

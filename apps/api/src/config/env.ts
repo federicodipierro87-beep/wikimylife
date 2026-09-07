@@ -191,6 +191,43 @@ const baseSchema = z.object({
   S3_SECRET_ACCESS_KEY: optionalText,
   /** Bucket nel percorso invece che nel sottodominio. Serve a MinIO. */
   S3_FORCE_PATH_STYLE: booleanFromString.default(false),
+
+  // --- La scopa automatica (worker) ----------------------------------------
+  /**
+   * Tre valori e non un interruttore, per la stessa ragione di
+   * `REDACTION_PROVIDER`: «spenta» e «accesa ma guarda e basta» non sono la
+   * stessa cosa.
+   *
+   * `elenca` fa la passata per intero e scrive nel registro ogni orfano che
+   * avrebbe cancellato, senza toccare niente. Non e' soltanto il modo di
+   * prepararsi a `cancella`, e' un modo legittimo di restarci: dice quanto
+   * spreco c'e' nel bucket, lo dice ogni giorno, e lo dice a chi non ha voglia
+   * di affidare a un processo automatico un `DELETE` su file di persone.
+   *
+   * Il default e' `spento` perche' e' l'unica cosa che il worker farebbe da
+   * solo senza che nessuno gliel'abbia chiesto, e perche' la prima passata su
+   * un bucket vero e' quella in cui si scopre che il `DATABASE_URL` puntava a
+   * un altro ambiente. Quella la si guarda.
+   */
+  SWEEP_MODE: z.enum(["spento", "elenca", "cancella"]).default("spento"),
+  /**
+   * Ogni quante ore tentare una passata.
+   *
+   * Non e' un orario. Il worker guarda l'orologio fra un giro di polling e
+   * l'altro, quindi «ogni ventiquattro ore» significa «non prima di
+   * ventiquattro ore dall'ultima», e la prima e' ventiquattro ore dopo
+   * l'avvio — non all'avvio, altrimenti un worker che si riavvia in ciclo
+   * passerebbe la scopa a ogni riavvio.
+   */
+  SWEEP_EVERY_HOURS: z.coerce.number().positive().default(24),
+  /**
+   * Quanto dev'essere vecchio un orfano per essere tale, in giorni.
+   *
+   * E' la regola 2 di `storageSweep.service.ts`: l'unica difesa contro la corsa
+   * fra il `put` del caricamento e la riga che lo nomina. Zero non e' un valore
+   * ammesso, e non c'e' ragione di avvicinarcisi.
+   */
+  SWEEP_GRACE_DAYS: z.coerce.number().positive().default(1),
 });
 
 /**
@@ -279,6 +316,21 @@ export interface AuthConfig {
   readonly rateLimit: { readonly windowMs: number; readonly max: number };
 }
 
+/**
+ * La passata automatica, gia' in millisecondi.
+ *
+ * Sta nella configurazione dell'API e non del worker perche' `loadConfig` e'
+ * uno solo per i due processi. L'API non la usa — nessuna rotta espone la
+ * scopa — e non e' una dimenticanza: si veda `composition.ts`.
+ */
+export interface SweepConfig {
+  readonly mode: Env["SWEEP_MODE"];
+  /** Non prima di tanto dall'ultima passata. */
+  readonly everyMs: number;
+  /** Quanto dev'essere vecchio un orfano. */
+  readonly graceMs: number;
+}
+
 export interface S3Settings {
   readonly bucket: string;
   readonly region: string;
@@ -298,6 +350,7 @@ export interface AppConfig {
   /** Salti di proxy da scartare per ottenere l'IP del client. Mai un booleano. */
   readonly trustProxyHops: number;
   readonly auth: AuthConfig;
+  readonly sweep: SweepConfig;
   readonly providers: {
     readonly transcription: Env["TRANSCRIPTION_PROVIDER"];
     readonly extraction: Env["EXTRACTION_PROVIDER"];
@@ -366,6 +419,11 @@ function toConfig(env: Env): AppConfig {
         windowMs: env.AUTH_RATE_LIMIT_WINDOW_SEC * 1000,
         max: env.AUTH_RATE_LIMIT_MAX,
       },
+    },
+    sweep: {
+      mode: env.SWEEP_MODE,
+      everyMs: env.SWEEP_EVERY_HOURS * 60 * 60 * 1000,
+      graceMs: env.SWEEP_GRACE_DAYS * 24 * 60 * 60 * 1000,
     },
     providers: {
       transcription: env.TRANSCRIPTION_PROVIDER,

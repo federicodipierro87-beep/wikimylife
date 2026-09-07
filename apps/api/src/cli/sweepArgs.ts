@@ -158,7 +158,15 @@ export function formatSummary(summary: SweepSummary, cancella: boolean): string 
         riga("falliti", summary.falliti, "restano dove sono, la prossima passata li ritrova"),
       );
     }
-  } else if (summary.orfani > 0) {
+  }
+
+  // Prima di ogni altra nota, perche' cambia il senso di tutte le righe sopra:
+  // sono il conto di quel che si e' guardato, non del bucket.
+  if (summary.interrotta) {
+    righe.push("", "Interrotta prima della fine: i numeri valgono solo per la parte guardata.");
+  }
+
+  if (!cancella && summary.orfani > 0) {
     righe.push("", "Non e' stato cancellato niente. Per farlo davvero: --cancella");
   }
 

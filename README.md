@@ -1264,9 +1264,71 @@ scorre è sicuro perché il segnalibro di `list` dice *dopo quale oggetto*
 riprendere e non *a quale posizione*: su un elenco posizionale ogni chiave tolta
 ne farebbe saltare una mai guardata.
 
-Il servizio sta in `apps/api/src/services/storageSweep.service.ts` e non è legato
-al comando: il giorno in cui lo si vuole pianificare, il worker è il posto e non
-serve toccarlo. Per ora la passa una persona.
+Ctrl-C **non ammazza la passata a metà**: chiude il blocco in corso, stampa i
+numeri di quello che ha guardato e esce con `1`. Il secondo Ctrl-C invece
+interrompe davvero, perché chi lo preme due volte lo sta chiedendo. Un riassunto
+parziale lo dice a parole — «Interrotta prima della fine» — visto che
+«esaminati 12» senza quella riga sembra il conto del bucket, e chi lo legge
+conclude che non c'era altro.
+
+### La stessa scopa, da sola: `SWEEP_MODE`
+
+Il servizio sta in `apps/api/src/services/storageSweep.service.ts` e non sa
+niente di chi lo chiama, così lo chiamano in due: il comando qui sopra e il
+worker, fra un giro di polling e l'altro. Il worker è il posto perché è l'unico
+processo del sistema che si sveglia già da solo; non c'è cron, non c'è uno
+scheduler, non c'è un terzo servizio da tenere in piedi.
+
+| | |
+|---|---|
+| `SWEEP_MODE=spento` | default: il worker non guarda nemmeno il bucket |
+| `SWEEP_MODE=elenca` | passa, scrive nel registro cosa cancellerebbe, non tocca niente |
+| `SWEEP_MODE=cancella` | passa e cancella |
+| `SWEEP_EVERY_HOURS` | ogni quanto, `24` per default |
+| `SWEEP_GRACE_DAYS` | la soglia della condizione 2, `1` per default |
+
+Tre valori e non un interruttore, per la stessa ragione di `REDACTION_PROVIDER`:
+«spenta» e «accesa ma guarda e basta» non sono la stessa cosa. `elenca` non è un
+gradino verso `cancella`, è uno stato in cui si può restare per sempre — chi
+vuole sapere quanta spazzatura produce il sistema senza delegare a un processo
+la decisione di toglierla ha già finito qui. La configurazione della scopa
+finisce nel **registro dell'avvio**, dove chi guarda un deploy la vede: è
+l'unica cosa che il worker faccia sui file di qualcuno senza che gliel'abbia
+chiesto nessuno, e sapere che è accesa non deve costare una visita al pannello
+delle variabili.
+
+Tre dettagli di pianificazione, ognuno per un modo di sbagliare:
+
+- **La coda ha la precedenza.** Se il giro ha elaborato anche una sola
+  registrazione, la scopa salta il turno: nessuno deve aspettare la propria
+  scheda perché il worker sta pulendo la spazzatura di ieri. Su un sistema
+  perennemente carico non passerebbe mai, ed è la risposta giusta — un bucket che
+  cresce costa molto meno di una coda che non avanza.
+- **La prima passata è un intervallo *dopo* l'avvio**, non all'avvio. Un worker
+  che si riavvia in ciclo passerebbe la scopa a ogni riavvio, e la scopa è
+  proprio la cosa che non deve girare più spesso di quanto le si è detto.
+- **Il timer si riarma anche quando la passata fallisce.** Contare dalla fine e
+  non dall'inizio, e riarmare fuori dal ramo felice, è ciò che impedisce a un
+  bucket irraggiungibile di trasformarsi in un tentativo ogni cinque secondi.
+
+Un SIGTERM ferma la passata fra un blocco e l'altro, al contrario
+dell'elaborazione di un vocale, che invece si lascia finire perché è fatta di
+chiamate a modelli già pagate. Qui non c'è niente da salvare: restare a scorrere
+un bucket grande dopo un SIGTERM significa solo farsi ammazzare più tardi, e
+fermarsi non lascia nulla in sospeso. I candidati del blocco incompleto vengono
+**buttati**, non giudicati di fretta: sono chiavi già guardate e non ancora
+confrontate col database, e interrogarlo dopo che l'arresto è stato chiesto
+significherebbe cancellare durante lo spegnimento. La prossima passata le
+ritrova identiche.
+
+**Due repliche del worker non si pestano**, ma per un motivo diverso da quello
+della coda — lì c'è un compare-and-swap, qui non c'è nessun lucchetto e non
+serve. Cosa cancellare è una funzione pura di (bucket, tabella, ora), quindi due
+passate in parallelo prendono le stesse decisioni; e cancellare due volte la
+stessa chiave non è un errore né su S3 né sul filesystem, dove `delete` è
+idempotente apposta. Il costo di due repliche è quindi una scorsa del bucket
+pagata due volte — voci di `LIST` sulla fattura, niente di più — e chi vuole
+evitarlo tiene la scopa accesa su una replica sola.
 
 ### CORS: il dominio del frontend e nient'altro
 
@@ -1345,6 +1407,9 @@ significherebbe quattro deploy.
 | `S3_ENDPOINT` | ✓ | ✓ | | | vuoto = AWS. R2: `https://<account>.r2.cloudflarestorage.com` |
 | `S3_FORCE_PATH_STYLE` | ✓ | ✓ | | | `true` solo per MinIO e simili |
 | `STORAGE_DIR` | | | | ✓ | solo con `STORAGE_PROVIDER=local` |
+| `SWEEP_MODE` | | ✓ | | ✓ | solo il worker la legge. Default `spento`; `elenca` prima di `cancella` |
+| `SWEEP_EVERY_HOURS` | | ✓ | | ✓ | default 24 |
+| `SWEEP_GRACE_DAYS` | | ✓ | | ✓ | default 1. Non è la retention: è la difesa dall'audio in corso di caricamento |
 | `TRANSCRIPTION_PROVIDER` | ✓ | ✓ | | ✓ | `openai` in produzione |
 | `EXTRACTION_PROVIDER` | ✓ | ✓ | | ✓ | `anthropic` in produzione |
 | `EMBEDDING_PROVIDER` | ✓ | ✓ | | ✓ | `openai` in produzione |
@@ -1716,13 +1781,12 @@ Non installate, e il perché:
   resto, e paga la banda due volte. Un URL prefirmato eviterebbe il doppio salto,
   ma sposterebbe l'autorizzazione dentro una firma con scadenza, e per ora non
   vale il cambio.
-- **La scopa esiste, ma la passa una persona.** `npm run sweep` confronta le
-  chiavi del bucket con le righe della tabella e cancella ciò che nessuna riga
-  nomina più, ed è documentato sopra. Quello che non c'è è un momento in cui
-  parta da solo: nessun job la pianifica, nessuna lifecycle rule è configurata, e
-  un comando che nessuno ricorda di eseguire raccoglie tanta spazzatura quanto un
-  comando che non esiste. Pianificarla è tre righe nel worker, e non sono state
-  scritte perché la prima passata su un bucket vero è meglio guardarla.
+- **La scopa sa partire da sola, ma nessuno l'ha accesa.** Il worker la
+  pianifica e `SWEEP_MODE=spento` è il default, quindi negli ambienti veri di
+  oggi non passa nessuno: una variabile che nessuno imposta raccoglie tanta
+  spazzatura quanto un comando che nessuno esegue. È voluto — la prima passata
+  su un bucket vero è meglio guardarla, e `elenca` esiste per guardarla senza
+  rischi — ma finché la variabile resta al default il difetto è quello di prima.
 - **Cancellare una registrazione non cancella ciò che ne è derivato.** La scheda
   resta, con la sua trascrizione dentro i campi che l'estrazione ha riempito. È
   voluto e sta scritto sopra, ma vale la pena dirlo anche qui, perché chi preme

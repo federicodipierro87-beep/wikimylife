@@ -2,6 +2,7 @@ import { loadConfig } from "@wikimylife/api/config";
 import { createLogger } from "@wikimylife/api/logger";
 import { compose } from "@wikimylife/api";
 import { creaSonno } from "./sonno.js";
+import { toccaSpazzare } from "./sweepSchedule.js";
 
 /**
  * Il worker: prende le registrazioni in attesa e le porta a scheda.
@@ -26,6 +27,22 @@ import { creaSonno } from "./sonno.js";
  * stessi provider e lo stesso repository dell'API. Due composizioni separate
  * vorrebbero dire poter trascrivere con Whisper in un processo e con il fake
  * nell'altro, e accorgersene dai dati.
+ *
+ * FA ANCHE LA SCOPA, se gliela si accende. E' l'unica altra cosa periodica del
+ * sistema, sta qui perche' qui c'e' gia' un processo che si sveglia da solo, e
+ * parte spenta: si veda `SWEEP_MODE`. Quando la coda ha qualcosa dentro non
+ * passa — la ragione sta in `sweepSchedule.ts`, ed e' che nessuno deve
+ * aspettare la propria scheda perche' il worker sta pulendo la spazzatura di
+ * ieri.
+ *
+ * DUE WORKER NON SI PESTANO NEMMENO QUI, ma per un motivo diverso dalla coda:
+ * non c'e' nessun lucchetto, e non serve. Cosa cancellare e' una funzione pura
+ * di (bucket, tabella, ora), quindi due passate in parallelo prendono le stesse
+ * decisioni; e cancellare due volte la stessa chiave non e' un errore ne' su
+ * S3 ne' sul filesystem, dove `delete` e' idempotente apposta. Il costo di due
+ * repliche e' quindi soltanto una scorsa del bucket pagata due volte — voci di
+ * `LIST` sulla fattura, niente di piu' — e chi vuole evitarlo tiene la scopa
+ * accesa su una replica sola.
  */
 
 const POLL_INTERVAL_MS = 5_000;
@@ -49,6 +66,15 @@ async function main(): Promise<void> {
   logger.info("worker avviato", {
     nodeEnv: config.nodeEnv,
     pollIntervalMs: POLL_INTERVAL_MS,
+    // Nel registro dell'avvio, dove chi guarda un deploy la vede: e' l'unica
+    // cosa che questo processo faccia sui file di qualcuno senza che gliel'abbia
+    // chiesto nessuno, e sapere che e' accesa non deve costare una lettura del
+    // pannello delle variabili.
+    sweep: {
+      mode: config.sweep.mode,
+      everyMs: config.sweep.everyMs,
+      graceMs: config.sweep.graceMs,
+    },
     providers: {
       transcription: composition.providers.transcription.name,
       extraction: composition.providers.extraction.name,
@@ -75,6 +101,57 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 
+  const scopa = logger.child({ component: "sweep" });
+
+  /**
+   * Una passata, e tutto quello che succede resta scritto mentre succede.
+   *
+   * Il riassunto arriva alla fine e la fine puo' non arrivare — un SIGTERM, un
+   * bucket che smette di rispondere — quindi ogni orfano va nel registro
+   * appena trovato. In `elenca` quelle righe sono l'unico prodotto della
+   * passata: dicono cosa sarebbe sparito, senza che sparisca.
+   */
+  const spazza = async (): Promise<void> => {
+    const cancella = config.sweep.mode === "cancella";
+    scopa.info("passata avviata", { cancella, graceMs: config.sweep.graceMs });
+    try {
+      const esito = await composition.storageSweepService.esegui({
+        cancella,
+        graceMs: config.sweep.graceMs,
+        // Fermarsi a meta' non lascia niente in sospeso, e restare a scorrere un
+        // bucket grande dopo un SIGTERM significa solo farsi ammazzare piu'
+        // tardi. E' la differenza con l'elaborazione di un vocale, che invece si
+        // lascia finire perche' e' fatta di chiamate gia' pagate.
+        continua: () => running,
+        onOrfano: (object) => {
+          scopa.info("orfano trovato", {
+            key: object.key,
+            sizeBytes: object.sizeBytes,
+            lastModified: object.lastModified,
+          });
+        },
+        onErroreCancellazione: ({ key, error }) => {
+          scopa.error("orfano non cancellato", { key, error });
+        },
+      });
+      scopa.info(esito.interrotta ? "passata interrotta dall'arresto" : "passata conclusa", {
+        ...esito,
+      });
+    } catch (error) {
+      // Ci si arriva quando il database non risponde: la passata si interrompe
+      // apposta invece di dare per orfano tutto cio' che non ha potuto chiedere.
+      // Non c'e' niente da riparare, ci riprova la prossima.
+      scopa.error("passata interrotta, niente e' stato deciso sul resto del bucket", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  // La prima e' un intervallo dopo l'avvio e non all'avvio: un worker che si
+  // riavvia in ciclo passerebbe la scopa a ogni riavvio, e la scopa e' la cosa
+  // che non deve girare piu' spesso di quanto le si e' detto.
+  let nonPrimaDi = Date.now() + config.sweep.everyMs;
+
   while (running) {
     let processed = 0;
     try {
@@ -96,6 +173,23 @@ async function main(): Promise<void> {
       logger.error("giro di elaborazione interrotto", {
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+
+    if (
+      running &&
+      toccaSpazzare({
+        mode: config.sweep.mode,
+        adesso: Date.now(),
+        nonPrimaDi,
+        codaVuota: processed === 0,
+      })
+    ) {
+      await spazza();
+      // Riarmato comunque, anche se la passata e' fallita o e' stata
+      // interrotta: contare dalla fine e non dall'inizio, e riarmare fuori dal
+      // ramo felice, e' cio' che impedisce a un bucket irraggiungibile di
+      // trasformarsi in un tentativo ogni cinque secondi.
+      nonPrimaDi = Date.now() + config.sweep.everyMs;
     }
 
     if (running && processed === 0) {

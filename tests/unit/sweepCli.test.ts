@@ -113,6 +113,7 @@ const vuoto: SweepSummary = {
   byteOrfani: 0,
   cancellati: 0,
   falliti: 0,
+  interrotta: false,
 };
 
 describe("il rapporto", () => {
@@ -140,5 +141,13 @@ describe("il rapporto", () => {
 
     const male = formatSummary({ ...vuoto, orfani: 1, cancellati: 0, falliti: 1 }, true);
     expect(male).toContain("falliti");
+  });
+
+  it("dice che i numeri sono parziali, quando lo sono", () => {
+    // Senza questa riga «esaminati 12» dopo un Ctrl-C sembra il conto del
+    // bucket, e chi lo legge conclude che non c'era altro.
+    const testo = formatSummary({ ...vuoto, esaminati: 12, orfani: 2, interrotta: true }, true);
+    expect(testo).toContain("Interrotta");
+    expect(formatSummary({ ...vuoto, esaminati: 12 }, true)).not.toContain("Interrotta");
   });
 });

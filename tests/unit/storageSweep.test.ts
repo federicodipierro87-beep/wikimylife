@@ -429,3 +429,79 @@ describe("la scopa: pagine e blocchi", () => {
     );
   });
 });
+
+describe("la scopa: fermarla a meta'", () => {
+  it("non guarda niente se le si dice di no prima di cominciare", async () => {
+    const b = banco();
+    for (let n = 1; n <= 3; n += 1) {
+      await b.carica(chiave(n), 10 * GIORNO);
+    }
+
+    const esito = await b.esegui({ cancella: true, continua: () => false });
+
+    expect(esito.interrotta).toBe(true);
+    expect(esito.esaminati).toBe(0);
+    expect(b.storage.size).toBe(3);
+  });
+
+  it("finisce il blocco cominciato e poi si ferma", async () => {
+    // Fermarsi a meta' di un blocco vorrebbe dire lasciare nel registro
+    // annunci di orfani che nessuno ha poi cancellato: righe che non
+    // corrispondono a niente, cioe' la cosa che il registro serve a evitare.
+    const b = banco();
+    b.storage.pageSize = 600;
+    for (let n = 1; n <= 1200; n += 1) {
+      await b.carica(chiave(n), 10 * GIORNO);
+    }
+    let visti = 0;
+
+    const esito = await b.esegui({
+      cancella: true,
+      continua: () => {
+        visti += 1;
+        return visti <= 1;
+      },
+    });
+
+    expect(esito.interrotta).toBe(true);
+    // Un blocco intero fatto, il resto nemmeno guardato.
+    expect(esito.cancellati).toBe(500);
+    expect(b.storage.size).toBe(700);
+  });
+
+  it("butta il blocco incompleto invece di deciderlo di fretta", async () => {
+    // Con pagine da uno e blocchi da cinquecento, l'interruzione arriva mentre
+    // i candidati sono ancora in mano e non sono mai stati chiesti al
+    // database. Si buttano: sono stati guardati, non giudicati, e la passata
+    // dopo li ritrova. L'alternativa — svuotarli comunque prima di uscire —
+    // vorrebbe dire cancellare dopo che l'ordine di fermarsi e' arrivato.
+    const b = banco();
+    b.storage.pageSize = 1;
+    for (let n = 1; n <= 4; n += 1) {
+      await b.carica(chiave(n), 10 * GIORNO);
+    }
+    let pagine = 0;
+
+    const esito = await b.esegui({
+      cancella: true,
+      continua: () => {
+        pagine += 1;
+        return pagine <= 2;
+      },
+    });
+
+    expect(esito.interrotta).toBe(true);
+    expect(esito.esaminati).toBe(2);
+    expect(esito.orfani).toBe(0);
+    expect(b.chiamate).toEqual([]);
+    expect(b.storage.size).toBe(4);
+  });
+
+  it("una passata che arriva in fondo non si dichiara interrotta", async () => {
+    const b = banco();
+    await b.carica(chiave(1), 10 * GIORNO);
+
+    expect((await b.esegui({ continua: () => true })).interrotta).toBe(false);
+    expect((await b.esegui()).interrotta).toBe(false);
+  });
+});

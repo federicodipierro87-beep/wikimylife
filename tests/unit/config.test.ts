@@ -199,6 +199,54 @@ describe("loadConfig — s3", () => {
   });
 });
 
+describe("loadConfig — la scopa", () => {
+  it("chi non dice niente non si trova dei file in meno", () => {
+    // E' l'unica cosa che il worker farebbe da solo su file di persone. Il
+    // default non e' una preferenza: e' la sola risposta accettabile per
+    // un'installazione che non ha mai sentito nominare SWEEP_MODE.
+    expect(loadConfig({ ...MINIMO }).sweep.mode).toBe("spento");
+    expect(loadConfig({ ...PRODUZIONE }).sweep.mode).toBe("spento");
+  });
+
+  it("le ore e i giorni arrivano in millisecondi", () => {
+    // Nel pannello si scrivono ore e giorni perche' e' l'unita' in cui si
+    // ragiona. La conversione sta in un punto solo, e sbagliarla di mille
+    // vorrebbe dire una soglia da un secondo su un `DELETE`.
+    const config = loadConfig({ ...MINIMO, SWEEP_EVERY_HOURS: "6", SWEEP_GRACE_DAYS: "7" });
+    expect(config.sweep.everyMs).toBe(6 * 60 * 60 * 1000);
+    expect(config.sweep.graceMs).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it("i default sono un giorno di soglia e una passata al giorno", () => {
+    const config = loadConfig({ ...MINIMO });
+    expect(config.sweep.everyMs).toBe(24 * 60 * 60 * 1000);
+    expect(config.sweep.graceMs).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("accetta una soglia piu' corta di un giorno, ma mai zero", () => {
+    // Zero e' vietato apposta: la soglia e' l'unica difesa contro la corsa fra
+    // il caricamento dell'audio e la riga che lo nomina.
+    expect(loadConfig({ ...MINIMO, SWEEP_GRACE_DAYS: "0.5" }).sweep.graceMs).toBe(
+      12 * 60 * 60 * 1000,
+    );
+    expect(errore({ ...MINIMO, SWEEP_GRACE_DAYS: "0" })).toContain("SWEEP_GRACE_DAYS");
+    expect(errore({ ...MINIMO, SWEEP_EVERY_HOURS: "0" })).toContain("SWEEP_EVERY_HOURS");
+  });
+
+  it("rifiuta un modo che non conosce invece di intenderlo come spento", () => {
+    // «spento» per esclusione sarebbe comodo e sbagliato al contrario: un
+    // domani in cui il valore ignoto significasse «cancella» per un refuso,
+    // nessuno se ne accorgerebbe leggendo questo file.
+    expect(errore({ ...MINIMO, SWEEP_MODE: "off" })).toContain("SWEEP_MODE");
+    expect(errore({ ...MINIMO, SWEEP_MODE: "" })).toContain("SWEEP_MODE");
+  });
+
+  it("in produzione si puo' accendere, ed e' l'unico posto dove ha senso", () => {
+    expect(loadConfig({ ...PRODUZIONE, SWEEP_MODE: "elenca" }).sweep.mode).toBe("elenca");
+    expect(loadConfig({ ...PRODUZIONE, SWEEP_MODE: "cancella" }).sweep.mode).toBe("cancella");
+  });
+});
+
 describe("loadConfig — le regole che valgono solo in produzione", () => {
   it("l'ambiente di produzione completo passa", () => {
     const config = loadConfig({ ...PRODUZIONE });

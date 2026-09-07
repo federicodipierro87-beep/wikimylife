@@ -70,6 +70,16 @@ import type { RecordingRepository } from "./ports/RecordingRepository.js";
  * dopo quale oggetto riprendere e non a quale posizione — su un elenco
  * posizionale ogni chiave tolta ne farebbe saltare una mai guardata — ed e' una
  * condizione dichiarata in `ListObjectsInput`, non una speranza.
+ *
+ * ## Fermarsi a meta' e' sicuro, e va detto
+ *
+ * Una passata interrotta non lascia niente in sospeso: non c'e' uno stato a
+ * meta', c'e' solo una parte di bucket che nessuno ha guardato, e la passata
+ * dopo la guarda. Per questo `continua` puo' fermarla in qualunque momento —
+ * un SIGTERM al worker, un Ctrl-C al comando — invece di doverla lasciar
+ * finire. L'unica cosa che non deve succedere e' che il riassunto di una
+ * passata fermata a un decimo del bucket venga letto come il conto del bucket
+ * intero: e' l'intero motivo per cui `interrotta` sta nel riassunto.
  */
 
 /**
@@ -119,6 +129,16 @@ export interface SweepSummary {
   readonly cancellati: number;
   /** Quanti hanno rifiutato di farsi cancellare. */
   readonly falliti: number;
+  /**
+   * La passata si e' fermata prima della fine perche' glielo si e' chiesto.
+   *
+   * I numeri qui sopra restano veri per la parte guardata e falsi per il
+   * bucket: `orfani: 3` con `interrotta: true` vuol dire «tre fin qui», non
+   * «tre in tutto». Senza questo campo una passata fermata da un SIGTERM
+   * sarebbe indistinguibile da un bucket pulito, e la differenza fra le due
+   * e' tutta.
+   */
+  readonly interrotta: boolean;
 }
 
 export interface SweepOptions {
@@ -137,6 +157,17 @@ export interface SweepOptions {
    * fine. Chi cancella deve lasciare scritto cosa, mentre lo fa.
    */
   readonly onOrfano?: (object: ListedObject) => void;
+  /**
+   * Chiesto fra un blocco e l'altro: `false` ferma la passata.
+   *
+   * Serve a chi la ospita dentro un processo che puo' ricevere un SIGTERM. Al
+   * contrario dell'elaborazione di un vocale — che sta a meta' fra due chiamate
+   * a modelli gia' pagate, e va lasciata finire — qui non c'e' niente da
+   * perdere: la passata dopo rifa' tutto da capo, e restare a scorrere un
+   * bucket grande significa soltanto farsi ammazzare piu' tardi, senza aver
+   * chiuso niente.
+   */
+  readonly continua?: () => boolean;
   readonly onErroreCancellazione?: (input: {
     readonly key: string;
     readonly error: unknown;
@@ -158,8 +189,10 @@ export function createStorageSweepService(deps: StorageSweepDeps): StorageSweepS
     async esegui(options: SweepOptions = {}): Promise<SweepSummary> {
       const cancella = options.cancella ?? false;
       const graceMs = options.graceMs ?? SWEEP_GRACE_MS;
+      const continua = options.continua ?? ((): boolean => true);
       const limite = deps.clock.now().getTime() - graceMs;
 
+      let interrotta = false;
       let esaminati = 0;
       let nominati = 0;
       let estranei = 0;
@@ -222,6 +255,15 @@ export function createStorageSweepService(deps: StorageSweepDeps): StorageSweepS
       let token: string | undefined;
 
       do {
+        // Ci si ferma fra un blocco e l'altro, mai a meta' di uno: un blocco
+        // cominciato ha gia' annunciato i suoi orfani, e uscire prima di
+        // cancellarli lascerebbe nel registro righe che non corrispondono a
+        // niente. Sono poche centinaia di chiavi, non un bucket.
+        if (!continua()) {
+          interrotta = true;
+          break;
+        }
+
         const pagina = await deps.storage.list({
           prefix: options.prefix,
           continuationToken: token,
@@ -241,12 +283,20 @@ export function createStorageSweepService(deps: StorageSweepDeps): StorageSweepS
         while (candidati.length >= BLOCCO) {
           await confronta(candidati.slice(0, BLOCCO));
           candidati = candidati.slice(BLOCCO);
+          if (!continua()) {
+            interrotta = true;
+            break;
+          }
         }
 
         token = pagina.continuationToken;
-      } while (token !== undefined);
+      } while (token !== undefined && !interrotta);
 
-      if (candidati.length > 0) {
+      // La coda dei candidati si svuota solo se si e' arrivati in fondo. Chi si
+      // e' fermato la butta: quelle chiavi sono state guardate e non giudicate,
+      // e giudicarle adesso vorrebbe dire una query e delle cancellazioni dopo
+      // che l'ordine di fermarsi e' gia' arrivato. La passata dopo le ritrova.
+      if (!interrotta && candidati.length > 0) {
         await confronta(candidati);
       }
 
@@ -259,6 +309,7 @@ export function createStorageSweepService(deps: StorageSweepDeps): StorageSweepS
         byteOrfani,
         cancellati,
         falliti,
+        interrotta,
       };
     },
   };
