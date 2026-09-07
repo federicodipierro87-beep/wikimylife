@@ -1,4 +1,8 @@
-import type { RedactionProposal, RedactionReport } from "@wikimylife/shared";
+import type {
+  RedactionAssistance,
+  RedactionProposal,
+  RedactionReport,
+} from "@wikimylife/shared";
 import { useState } from "react";
 import { apiClient } from "../api";
 import { goBack, navigate } from "../router";
@@ -38,6 +42,28 @@ import { useAsync } from "../useAsync";
  * vorrebbe dire far dichiarare a quattro espressioni regolari che la scheda e'
  * pulita: il nome dell'ex moglie di un cliente non ha un checksum. La
  * «revisione esplicita» che la §9 chiede resta un gesto di chi legge.
+ *
+ * ## Le proposte di un modello non si mescolano con quelle di un checksum
+ *
+ * Da quando la passata assistita esiste, questa lista contiene due cose molto
+ * diverse. `MRTMTT25D09F205Z` e' un codice fiscale perche' l'ultima lettera
+ * torna: chi lo legge sta decidendo se toglierlo, non se e' un codice fiscale.
+ * «Mario Rossi» e' un nome perche' un modello linguistico l'ha detto, e li' la
+ * domanda e' un'altra — potrebbe essere una ditta, un santo, una via.
+ *
+ * Presentarle uguali avrebbe fatto credere alle seconde la certezza delle
+ * prime. Ogni proposta assistita porta scritto da dove viene, con un segno che
+ * si vede senza doverlo cercare: e' l'unica informazione che cambia il modo di
+ * leggere la frase intorno.
+ *
+ * ## Cosa dire quando non c'e' niente da dire
+ *
+ * Un elenco vuoto ha tre significati diversi, e la differenza importa a chi sta
+ * per condividere una scheda: non ho trovato nulla dei quattro formati e i nomi
+ * non li ho nemmeno cercati; non ho trovato nulla e i nomi li ho cercati; non ho
+ * trovato nulla dei quattro formati e i nomi avrei dovuto cercarli ma il
+ * modello non ha risposto. La terza e' un guasto, e mostrarla come le altre due
+ * vorrebbe dire far leggere «e' pulita» a chi ha davanti una passata a meta'.
  */
 
 const NOMI: Record<RedactionProposal["kind"], string> = {
@@ -139,12 +165,9 @@ function Passata({
       <main className="schermata redazione">
         <Testata />
         <h1>Non ho trovato niente</h1>
-        <p className="muto">
-          Nessun codice fiscale, IBAN, email o numero di telefono in questa
-          scheda. Vuol dire solo questo: quello che riconosco sono quattro
-          formati, e un nome o un indirizzo non hanno un formato.
-        </p>
-        {report.contieneDatiSensibili && <FlagResta />}
+        <Degradata assistenza={report.assistenza} />
+        <p className="muto">{VUOTO[report.assistenza]}</p>
+        {report.contieneDatiSensibili && <FlagResta assistenza={report.assistenza} />}
       </main>
     );
   }
@@ -154,6 +177,7 @@ function Passata({
       <Testata />
 
       <h1>Prima di condividerla</h1>
+      <Degradata assistenza={report.assistenza} />
       <p className="muto">
         Ho trovato {report.proposte.length}{" "}
         {report.proposte.length === 1 ? "dato personale" : "dati personali"}.
@@ -187,7 +211,11 @@ function Passata({
       <ul className="lista-proposte">
         {report.proposte.map((p) => (
           <li key={p.id}>
-            <label className="proposta">
+            <label
+              className={
+                p.origine === "ASSISTITA" ? "proposta proposta--assistita" : "proposta"
+              }
+            >
               <input
                 type="checkbox"
                 checked={scelte.has(p.id)}
@@ -198,6 +226,13 @@ function Passata({
               <span className="proposta__corpo">
                 <span className="proposta__dove">
                   {p.etichetta} · <span className="tipo">{NOMI[p.kind]}</span>
+                  {p.origine === "ASSISTITA" && (
+                    // Il bordo colorato non basta: chi non distingue i colori
+                    // vedrebbe due proposte identiche, e la differenza fra «lo
+                    // dice un checksum» e «lo dice un modello» e' l'unica cosa
+                    // che qui cambia una decisione.
+                    <> · <span className="proposta__fonte">letto, non calcolato</span></>
+                  )}
                 </span>
                 <Contesto proposta={p} />
                 <span className="proposta__esito">
@@ -215,7 +250,7 @@ function Passata({
         </p>
       )}
 
-      <FlagResta />
+      <FlagResta assistenza={report.assistenza} />
 
       <div className="redazione__azioni">
         <button
@@ -271,12 +306,61 @@ function Contesto({ proposta }: { proposta: RedactionProposal }): React.JSX.Elem
   );
 }
 
-function FlagResta(): React.JSX.Element {
+/**
+ * Il guasto, e solo il guasto.
+ *
+ * `NON_CONFIGURATA` non compare: e' la configurazione predefinita, non una
+ * mancanza, e annunciare a ogni passata «esisterebbe una funzione che non hai»
+ * sarebbe pubblicita' travestita da avviso. `ESEGUITA` non compare per la
+ * ragione opposta — dire che e' andata bene invita a fidarsi, che e'
+ * esattamente cio' che questa schermata non vuole.
+ */
+function Degradata({ assistenza }: { assistenza: RedactionAssistance }): React.JSX.Element | null {
+  if (assistenza !== "NON_RIUSCITA") {
+    return null;
+  }
+
+  return (
+    <p className="avviso avviso--degradata" role="status">
+      La lettura assistita non ha risposto. Qui sotto c&apos;e&apos; solo quello
+      che riconosco da solo — codici fiscali, IBAN, email, telefoni. Nomi e
+      indirizzi, questa volta, non li ho cercati.
+    </p>
+  );
+}
+
+/**
+ * Le tre versioni dell'elenco vuoto.
+ *
+ * Un `Record` e non una catena di `if`: i tre casi sono un'enum, e il giorno in
+ * cui ne nascesse un quarto il compilatore chiederebbe di scrivere anche quello
+ * invece di lasciarlo cadere in un ramo `else` scritto per altri.
+ */
+const VUOTO: Record<RedactionAssistance, string> = {
+  NON_CONFIGURATA:
+    "Nessun codice fiscale, IBAN, email o numero di telefono in questa scheda. " +
+    "Vuol dire solo questo: quello che riconosco sono quattro formati, e un nome " +
+    "o un indirizzo non hanno un formato.",
+  ESEGUITA:
+    "Nessun codice fiscale, IBAN, email o numero di telefono, e nemmeno un nome " +
+    "o un indirizzo che io abbia saputo riconoscere. Resta una lettura, non una " +
+    "garanzia: un numero di pratica che sembra un numero qualsiasi non l'ho visto.",
+  NON_RIUSCITA:
+    "Niente di quello che riconosco da solo. Sui nomi non posso dirti niente: " +
+    "riprova fra un minuto, oppure rileggila tu.",
+};
+
+function FlagResta({ assistenza }: { assistenza: RedactionAssistance }): React.JSX.Element {
   return (
     <p className="muto redazione__flag">
-      La scheda resta marcata come «contiene dati sensibili» anche dopo: quello
-      che riconosco sono quattro formati, e un nome o l&apos;indirizzo di casa di
-      qualcuno non ne hanno uno. Toglilo tu, quando l&apos;hai riletta.
+      La scheda resta marcata come «contiene dati sensibili» anche dopo.{" "}
+      {assistenza === "ESEGUITA"
+        ? // Con la passata assistita accesa la conclusione non cambia, ma la
+          // ragione si': non e' piu' che i nomi non li cerco, e' che cercarli
+          // e' un parere. Ripetere la frase di prima sarebbe stato falso.
+          "Quattro formati li calcolo, i nomi li leggo: la seconda cosa e' un'opinione, e su un'opinione non si dichiara pulita una scheda."
+        : "Quello che riconosco sono quattro formati, e un nome o l'indirizzo di casa di qualcuno non ne hanno uno."}{" "}
+      Toglilo tu, quando l&apos;hai riletta.
     </p>
   );
 }

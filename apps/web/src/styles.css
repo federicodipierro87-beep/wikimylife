@@ -587,7 +587,8 @@ button:focus-visible {
 }
 
 .avviso--obsoleta,
-.avviso--spazio {
+.avviso--spazio,
+.avviso--degradata {
   border-color: var(--warn);
   color: var(--warn);
 }
@@ -734,9 +735,26 @@ button:focus-visible {
   min-width: 0;
 }
 
+/*
+ * Il bordo di sinistra, e non lo sfondo dell'intera riga.
+ *
+ * Le proposte assistite valgono meno delle altre — un modello che sbaglia
+ * costa a chi legge il testo cancellato per niente — e vanno distinte. Ma
+ * distinguerle colorando il fondo avrebbe reso il contesto meno leggibile
+ * proprio nelle righe in cui il contesto e' l'unica cosa che permette di
+ * decidere: e' li' che si capisce se «Rossi» era una persona o un'insegna.
+ */
+.proposta--assistita {
+  border-left: 3px solid var(--warn);
+}
+
 .proposta__dove {
   font-size: 0.78rem;
   color: var(--muted);
+}
+
+.proposta__fonte {
+  color: var(--warn);
 }
 
 .proposta__contesto {
