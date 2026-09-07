@@ -2,6 +2,8 @@ import {
   ApiError,
   AUTH_STORAGE_KEYS,
   createApiClient,
+  listProceduresQuerySchema,
+  searchQuerySchema,
   type AuthSession,
   type FetchImpl,
 } from "@wikimylife/shared";
@@ -379,5 +381,72 @@ describe("restoreSession", () => {
 
     await expect(client.restoreSession()).resolves.toBeNull();
     expect(storage.snapshot()).toEqual({});
+  });
+});
+
+/**
+ * Le due rotte con una query string.
+ *
+ * Sono le uniche in cui il client riscrive a mano un pezzo di contratto: la
+ * query si costruisce elencando i campi uno per uno, e un campo aggiunto allo
+ * schema e dimenticato qui non rompe niente di visibile. La richiesta parte lo
+ * stesso, il server applica il default, e il difetto si manifesta come un
+ * comportamento sbagliato invece che come un errore.
+ *
+ * E' successo con `offset` della ricerca: lo schema lo accettava, la schermata
+ * lo passava a ogni pagina, e ogni pagina chiedeva la prima. Questi due test
+ * non guardano un URL atteso scritto a mano — che si dimenticherebbe insieme
+ * al resto — ma confrontano i parametri mandati con le chiavi dello schema.
+ * La prossima aggiunta o fallisce qui, o e' arrivata.
+ */
+describe("query string — nessun parametro si perde per strada", () => {
+  function parametriDi(url: string): string[] {
+    return [...new URL(url).searchParams.keys()].sort();
+  }
+
+  it("manda ogni campo di searchQuerySchema", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      "GET /api/search?q=residenza&scope=PERSONALE&limit=10&offset=20": () => ({
+        status: 200,
+        payload: { q: "residenza", items: [], limit: 10, offset: 20, hasMore: false },
+      }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await client.search({ q: "residenza", scope: "PERSONALE", limit: 10, offset: 20 });
+
+    expect(parametriDi(calls[0]?.url ?? "")).toEqual(
+      Object.keys(searchQuerySchema.shape).sort(),
+    );
+  });
+
+  it("manda ogni campo di listProceduresQuerySchema", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      "GET /api/procedures?scope=LAVORO&status=COMPLETA&tag=casa&limit=5&offset=15": () => ({
+        status: 200,
+        payload: { items: [], total: 0, limit: 5, offset: 15 },
+      }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await client.listProcedures({
+      scope: "LAVORO",
+      status: "COMPLETA",
+      tag: "casa",
+      limit: 5,
+      offset: 15,
+    });
+
+    expect(parametriDi(calls[0]?.url ?? "")).toEqual(
+      Object.keys(listProceduresQuerySchema.shape).sort(),
+    );
   });
 });

@@ -598,6 +598,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
             q: query.q,
             scope: query.scope,
             limit: query.limit,
+            offset: query.offset,
           })}`,
           schema: searchResultSchema,
           auth: true,
