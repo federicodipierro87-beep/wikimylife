@@ -1208,6 +1208,56 @@ tiene in coda su IndexedDB e riprova da lì: un retry dentro il server
 raddoppierebbe il tempo di una richiesta che il browser ha già rinunciato ad
 aspettare, e la coda offline esiste esattamente per questo.
 
+### La scopa: `npm run sweep`
+
+Il database e il bucket non condividono un commit. `DELETE /api/recordings/:id`
+toglie la riga e poi l'oggetto, e fra le due c'è una finestra di millisecondi; la
+stessa finestra sta fra il `put` del caricamento e la riga che lo nomina. Un
+processo che muoia lì in mezzo lascia byte che nessuna riga nomina più. Non è un
+problema che una transazione possa risolvere: resterebbe comunque un istante in
+cui uno dei due sistemi ha scritto e l'altro no. Si riconcilia dopo.
+
+```bash
+npm run sweep                      # elenca e basta
+npm run sweep -- --prefix=u1/      # solo una cartella
+npm run sweep -- --giorni=7        # più prudente del default
+npm run sweep -- --cancella        # e adesso sul serio
+```
+
+Il comando **non cancella se non glielo si dice**. Non è timidezza: la prima
+passata su un bucket vero è quella in cui si scopre che il `DATABASE_URL`
+puntava a un altro ambiente, e un default che cancella trasforma quell'errore in
+una perdita irreversibile invece che in una stampa sbagliata.
+
+Un oggetto viene cancellato solo se supera **tutte e tre** le condizioni, e ognuna
+copre un modo diverso di sbagliare:
+
+1. **Nessuna riga lo nomina.** `findExistingAudioKeys` è l'unica query del
+   progetto senza `userId`, perché la domanda non è «cosa possiede questo utente»
+   ma «questo oggetto appartiene a qualcuno», e restringerla darebbe la risposta
+   sbagliata proprio per gli oggetti che interessano. Si interroga a blocchi di
+   cinquecento chiavi, e **un errore di lettura interrompe la passata** invece di
+   saltare il blocco: una domanda senza risposta darebbe come orfano tutto ciò
+   che conteneva.
+2. **È più vecchio della soglia**, un giorno per default. È l'unica difesa contro
+   la corsa col caricamento: nell'istante fra il `put` e la riga, l'audio che
+   qualcuno sta caricando adesso è indistinguibile da un orfano. Per questo
+   `--giorni=0` è rifiutato.
+3. **Ha la forma di una chiave nostra**, `{utente}/{uuid}.{estensione}`. Il bucket
+   può non essere solo nostro: un backup messo lì a mano supera le prime due
+   condizioni ed è comunque roba di qualcuno.
+
+Il rapporto va su stdout e il registro su stderr, così `npm run sweep > elenco.txt`
+lascia un elenco leggibile. Ogni orfano viene scritto nel registro *prima* che
+qualcosa venga cancellato: se la passata muore a metà, quelle righe sono l'unica
+prova di quali chiavi siano sparite. L'uscita è `2` per una riga di comando
+sbagliata, `1` se qualche cancellazione è fallita — e una chiave che non si lascia
+cancellare non ferma le altre, perché la passata dopo la ritrova identica.
+
+Il servizio sta in `apps/api/src/services/storageSweep.service.ts` e non è legato
+al comando: il giorno in cui lo si vuole pianificare, il worker è il posto e non
+serve toccarlo. Per ora la passa una persona.
+
 ### CORS: il dominio del frontend e nient'altro
 
 `CORS_ORIGINS` è una lista separata da virgola, e in produzione **non può essere
@@ -1656,17 +1706,13 @@ Non installate, e il perché:
   resto, e paga la banda due volte. Un URL prefirmato eviterebbe il doppio salto,
   ma sposterebbe l'autorizzazione dentro una firma con scadenza, e per ora non
   vale il cambio.
-- **L'audio si toglie uno per uno, e nessuno raccoglie i resti.**
-  `DELETE /api/recordings/:id` cancella la riga e poi l'oggetto, quindi la strada
-  per far sparire una registrazione esiste. Ma fra le due operazioni c'è una
-  finestra di qualche millisecondo, e la stessa finestra sta fra il `put` e la
-  riga del caricamento: un processo che muoia lì in mezzo lascia nel bucket un
-  file che nessuna riga nomina più. Quando la cancellazione fallisce per conto
-  suo — bucket irraggiungibile, permesso mancante — l'utente riceve comunque il
-  suo 204 e la chiave finisce in un `logger.error`, che è meglio di niente ma è
-  un log, non un lavoro. Manca la scopa: nessun job confronta le chiavi del
-  bucket con le righe della tabella, e nessuna lifecycle rule è configurata.
-  Sono kilobyte, finché non sono gigabyte.
+- **La scopa esiste, ma la passa una persona.** `npm run sweep` confronta le
+  chiavi del bucket con le righe della tabella e cancella ciò che nessuna riga
+  nomina più, ed è documentato sopra. Quello che non c'è è un momento in cui
+  parta da solo: nessun job la pianifica, nessuna lifecycle rule è configurata, e
+  un comando che nessuno ricorda di eseguire raccoglie tanta spazzatura quanto un
+  comando che non esiste. Pianificarla è tre righe nel worker, e non sono state
+  scritte perché la prima passata su un bucket vero è meglio guardarla.
 - **Cancellare una registrazione non cancella ciò che ne è derivato.** La scheda
   resta, con la sua trascrizione dentro i campi che l'estrazione ha riempito. È
   voluto e sta scritto sopra, ma vale la pena dirlo anche qui, perché chi preme
@@ -1704,6 +1750,7 @@ Non installate, e il perché:
 | `npm run db:seed` | popola il database di sviluppo |
 | `npm run db:reset` | ricrea il database da zero |
 | `npm run db:studio` | Prisma Studio |
+| `npm run sweep` | elenca gli oggetti che nessuna riga nomina più; `-- --cancella` per toglierli |
 | `npm test` | unit |
 | `npm run test:integration` | integration |
 | `npm run preview --workspace @wikimylife/web` | la build vera, service worker compreso |

@@ -42,6 +42,10 @@ import {
   type RecordingsService,
 } from "./services/recordings.service.js";
 import { createSearchService, type SearchService } from "./services/search.service.js";
+import {
+  createStorageSweepService,
+  type StorageSweepService,
+} from "./services/storageSweep.service.js";
 
 /**
  * L'unico file che conosce le classi concrete.
@@ -80,6 +84,12 @@ export interface Composition {
    * un giro di polling di un secondo processo.
    */
   readonly ingestionService: IngestionService;
+  /**
+   * Nessuna rotta lo espone, e non e' una dimenticanza: e' l'unico servizio che
+   * cancella file guardando il bucket invece della sessione di qualcuno. Lo
+   * chiama `cli/sweep.ts`, cioe' una persona.
+   */
+  readonly storageSweepService: StorageSweepService;
   readonly providers: Providers;
   readonly app: Express;
   shutdown(): Promise<void>;
@@ -239,6 +249,28 @@ export function compose(config: AppConfig, overrides?: {
     },
   });
 
+  const storageSweepService = createStorageSweepService({
+    storage: providers.storage,
+    repo: recordingRepo,
+    clock,
+    // Ogni orfano lascia una riga prima che qualcuno lo cancelli. Se la passata
+    // muore a meta', questo registro e' l'unico posto in cui resta scritto quali
+    // chiavi sono sparite: il rapporto finale, a quel punto, non viene stampato.
+    onOrfano: (object) => {
+      logger.info("orfano trovato", {
+        key: object.key,
+        sizeBytes: object.sizeBytes,
+        lastModified: object.lastModified,
+      });
+    },
+    // Stessa scelta di `onOrphanedAudio`, dall'altro capo: li' resta indietro una
+    // chiave perche' la riga e' gia' sparita, qui perche' il bucket ha detto di
+    // no. In entrambi i casi l'unica cosa da fare e' lasciarne il nome scritto.
+    onErroreCancellazione: ({ key, error }) => {
+      logger.error("orfano non cancellato", { key, error });
+    },
+  });
+
   const procedureRepo = new PrismaProcedureRepository(prisma);
 
   const proceduresService = createProceduresService({
@@ -298,6 +330,7 @@ export function compose(config: AppConfig, overrides?: {
     proceduresService,
     searchService,
     ingestionService,
+    storageSweepService,
     providers,
     app,
     async shutdown(): Promise<void> {
