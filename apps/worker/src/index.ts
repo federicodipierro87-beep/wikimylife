@@ -1,6 +1,7 @@
 import { loadConfig } from "@wikimylife/api/config";
 import { createLogger } from "@wikimylife/api/logger";
 import { compose } from "@wikimylife/api";
+import { creaSonno } from "./sonno.js";
 
 /**
  * Il worker: prende le registrazioni in attesa e le porta a scheda.
@@ -37,12 +38,6 @@ const POLL_INTERVAL_MS = 5_000;
  */
 const MAX_BATCH = 10;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    setTimeout(resolve, ms).unref();
-  });
-}
-
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger({
@@ -62,6 +57,8 @@ async function main(): Promise<void> {
     },
   });
 
+  const sonno = creaSonno();
+
   let running = true;
   const shutdown = (signal: string): void => {
     if (!running) {
@@ -71,6 +68,9 @@ async function main(): Promise<void> {
     // Non si interrompe il job in corso: e' a meta' fra due chiamate a modelli
     // gia' pagate, e la riga tornerebbe in coda per essere rifatta da capo.
     logger.info("arresto richiesto, termino il lavoro in corso", { signal });
+    // Se invece sta dormendo, non c'e' niente da finire e non c'e' ragione di
+    // consumare la finestra fra il SIGTERM e il SIGKILL aspettando un timer.
+    sonno.svegliati();
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
     }
 
     if (running && processed === 0) {
-      await sleep(POLL_INTERVAL_MS);
+      await sonno.dormi(POLL_INTERVAL_MS);
     }
   }
 
