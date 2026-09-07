@@ -62,3 +62,16 @@ export async function postForJson(request: ProviderRequest): Promise<unknown> {
 export const TRANSCRIPTION_TIMEOUT_MS = 120_000;
 export const EXTRACTION_TIMEOUT_MS = 120_000;
 export const EMBEDDING_TIMEOUT_MS = 30_000;
+
+/**
+ * Molto piu' corto degli altri, e non perche' il lavoro sia piu' semplice.
+ *
+ * Trascrizione ed estrazione girano dentro un worker: se una richiesta ci mette
+ * due minuti nessuno se ne accorge, il Recording resta `IN_ELABORAZIONE` e la
+ * schermata dice che ci sta lavorando. La redazione assistita sta invece dentro
+ * una GET, con qualcuno fermo davanti a una scheda che vuole condividere. Dopo
+ * venti secondi quella persona ha gia' deciso che l'app non funziona, e la
+ * §9 preferisce che le proposte certe arrivino subito senza quelle assistite
+ * piuttosto che farle aspettare tutte insieme.
+ */
+export const REDACTION_TIMEOUT_MS = 20_000;

@@ -131,6 +131,28 @@ const baseSchema = z.object({
   STORAGE_PROVIDER: z.enum(["fake", "local", "s3"]).default("fake"),
   EMBEDDING_PROVIDER: z.enum(["fake", "openai"]).default("fake"),
 
+  /**
+   * L'unico provider che ha un valore per dire «non c'e'», e l'unico che parte
+   * spento anche quando la chiave di Anthropic c'e' gia'.
+   *
+   * Gli altri quattro sono ingranaggi: senza trascrizione non esiste una scheda,
+   * senza embedding la ricerca semantica non risponde. La meta' assistita della
+   * §9 e' invece un aiuto in piu' sopra a dei rilevatori che funzionano da soli,
+   * e va acceso da chi ha deciso di accenderlo — perche' accenderlo significa
+   * mandare a un modello di terze parti il testo integrale, non redatto, delle
+   * schede segnate come contenenti dati sensibili. E' esattamente il testo che
+   * uno non vorrebbe spedire in giro. La §9 lo giustifica, ma la giustificazione
+   * dev'essere una scelta scritta in chiaro in una variabile, non l'effetto
+   * collaterale di aver configurato l'estrazione.
+   */
+  REDACTION_PROVIDER: z.enum(["nessuno", "fake", "anthropic"]).default("nessuno"),
+  /**
+   * Piu' piccolo di `EXTRACTION_MODEL` di default, e non per risparmiare: qui il
+   * compito e' riconoscere nomi e indirizzi in un testo corto, che i modelli
+   * piccoli fanno bene, e sta dentro una richiesta con qualcuno che aspetta.
+   */
+  REDACTION_MODEL: z.string().default("claude-haiku-4-5-20251001"),
+
   OPENAI_API_KEY: optionalText,
   ANTHROPIC_API_KEY: optionalText,
 
@@ -229,11 +251,16 @@ const envSchema = baseSchema.superRefine((env, ctx) => {
   }
 
   // I provider finti in produzione producono schede finte in un database vero,
-  // indistinguibili dalle buone il giorno dopo.
+  // indistinguibili dalle buone il giorno dopo. Per la redazione il danno e'
+  // diverso ma non minore: un fake che non trova mai niente e' una schermata
+  // che dice «non ho trovato altro» a chi sta per condividere una scheda.
+  // `"nessuno"` non e' in questa lista di proposito — spegnere la passata
+  // assistita e' una scelta legittima, fingerla no.
   for (const [nome, valore] of [
     ["TRANSCRIPTION_PROVIDER", env.TRANSCRIPTION_PROVIDER],
     ["EXTRACTION_PROVIDER", env.EXTRACTION_PROVIDER],
     ["EMBEDDING_PROVIDER", env.EMBEDDING_PROVIDER],
+    ["REDACTION_PROVIDER", env.REDACTION_PROVIDER],
   ] as const) {
     if (valore === "fake") {
       manca(nome, `in produzione non puo' essere "fake"`);
@@ -276,10 +303,13 @@ export interface AppConfig {
     readonly extraction: Env["EXTRACTION_PROVIDER"];
     readonly storage: Env["STORAGE_PROVIDER"];
     readonly embedding: Env["EMBEDDING_PROVIDER"];
+    /** `"nessuno"` e' un valore legittimo anche in produzione: si veda l'env. */
+    readonly redaction: Env["REDACTION_PROVIDER"];
     readonly openaiApiKey: string | undefined;
     readonly anthropicApiKey: string | undefined;
     readonly transcriptionModel: string;
     readonly extractionModel: string;
+    readonly redactionModel: string;
     readonly embeddingModel: string;
     readonly embeddingDimensions: number;
     readonly storageDir: string;
@@ -342,10 +372,12 @@ function toConfig(env: Env): AppConfig {
       extraction: env.EXTRACTION_PROVIDER,
       storage: env.STORAGE_PROVIDER,
       embedding: env.EMBEDDING_PROVIDER,
+      redaction: env.REDACTION_PROVIDER,
       openaiApiKey: env.OPENAI_API_KEY,
       anthropicApiKey: env.ANTHROPIC_API_KEY,
       transcriptionModel: env.TRANSCRIPTION_MODEL,
       extractionModel: env.EXTRACTION_MODEL,
+      redactionModel: env.REDACTION_MODEL,
       embeddingModel: env.EMBEDDING_MODEL,
       embeddingDimensions: env.EMBEDDING_DIMENSIONS,
       storageDir: env.STORAGE_DIR,

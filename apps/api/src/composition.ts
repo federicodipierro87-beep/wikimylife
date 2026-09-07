@@ -1,4 +1,10 @@
-import type { EmbeddingProvider, ExtractionProvider, StorageProvider, TranscriptionProvider } from "@wikimylife/shared";
+import type {
+  EmbeddingProvider,
+  ExtractionProvider,
+  RedactionProvider,
+  StorageProvider,
+  TranscriptionProvider,
+} from "@wikimylife/shared";
 import type { PrismaClient } from "@prisma/client";
 import type { Express } from "express";
 import { createApp } from "./app.js";
@@ -13,6 +19,7 @@ import { PrismaRecordingRepository } from "./infra/PrismaRecordingRepository.js"
 import { SystemClock } from "./infra/SystemClock.js";
 import { createLogger, type Logger } from "./logger.js";
 import { AnthropicExtractionProvider } from "./providers/AnthropicExtractionProvider.js";
+import { AnthropicRedactionProvider } from "./providers/AnthropicRedactionProvider.js";
 import { LocalFileStorageProvider } from "./providers/LocalFileStorageProvider.js";
 import { OpenAiEmbeddingProvider } from "./providers/OpenAiEmbeddingProvider.js";
 import { OpenAiTranscriptionProvider } from "./providers/OpenAiTranscriptionProvider.js";
@@ -20,6 +27,7 @@ import { S3StorageProvider } from "./providers/S3StorageProvider.js";
 import {
   FakeEmbeddingProvider,
   FakeExtractionProvider,
+  FakeRedactionProvider,
   FakeStorageProvider,
   FakeTranscriptionProvider,
 } from "./providers/fake/index.js";
@@ -50,6 +58,12 @@ export interface Providers {
   readonly extraction: ExtractionProvider;
   readonly storage: StorageProvider;
   readonly embedding: EmbeddingProvider;
+  /**
+   * L'unico che puo' non esserci. `undefined` non e' un guasto da segnalare: e'
+   * la §9 che gira con la sola meta' deterministica, che e' il valore
+   * predefinito e resta un modo legittimo di far funzionare l'applicazione.
+   */
+  readonly redaction: RedactionProvider | undefined;
 }
 
 export interface Composition {
@@ -142,7 +156,29 @@ function buildProviders(config: AppConfig): Providers {
           dimensions: p.embeddingDimensions,
         });
 
-  return { transcription, extraction, storage, embedding };
+  return { transcription, extraction, storage, embedding, redaction: buildRedaction(p) };
+}
+
+/**
+ * Tre valori e non due, perche' «spento» e «finto» non sono la stessa cosa.
+ *
+ * Un `switch` su un'enum e non un ternario come per gli altri: qui il ramo che
+ * conta e' quello che restituisce `undefined`, e un `!== "anthropic"` che ci
+ * cade dentro per esclusione renderebbe invisibile la sola decisione che questa
+ * funzione prende davvero.
+ */
+function buildRedaction(p: AppConfig["providers"]): RedactionProvider | undefined {
+  switch (p.redaction) {
+    case "anthropic":
+      return new AnthropicRedactionProvider({
+        apiKey: requireKey(p.anthropicApiKey, "ANTHROPIC_API_KEY", "anthropic"),
+        model: p.redactionModel,
+      });
+    case "fake":
+      return new FakeRedactionProvider();
+    case "nessuno":
+      return undefined;
+  }
 }
 
 export function compose(config: AppConfig, overrides?: {
@@ -209,6 +245,16 @@ export function compose(config: AppConfig, overrides?: {
     repo: procedureRepo,
     embeddings: providers.embedding,
     clock,
+    redaction: providers.redaction,
+    // Stessa scelta di `onSemanticUnavailable`, con una posta piu' alta: la
+    // ricerca che degrada restituisce risultati peggiori, la redazione che
+    // degrada restituisce meno proposte a chi sta decidendo cosa condividere.
+    // La schermata glielo dice — `assistenza: "NON_RIUSCITA"` esiste per
+    // questo — ma chi tiene su il servizio deve poterlo sapere prima che sia
+    // l'utente a raccontarglielo.
+    onRedactionUnavailable: (error) => {
+      logger.warn("redazione assistita non disponibile, restano le proposte certe", { error });
+    },
   });
 
   const searchService = createSearchService({

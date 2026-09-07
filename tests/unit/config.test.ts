@@ -225,9 +225,29 @@ describe("loadConfig — le regole che valgono solo in produzione", () => {
     ["TRANSCRIPTION_PROVIDER"],
     ["EXTRACTION_PROVIDER"],
     ["EMBEDDING_PROVIDER"],
+    ["REDACTION_PROVIDER"],
   ])("rifiuta il provider finto: %s", (nome) => {
     // Schede finte in un database vero sono indistinguibili dalle buone.
+    // Per la redazione il danno e' diverso: un fake che non trova mai niente
+    // e' una schermata che dice «non ho trovato altro» a chi sta per
+    // condividere una scheda con dentro il nome di qualcuno.
     expect(errore({ ...PRODUZIONE, [nome]: "fake" })).toContain(nome);
+  });
+
+  it("lascia passare la redazione assistita spenta", () => {
+    // E' l'unico provider che ha un modo legittimo di non esserci, e la
+    // produzione non deve costringere ad accenderlo: accenderlo significa
+    // mandare a un terzo il testo integrale delle schede segnate come
+    // contenenti dati sensibili, ed e' una decisione, non un default.
+    expect(loadConfig({ ...PRODUZIONE }).providers.redaction).toBe("nessuno");
+  });
+
+  it("accetta la redazione assistita accesa", () => {
+    const config = loadConfig({ ...PRODUZIONE, REDACTION_PROVIDER: "anthropic" });
+    expect(config.providers.redaction).toBe("anthropic");
+    // Il modello e' suo e non quello dell'estrazione: qui il testo e' corto e
+    // c'e' qualcuno che aspetta, li' il testo e' lungo e aspetta un worker.
+    expect(config.providers.redactionModel).not.toBe(config.providers.extractionModel);
   });
 
   it("le stesse configurazioni fuori produzione non danno fastidio", () => {
@@ -239,6 +259,7 @@ describe("loadConfig — le regole che valgono solo in produzione", () => {
       TRANSCRIPTION_PROVIDER: "fake",
       EXTRACTION_PROVIDER: "fake",
       EMBEDDING_PROVIDER: "fake",
+      REDACTION_PROVIDER: "fake",
     });
     expect(config.nodeEnv).toBe("test");
   });

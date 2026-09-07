@@ -50,6 +50,16 @@ export interface TestServerOptions {
    * sembrerebbe un problema di autenticazione. Chi prova il limite lo abbassa.
    */
   readonly authRateLimitMax?: number;
+  /**
+   * Spenta di default, come in produzione.
+   *
+   * E' l'unico provider che i test devono accendere apposta, e la ragione e' la
+   * stessa per cui e' spento in produzione: con la passata assistita attiva
+   * ogni GET su `/redazione` chiama un provider, e in quasi tutti i file di e2e
+   * quella chiamata non c'entra niente con cio' che si sta verificando. Chi la
+   * accende poi programma il fake da `composition.providers.redaction`.
+   */
+  readonly redactionProvider?: "nessuno" | "fake";
 }
 
 export async function startTestServer(options: TestServerOptions = {}): Promise<TestServer> {
@@ -63,6 +73,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     SIGNUP_ENABLED: String(options.signupEnabled ?? true),
     CORS_ORIGINS: options.corsOrigins ?? "",
     AUTH_RATE_LIMIT_MAX: String(options.authRateLimitMax ?? 10_000),
+    REDACTION_PROVIDER: options.redactionProvider ?? "nessuno",
   });
 
   const prisma = testPrisma();
