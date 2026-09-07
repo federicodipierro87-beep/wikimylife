@@ -817,6 +817,21 @@ sbagliare in silenzio, e
 `tsconfig.tests.json` non carica nemmeno la libreria DOM, così un modulo che
 nomina `window` non è importabile da un test e la separazione non può marcire.
 
+Fra i test unitari c'è anche `deploy.test.ts`, che non prova codice ma i tre file
+di configurazione del deploy. `netlify.toml` e i due `railway.toml` sono
+eseguibili solo dalle piattaforme, quindi ogni nome che contengono è una promessa
+verificata al primo deploy e non prima: uno script `npm run` che non esiste, un
+`node apps/api/dist/index.js` che punta a un file che il `tsc` non produce più, un
+`healthcheckPath` che nessuna rotta serve, un `publish` che non è la `outDir` di
+Vite, un `for = "/sw.js"` per un file che è stato rinominato. Sono tutti errori
+che vivono in un file solo e si scoprono su una macchina lontana. Il test li
+riporta a casa: legge i tre `.toml` con un lettore scritto per l'occasione — una
+dipendenza TOML per cinquanta righe che abbiamo scritto noi sarebbe stata
+sproporzionata — e controlla che i nomi citati esistano da questa parte. Include,
+come `guards.test.ts`, un blocco che prova la guardia stessa: senza, un lettore
+rotto renderebbe vera ogni asserzione della forma «tutti gli elementi sono
+validi».
+
 **integration** applica le migration su `DATABASE_URL_TEST`, poi verifica lo
 schema fisico contro il catalogo di Postgres, esegue il seed vero e ricontrolla
 le invarianti, e prova autenticazione e ingestione end-to-end su HTTP reale —
@@ -919,9 +934,15 @@ dichiarato perché sulla macchina di chi la scriveva era già soddisfatta.
 ## Deploy
 
 Tre servizi su Railway e un sito statico su Netlify. Niente Docker scritto a
-mano, niente Functions, niente CI: il repo contiene solo file di configurazione
-dichiarativi e comandi npm, e ogni comando che gira in produzione si può
-eseguire in locale identico.
+mano, niente Functions, nessuna pipeline che spedisce: il repo contiene solo file
+di configurazione dichiarativi e comandi npm, e ogni comando che gira in
+produzione si può eseguire in locale identico. La CI esiste e prova, ma non
+distribuisce — sono le due piattaforme a guardare `master` da sole.
+
+I tre file sono anche l'unica parte del repo che nessun compilatore legge, ed è
+il motivo per cui `tests/unit/deploy.test.ts` la legge al posto suo: ogni script,
+percorso e rotta che i `.toml` nominano deve esistere davvero, altrimenti `npm
+test` diventa rosso qui invece che il deploy laggiù.
 
 | Dove | Cosa | Come parte |
 |---|---|---|
@@ -1375,10 +1396,12 @@ Non installate, e il perché:
   costruiscono ciò che sta su `master` appena ci arriva, senza chiedere niente a
   GitHub: un rosso è una notifica, non un cancello. Farlo diventare un cancello
   è un'impostazione delle due piattaforme, e sta da quella parte.
-- **Il deploy non è provato da nessun test.** `netlify.toml` e i due
-  `railway.toml` sono documentazione eseguibile solo dalle piattaforme: un refuso
-  in `startCommand` si scopre al primo deploy, non prima. La CI prova i comandi
-  di build, non i file che li invocano.
+- **Del deploy si provano i nomi, non il comportamento.** `deploy.test.ts`
+  garantisce che ogni script, percorso e rotta citati nei tre `.toml` esistano
+  davvero da questa parte, ma nessun test può dire che Railway legga
+  `watchPatterns` come crediamo, che Netlify applichi quelle intestazioni a
+  quelle risposte, o che una CSP passi in un browser vero. Un file sintatticamente
+  valido e semanticamente frainteso resta un errore che si scopre al primo deploy.
 
 ---
 
