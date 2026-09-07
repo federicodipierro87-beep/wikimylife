@@ -1042,6 +1042,155 @@ describe("GET /api/recordings/:id/audio", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cancellare: l'unica cancellazione dura del progetto
+// ---------------------------------------------------------------------------
+
+/**
+ * Qui il test in memoria non basta.
+ *
+ * Il servizio prova le decisioni — 404, 409, l'ordine delle due operazioni — ma
+ * due cose le sa solo Postgres: che una `DELETE` su `Recording` non trascini
+ * con se' la `Procedure` che quella riga nominava (la chiave esterna e' sul lato
+ * sbagliato per rassicurarsene a mente), e che il `WHERE` sullo stato dentro
+ * `deleteMany` sia scritto bene abbastanza da far tornare `count = 0` invece di
+ * cancellare comunque.
+ */
+describe("DELETE /api/recordings/:id", () => {
+  it("risponde 204 senza corpo e toglie riga e oggetto", async () => {
+    const { token } = await signup();
+    const state = await carica(token);
+    const chiave = (
+      await server.prisma.recording.findUniqueOrThrow({ where: { id: state.id } })
+    ).audioUrl;
+    expect(await blob.exists(chiave)).toBe(true);
+
+    const res = await call(server, "DELETE", `/api/recordings/${state.id}`, {
+      accessToken: token,
+    });
+
+    expect(res.status).toBe(204);
+    // Il corpo e' vuoto per davvero: un 204 con dentro qualcosa sarebbe un 200
+    // scritto male, e il client lo passa a `execute` senza mai leggerlo.
+    expect(res.body).toBeNull();
+    await expect(
+      server.prisma.recording.findUnique({ where: { id: state.id } }),
+    ).resolves.toBeNull();
+    expect(await blob.exists(chiave)).toBe(false);
+  });
+
+  it("dopo la cancellazione la registrazione non esiste per nessuna rotta", async () => {
+    const { token } = await signup();
+    const state = await carica(token);
+
+    await call(server, "DELETE", `/api/recordings/${state.id}`, { accessToken: token });
+
+    const dettaglio = await call(server, "GET", `/api/recordings/${state.id}`, {
+      accessToken: token,
+    });
+    const audio = await callBinary(server, `/api/recordings/${state.id}/audio`, {
+      accessToken: token,
+    });
+    const elenco = await call(server, "GET", "/api/recordings", { accessToken: token });
+
+    expect(dettaglio.status).toBe(404);
+    expect(audio.status).toBe(404);
+    expect(pendingRecordingsSchema.parse(elenco.body).items).toEqual([]);
+  });
+
+  it("rifiuta con 409 mentre un worker la sta elaborando", async () => {
+    // Cancellarla adesso lascerebbe il worker a scrivere la trascrizione su un
+    // id che non esiste piu'. Il `WHERE` sullo stato sta dentro la `DELETE`
+    // apposta: fra una lettura e una cancellazione separate il worker
+    // reclamerebbe la riga nel mezzo.
+    const { token } = await signup();
+    const state = await carica(token);
+    await server.prisma.recording.update({
+      where: { id: state.id },
+      data: { status: RecordingStatus.IN_ELABORAZIONE },
+    });
+
+    const res = await call(server, "DELETE", `/api/recordings/${state.id}`, {
+      accessToken: token,
+    });
+
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("CONFLICT");
+    await expect(
+      server.prisma.recording.findUnique({ where: { id: state.id } }),
+    ).resolves.not.toBeNull();
+  });
+
+  it("cancella una registrazione gia' estratta e lascia in piedi la scheda", async () => {
+    // E' il caso che giustifica la rotta: tenere la procedura e non l'audio.
+    const { token } = await signup();
+    const state = await carica(token);
+    const procedureId = procedureIdDi(await elabora());
+
+    const res = await call(server, "DELETE", `/api/recordings/${state.id}`, {
+      accessToken: token,
+    });
+
+    expect(res.status).toBe(204);
+    await expect(scheda(procedureId)).resolves.toMatchObject({ id: procedureId });
+    const dettaglio = await call(server, "GET", `/api/procedures/${procedureId}`, {
+      accessToken: token,
+    });
+    expect(dettaglio.status).toBe(200);
+  });
+
+  it("non lascia cancellare la registrazione di un altro, ne' il suo audio", async () => {
+    const a = await signup();
+    const b = await signup();
+    const state = await carica(a.token);
+    const chiave = (
+      await server.prisma.recording.findUniqueOrThrow({ where: { id: state.id } })
+    ).audioUrl;
+
+    const res = await call(server, "DELETE", `/api/recordings/${state.id}`, {
+      accessToken: b.token,
+    });
+
+    expect(res.status).toBe(404);
+    expect(errorCode(res.body)).toBe("NOT_FOUND");
+    await expect(
+      server.prisma.recording.findUnique({ where: { id: state.id } }),
+    ).resolves.not.toBeNull();
+    expect(await blob.exists(chiave)).toBe(true);
+  });
+
+  it("la seconda cancellazione e' un 404, non un errore", async () => {
+    // Due dispositivi, o un tocco ripetuto su una connessione lenta: la seconda
+    // richiesta non deve produrre un 500. Cancellare non e' idempotente nel
+    // codice di stato, ma lo e' nell'effetto.
+    const { token } = await signup();
+    const state = await carica(token);
+
+    const prima = await call(server, "DELETE", `/api/recordings/${state.id}`, {
+      accessToken: token,
+    });
+    const seconda = await call(server, "DELETE", `/api/recordings/${state.id}`, {
+      accessToken: token,
+    });
+
+    expect(prima.status).toBe(204);
+    expect(seconda.status).toBe(404);
+    expect(errorCode(seconda.body)).toBe("NOT_FOUND");
+  });
+
+  it("senza token non si cancella niente", async () => {
+    const { token } = await signup();
+    const state = await carica(token);
+
+    const res = await call(server, "DELETE", `/api/recordings/${state.id}`);
+
+    expect(res.status).toBe(401);
+    await expect(
+      server.prisma.recording.findUnique({ where: { id: state.id } }),
+    ).resolves.not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Proprieta': 404 e non 403
 // ---------------------------------------------------------------------------
 

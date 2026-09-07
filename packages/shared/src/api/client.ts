@@ -142,6 +142,16 @@ export interface ApiClient {
   /** Rimette in coda dalla trascrizione. */
   retryRecording(id: string): Promise<RecordingState>;
   /**
+   * Cancella riga e audio, per davvero.
+   *
+   * E' l'opposto di `archiveProcedure`: li' il soft delete esiste proprio per
+   * non buttare via le registrazioni collegate, qui la registrazione e' cio'
+   * che si sta buttando via, e chiedere che la propria voce sparisca non si
+   * soddisfa con un cambio di stato. Fallisce con `CONFLICT` finche' un worker
+   * la sta elaborando.
+   */
+  deleteRecording(id: string): Promise<void>;
+  /**
    * I byte originali, per il player della scheda.
    *
    * Torna un `Blob` e non un URL perche' l'audio e' protetto da
@@ -478,6 +488,23 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           method: "POST",
           path: `/api/recordings/${encodeURIComponent(id)}/retry`,
           schema: recordingStateSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    async deleteRecording(id: string): Promise<void> {
+      // `execute` e non `send`: un 204 non ha corpo, e `send` chiamerebbe
+      // `response.json()` su una risposta vuota. La gestione della sessione,
+      // rotazione su 401 compresa, resta identica — e' proprio per casi come
+      // questo che `execute` sta scritto a parte. L'`Accept` resta JSON perche'
+      // l'unica risposta con un corpo, qui, e' un errore.
+      await execute(
+        {
+          method: "DELETE",
+          path: `/api/recordings/${encodeURIComponent(id)}`,
+          accept: "application/json",
           auth: true,
         },
         true,

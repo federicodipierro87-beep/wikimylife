@@ -77,6 +77,19 @@ beforeEach(() => {
 
 const audio = { bytes: new Uint8Array([1, 2, 3, 4, 5]), mimeType: "audio/webm" };
 
+/**
+ * Uno storage che accetta tutto tranne le cancellazioni.
+ *
+ * E' il bucket momentaneamente irraggiungibile, o la credenziale a cui manca
+ * `s3:DeleteObject`. Il fake normale non serve: la sua `delete` riesce sempre,
+ * compreso su una chiave che non esiste — come i provider veri.
+ */
+class StorageSenzaCancellazione extends FakeStorageProvider {
+  override delete(): Promise<void> {
+    return Promise.reject(new Error("bucket irraggiungibile"));
+  }
+}
+
 describe("audioExtension", () => {
   it.each([
     ["audio/webm", ".webm"],
@@ -309,6 +322,117 @@ describe("retry", () => {
     await expect(h.service.retry(ALTRO, recording.id)).rejects.toMatchObject({ status: 404 });
     expect(h.repo.snapshot(recording.id).status).toBe(RecordingStatus.ESTRAZIONE_FALLITA);
     expect(h.enqueued).toEqual([]);
+  });
+});
+
+describe("remove", () => {
+  it("toglie la riga e l'oggetto, in quest'ordine", async () => {
+    // L'ordine e' l'opposto di `create` e per la stessa ragione: qui la riga e'
+    // il dato condiviso con il worker, e finche' esiste puo' essere reclamata.
+    const creata = await h.service.create(USER, { audio, metadata });
+    const chiave = h.repo.snapshot(creata.id).audioUrl;
+
+    await expect(h.service.remove(USER, creata.id)).resolves.toBeUndefined();
+
+    await expect(h.repo.findForUser(USER, creata.id)).resolves.toBeNull();
+    await expect(h.storage.exists(chiave)).resolves.toBe(false);
+    expect(h.storage.size).toBe(0);
+  });
+
+  it("cancella per davvero, non archivia", async () => {
+    // La scheda si archivia; la registrazione no. Uno stato «cancellata» con i
+    // byte ancora nel bucket sarebbe la risposta sbagliata a chi ha chiesto che
+    // la propria voce sparisse.
+    const creata = await h.service.create(USER, { audio, metadata });
+    await h.service.remove(USER, creata.id);
+
+    await expect(h.service.find(USER, creata.id)).rejects.toMatchObject({ status: 404 });
+    await expect(h.service.pending(USER)).resolves.toEqual([]);
+  });
+
+  it("rifiuta con 409 finche' un worker la sta elaborando", async () => {
+    // Non 404: la registrazione esiste ed e' sua. Cancellarla adesso lascerebbe
+    // il worker a scrivere una trascrizione su un id che non c'e' piu'.
+    const recording = h.repo.seedRecording({
+      userId: USER,
+      status: RecordingStatus.IN_ELABORAZIONE,
+    });
+
+    await expect(h.service.remove(USER, recording.id)).rejects.toMatchObject({
+      status: 409,
+      code: "CONFLICT",
+    });
+    expect(h.repo.snapshot(recording.id).status).toBe(RecordingStatus.IN_ELABORAZIONE);
+  });
+
+  it("cancella anche una registrazione gia' estratta, e la scheda resta", async () => {
+    // E' il caso che giustifica la rotta piu' di ogni altro: tenere la
+    // procedura e non l'audio. Il legame va in una direzione sola — la
+    // registrazione nomina la scheda, non la possiede.
+    const procedura = h.repo.seedProcedure({
+      userId: USER,
+      titolo: "Richiedere il casellario giudiziale",
+      embedding: [1, 0, 0],
+    });
+    const recording = h.repo.seedRecording({
+      userId: USER,
+      status: RecordingStatus.ESTRATTO,
+      procedureId: procedura.id,
+    });
+
+    await h.service.remove(USER, recording.id);
+
+    await expect(h.repo.findForUser(USER, recording.id)).resolves.toBeNull();
+    await expect(h.repo.findMostSimilar(USER, [1, 0, 0])).resolves.toMatchObject({
+      procedureId: procedura.id,
+    });
+  });
+
+  it("non lascia cancellare la registrazione di un altro, e non tocca l'oggetto", async () => {
+    const creata = await h.service.create(USER, { audio, metadata });
+    const chiave = h.repo.snapshot(creata.id).audioUrl;
+
+    await expect(h.service.remove(ALTRO, creata.id)).rejects.toMatchObject({
+      status: 404,
+      code: "NOT_FOUND",
+    });
+    await expect(h.storage.exists(chiave)).resolves.toBe(true);
+  });
+
+  it("risponde 404 su un id inesistente", async () => {
+    await expect(h.service.remove(USER, "rec-inesistente")).rejects.toBeInstanceOf(AppError);
+  });
+
+  it("riesce anche se l'oggetto non c'era gia' piu'", async () => {
+    // Succede: un `create` interrotto fra il `put` e la riga, o un ripristino
+    // del database da un backup piu' recente dello storage. Cancellare cio' che
+    // non c'e' e' esattamente il risultato voluto, e tutti e tre i provider lo
+    // trattano cosi' — S3 tollera il 404, il locale usa `rm --force`.
+    const recording = h.repo.seedRecording({ userId: USER, audioUrl: "user-1/mai-scritto.webm" });
+
+    await expect(h.service.remove(USER, recording.id)).resolves.toBeUndefined();
+    await expect(h.repo.findForUser(USER, recording.id)).resolves.toBeNull();
+  });
+
+  it("non fa fallire l'utente se il bucket e' irraggiungibile, ma segnala la chiave", async () => {
+    // La riga non c'e' piu': per chi ha premuto la registrazione e' cancellata,
+    // e un 500 lo spingerebbe a ripetere una DELETE che ormai puo' solo dare
+    // 404. Il file rimasto indietro e' un problema di pulizia, e deve arrivare
+    // a chi tiene il bucket invece che a lui.
+    const orfani: string[] = [];
+    const repo = new InMemoryRecordingRepository();
+    const service = createRecordingsService({
+      repo,
+      storage: new StorageSenzaCancellazione(),
+      clock: new FixedClock(NOW),
+      onOrphanedAudio: ({ key }) => orfani.push(key),
+    });
+    const recording = repo.seedRecording({ userId: USER, audioUrl: "user-1/rimasto.webm" });
+
+    await expect(service.remove(USER, recording.id)).resolves.toBeUndefined();
+
+    await expect(repo.findForUser(USER, recording.id)).resolves.toBeNull();
+    expect(orfani).toEqual(["user-1/rimasto.webm"]);
   });
 });
 

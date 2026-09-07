@@ -127,6 +127,8 @@ export interface RecordingsService {
   retry(userId: string, id: string): Promise<RecordingState>;
   /** I byte originali, per il player in fondo alla scheda (§ Fase 4). */
   audio(userId: string, id: string): Promise<UploadedAudio>;
+  /** Cancella riga e audio. Rifiuta finche' un worker la sta elaborando. */
+  remove(userId: string, id: string): Promise<void>;
 }
 
 export interface RecordingsServiceDeps {
@@ -139,6 +141,15 @@ export interface RecordingsServiceDeps {
    * pipeline in-process, senza un secondo processo da avviare e da aspettare.
    */
   readonly onEnqueued?: ((recordingId: string) => void) | undefined;
+  /**
+   * L'oggetto e' rimasto nel bucket dopo che la riga era gia' sparita.
+   *
+   * Serve perche' `remove` non propaga quell'errore — per l'utente la
+   * cancellazione e' avvenuta — e senza questo la perdita sarebbe invisibile:
+   * un bucket che cresce di file che nessuna riga nomina piu', scoperto dalla
+   * fattura.
+   */
+  readonly onOrphanedAudio?: ((info: { key: string; error: unknown }) => void) | undefined;
 }
 
 export function createRecordingsService(deps: RecordingsServiceDeps): RecordingsService {
@@ -223,6 +234,49 @@ export function createRecordingsService(deps: RecordingsServiceDeps): Recordings
       }
 
       return { bytes, mimeType: detail.mimeType };
+    },
+
+    /**
+     * L'ordine e' l'opposto di `create`, e per la stessa ragione.
+     *
+     * Alla creazione i byte vanno per primi perche' l'audio e' il dato non
+     * riproducibile: se cade il database resta un oggetto orfano, che e' poco.
+     * Alla cancellazione la riga va per prima perche' e' lei a essere condivisa
+     * con il worker: togliere l'oggetto per primo lascerebbe, per il tempo di
+     * una chiamata di rete, una riga reclamabile che punta a un audio che non
+     * c'e' — e il worker che la prendesse in quell'istante fallirebbe la
+     * trascrizione e la marcherebbe ESTRAZIONE_FALLITA, mostrando all'utente un
+     * errore per una cosa che aveva chiesto lui.
+     *
+     * Cadendo dopo il DELETE resta un oggetto che nessuno riferisce piu': la
+     * stessa perdita della creazione interrotta, e la stessa raccolta che
+     * ancora non c'e'.
+     */
+    async remove(userId: string, id: string): Promise<void> {
+      const esito = await repo.deleteForUser(userId, id);
+
+      if (esito.kind === "ASSENTE") {
+        throw AppError.notFound("Registrazione non trovata");
+      }
+      if (esito.kind === "IN_LAVORAZIONE") {
+        // 409 e non 404: qui la registrazione esiste, e' dell'utente, e il
+        // rifiuto e' temporaneo. Dirgli «non trovata» lo manderebbe a cercare
+        // un errore suo invece di riprovare fra un minuto.
+        throw AppError.conflict(
+          "Registrazione in elaborazione: riprova quando ha finito",
+        );
+      }
+
+      // Un fallimento qui non si propaga all'utente. La riga non c'e' piu',
+      // quindi per lui la registrazione e' cancellata: un 500 lo spingerebbe a
+      // ripetere una DELETE che ormai non puo' che dare 404. Resta un file che
+      // nessuno sa piu' raggiungere — un problema di pulizia, non suo, e per
+      // questo va segnalato a chi tiene il bucket invece che a chi ha premuto.
+      try {
+        await deps.storage.delete(esito.audioUrl);
+      } catch (error: unknown) {
+        deps.onOrphanedAudio?.({ key: esito.audioUrl, error });
+      }
     },
   };
 }

@@ -114,6 +114,7 @@ POST /api/recordings           multipart: audio + metadati di cattura
 GET  /api/recordings           quelle che non sono ancora una scheda
 GET  /api/recordings/:id       stato di avanzamento
 POST /api/recordings/:id/retry riprocessa dalla trascrizione → 202
+DEL  /api/recordings/:id       cancella riga e audio → 204, 409 se in elaborazione
 ```
 
 L'API non elabora niente: salva i byte, scrive la riga, risponde. Il resto lo fa
@@ -124,6 +125,27 @@ riga nel database — nell'ordine inverso una registrazione potrebbe puntare a u
 file che non esiste. Se la trascrizione o l'estrazione cadono, la riga torna in
 `BOZZA_AUDIO` con l'errore registrato e il worker la riprende da solo al giro
 successivo: l'audio non si perde mai.
+
+**Cancellare una registrazione è l'unica cancellazione dura del progetto.** La
+scheda si archivia, perché è un testo che si può riscrivere e che qualcuno
+potrebbe rivolere; la registrazione no. Chi chiede di eliminare un audio sta
+chiedendo che la propria voce sparisca, e uno stato `CANCELLATA` con i byte
+ancora nel bucket sarebbe la risposta sbagliata a quella domanda. Qui l'ordine è
+l'opposto del caricamento, e per la stessa ragione: prima la riga, poi
+l'oggetto. Alla creazione i byte vanno per primi perché sono il dato non
+riproducibile; alla cancellazione la riga va per prima perché è lei a essere
+condivisa con il worker, e toglierla per seconda lascerebbe per il tempo di una
+chiamata di rete una riga reclamabile che punta a un audio che non c'è più.
+
+Si può cancellare in ogni stato tranne `IN_ELABORAZIONE`, e quel rifiuto è un
+**409**, non un 404: la registrazione esiste ed è di chi la chiede, il no è
+temporaneo, e dirle «non trovata» manderebbe a cercare un errore che non c'è. La
+condizione sullo stato sta dentro la `DELETE` e non in un `if` che la precede —
+fra una lettura e una cancellazione separate un worker farebbe in tempo a
+reclamare la riga. Una registrazione già `ESTRATTO` si cancella, e la scheda
+resta in piedi: è il caso di chi vuole tenere la procedura e non la voce, e il
+legame va in una direzione sola, perché è la registrazione a nominare la scheda,
+non il contrario.
 
 **La coda è una tabella, anzi: è una colonna.** `Recording.status` con il suo
 indice `[D3]`. Niente Redis, e nemmeno una tabella `Job` — sarebbe un secondo
@@ -702,6 +724,27 @@ curl.exe http://localhost:3000/api/recordings/<id> -H "authorization: Bearer $al
 #   → 404 NOT_FOUND — identico a un id inesistente
 ```
 
+Infine butta via il duplicato. È l'unica cancellazione dura del progetto: sparisce
+la riga e sparisce il file, e non resta nessuno `status` a ricordarla.
+
+```powershell
+curl.exe -X DELETE http://localhost:3000/api/recordings/<id-della-seconda> `
+  -H "authorization: Bearer $token" -i
+#   → 204, corpo vuoto
+#   → un secondo DELETE sullo stesso id: 404 NOT_FOUND
+```
+
+Con lo storage `local` l'audio se n'è andato insieme alla riga: sotto
+`STORAGE_LOCAL_DIR` il file non c'è più. Cancella invece la **prima**, quella
+arrivata a `ESTRATTO`, e guarda che la scheda sopravvive:
+
+```powershell
+curl.exe -X DELETE http://localhost:3000/api/recordings/<id-della-prima> `
+  -H "authorization: Bearer $token"
+curl.exe http://localhost:3000/api/procedures/<procedureId> -H "authorization: Bearer $token"
+#   → 200: la scheda c'è ancora, senza più la voce da cui è nata
+```
+
 ### Leggere e cercare, a mano
 
 Con l'API avviata e il seed applicato (`npm run db:seed`), i due esempi sono le
@@ -795,7 +838,12 @@ il primo contributo di chiunque comincerebbe con mezz'ora di setup.
 **unit** copre il contratto Zod (casi negativi con verifica del *path* della
 issue, non solo del fallimento), le guardie sull'isomorfismo, i token, il
 servizio di autenticazione con un repository in memoria, l'error handler, il
-client API e i provider fake. Della Fase 2: la validazione della §5 caso per caso
+client API e i provider fake. Del client, il test che ha già ripagato il proprio
+costo riguarda le due sole rotte con una query string: i parametri mandati si
+confrontano con le chiavi dello schema, non con un URL scritto a mano. La query
+si costruisce elencando i campi uno per uno, e `offset` era stato aggiunto al
+contratto della ricerca e dimenticato lì — premere «Successive» ricaricava la
+prima pagina, e niente falliva da nessuna parte. Della Fase 2: la validazione della §5 caso per caso
 (JSON malformato, ordine non contiguo, confidenza bassa, importi negativi,
 `NOTA_SEMPLICE`), il prompt confrontato carattere per carattere con la specifica,
 e la pipeline con un repository in memoria — compreso il duplicato rilevato. Della
@@ -848,7 +896,12 @@ carattere — un test che provi solo che il formato giusto passa non dimostra ch
 il checksum venga guardato — e il servizio, dove conta soprattutto ciò che *non*
 succede: le proposte non confermate restano nel testo, gli id di una passata
 vecchia danno `409` invece di tagliare a caso, e il flag è ancora acceso quando
-tutto è stato applicato.
+tutto è stato applicato. Della cancellazione di una registrazione: che riga e
+oggetto spariscano entrambi, che una `IN_ELABORAZIONE` dia `409` e resti dov'è,
+e i due casi in cui lo storage non collabora — l'oggetto già assente, che è un
+successo perché tutti e tre i provider trattano così una `delete` a vuoto, e il
+bucket irraggiungibile, che invece deve lasciare all'utente il suo `204` e la
+chiave a chi tiene il bucket.
 
 Le schermate non hanno test, e non c'è `jsdom` fra le dipendenze. È la ragione
 per cui `format.ts`, `routes.ts`, `uploader.ts`, `salvataggio.ts` e `spazio.ts`
@@ -887,6 +940,12 @@ serva davvero la deduplicazione, che `@@unique([procedureId, ordine])` non
 esploda sui passi rinumerati, e che il filtro del backoff sia scritto giusto —
 una registrazione appena caricata ha `nextAttemptAt` a `null`, e in memoria un
 `null` si confronta come ci si aspetta mentre in SQL no.
+
+La cancellazione ne aggiunge una quinta, ed è la sola che possa smentire il
+disegno: che una `DELETE` su `Recording` non si porti via la `Procedure` che
+quella riga nominava. La chiave esterna sta sul lato sbagliato per potersene
+rassicurare a mente, e in memoria «la scheda sopravvive» sarebbe vero solo
+perché il finto repository l'ha lasciata stare. Lì è Postgres a dirlo.
 
 L'end-to-end della ricerca costruisce le schede facendole passare per la pipeline
 vera invece di scriverle con `prisma.procedure.create`: è l'unico modo perché
@@ -1483,10 +1542,24 @@ Non installate, e il perché:
   resto, e paga la banda due volte. Un URL prefirmato eviterebbe il doppio salto,
   ma sposterebbe l'autorizzazione dentro una firma con scadenza, e per ora non
   vale il cambio.
-- **Nessuna pulizia dell'object storage.** `DELETE` su una scheda archivia la
-  riga; l'oggetto S3 resta. È voluto — l'audio è l'originale, la scheda è la
-  derivata — ma non c'è nessun processo che tolga i file delle registrazioni
-  cancellate davvero, e nessuna lifecycle rule configurata.
+- **L'audio si toglie uno per uno, e nessuno raccoglie i resti.**
+  `DELETE /api/recordings/:id` cancella la riga e poi l'oggetto, quindi la strada
+  per far sparire una registrazione esiste. Ma fra le due operazioni c'è una
+  finestra di qualche millisecondo, e la stessa finestra sta fra il `put` e la
+  riga del caricamento: un processo che muoia lì in mezzo lascia nel bucket un
+  file che nessuna riga nomina più. Quando la cancellazione fallisce per conto
+  suo — bucket irraggiungibile, permesso mancante — l'utente riceve comunque il
+  suo 204 e la chiave finisce in un `logger.error`, che è meglio di niente ma è
+  un log, non un lavoro. Manca la scopa: nessun job confronta le chiavi del
+  bucket con le righe della tabella, e nessuna lifecycle rule è configurata.
+  Sono kilobyte, finché non sono gigabyte.
+- **Cancellare una registrazione non cancella ciò che ne è derivato.** La scheda
+  resta, con la sua trascrizione dentro i campi che l'estrazione ha riempito. È
+  voluto e sta scritto sopra, ma vale la pena dirlo anche qui, perché chi preme
+  «Elimina» su un vocale può ragionevolmente credere di aver cancellato tutto
+  quello che quel vocale ha prodotto. Non esiste un gesto solo che faccia le due
+  cose: per togliere anche la scheda bisogna archiviarla a parte, e archiviarla
+  non la cancella.
 - **La CI non ferma un deploy.** I test girano a ogni push, ma Railway e Netlify
   costruiscono ciò che sta su `master` appena ci arriva, senza chiedere niente a
   GitHub: un rosso è una notifica, non un cancello. Farlo diventare un cancello

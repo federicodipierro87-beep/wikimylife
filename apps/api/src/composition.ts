@@ -195,6 +195,12 @@ export function compose(config: AppConfig, overrides?: {
     onEnqueued: (recordingId) => {
       logger.debug("registrazione in coda", { recordingId });
     },
+    // La riga e' gia' sparita e l'utente ha avuto il suo 204: qui non si puo'
+    // fare altro che lasciare scritto quale chiave e' rimasta indietro, perche'
+    // e' l'unico posto in cui quel nome esiste ancora.
+    onOrphanedAudio: ({ key, error }) => {
+      logger.error("audio non cancellato dopo la registrazione", { key, error });
+    },
   });
 
   const procedureRepo = new PrismaProcedureRepository(prisma);

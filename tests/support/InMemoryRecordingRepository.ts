@@ -1,6 +1,7 @@
 import { RecordingStatus } from "@wikimylife/shared";
 import type {
   CreateRecordingInput,
+  DeleteRecordingOutcome,
   PersistProcedureInput,
   RecordingDetail,
   RecordingFailure,
@@ -318,5 +319,20 @@ export class InMemoryRecordingRepository implements RecordingRepository {
       retryCount: row.retryCount + 1,
       updatedAt: at,
     });
+  }
+
+  async deleteForUser(userId: string, id: string): Promise<DeleteRecordingOutcome> {
+    const row = this.#recordings.get(id);
+    if (row === undefined || row.userId !== userId) {
+      return { kind: "ASSENTE" };
+    }
+    if (row.status === RecordingStatus.IN_ELABORAZIONE) {
+      return { kind: "IN_LAVORAZIONE" };
+    }
+    this.#recordings.delete(id);
+    // La procedura eventualmente derivata resta dov'e': la riga cancellata la
+    // nominava, non la possedeva. Se qui la togliessimo anche da `#procedures`
+    // il test "la scheda sopravvive" passerebbe contro una finzione compiacente.
+    return { kind: "CANCELLATA", audioUrl: row.audioUrl };
   }
 }

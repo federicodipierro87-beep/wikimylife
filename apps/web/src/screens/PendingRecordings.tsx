@@ -77,6 +77,11 @@ function Sospesa({
 }): React.JSX.Element | null {
   const [attesa, setAttesa] = useState(false);
   const [errore, setErrore] = useState<string | null>(null);
+  // La cancellazione e' l'unica cosa irreversibile che questa schermata sappia
+  // fare, e il pulsante sta accanto a «Riprova adesso» su un telefono: il
+  // secondo tocco non e' una cerimonia, e' la differenza fra buttare via un
+  // vocale e sfiorare lo schermo.
+  const [confermaElimina, setConfermaElimina] = useState(false);
 
   const avviso = avvisoDi(r);
   if (avviso === null) {
@@ -91,6 +96,24 @@ function Sospesa({
       onCambiata();
     } catch (error: unknown) {
       setErrore(messaggioDi(error));
+    } finally {
+      setAttesa(false);
+    }
+  }
+
+  async function elimina(): Promise<void> {
+    setAttesa(true);
+    setErrore(null);
+    try {
+      await apiClient.deleteRecording(r.id);
+      // Nessuna rimozione ottimistica: la lista si ricarica. Se il server ha
+      // rifiutato perche' nel frattempo un worker l'ha presa, la registrazione
+      // deve restare visibile — sparire dalla lista e ricomparire al giro dopo
+      // sarebbe peggio che non sparire.
+      onCambiata();
+    } catch (error: unknown) {
+      setErrore(messaggioDi(error));
+      setConfermaElimina(false);
     } finally {
       setAttesa(false);
     }
@@ -121,18 +144,61 @@ function Sospesa({
         </p>
       )}
 
-      {avviso.riprovabile && (
-        <button
-          type="button"
-          className="bottone bottone--piatto"
-          disabled={attesa}
-          onClick={() => {
-            void riprova();
-          }}
-        >
-          {attesa ? "Rimetto in coda…" : "Riprova adesso"}
-        </button>
-      )}
+      <div className="sospesa__azioni">
+        {avviso.riprovabile && (
+          <button
+            type="button"
+            className="bottone bottone--piatto"
+            disabled={attesa}
+            onClick={() => {
+              void riprova();
+            }}
+          >
+            {attesa ? "Rimetto in coda…" : "Riprova adesso"}
+          </button>
+        )}
+
+        {/* Si puo' eliminare in qualsiasi stato: anche mentre e' in
+            elaborazione, perche' e' proprio allora che si rimpiange di aver
+            registrato. Se il worker l'ha in mano il server risponde 409 e il
+            messaggio dice di riprovare — meglio di un pulsante assente, che
+            non spiegherebbe niente. */}
+        {confermaElimina ? (
+          <>
+            <button
+              type="button"
+              className="bottone bottone--pericolo"
+              disabled={attesa}
+              onClick={() => {
+                void elimina();
+              }}
+            >
+              {attesa ? "Elimino…" : "Elimina davvero"}
+            </button>
+            <button
+              type="button"
+              className="bottone bottone--piatto"
+              disabled={attesa}
+              onClick={() => {
+                setConfermaElimina(false);
+              }}
+            >
+              Annulla
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="bottone bottone--piatto"
+            disabled={attesa}
+            onClick={() => {
+              setConfermaElimina(true);
+            }}
+          >
+            Elimina
+          </button>
+        )}
+      </div>
     </article>
   );
 }

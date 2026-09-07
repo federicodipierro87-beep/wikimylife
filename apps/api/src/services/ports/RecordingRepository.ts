@@ -116,6 +116,20 @@ export interface RecordingFailure {
   readonly nextAttemptAt: Date | null;
 }
 
+/**
+ * Cosa e' successo alla riga, per chi deve decidere se cancellare l'oggetto.
+ *
+ * Un `boolean` non basterebbe: chi chiama deve distinguere «non c'era» da «non
+ * si poteva» — sono un 404 e un 409 — e nel caso riuscito ha bisogno della
+ * chiave dell'audio, che dopo il DELETE non e' piu' leggibile da nessuna parte.
+ * Restituirla insieme all'esito e' l'unico modo di non doverla rileggere prima,
+ * sperando che nel frattempo non cambi.
+ */
+export type DeleteRecordingOutcome =
+  | { readonly kind: "CANCELLATA"; readonly audioUrl: string }
+  | { readonly kind: "ASSENTE" }
+  | { readonly kind: "IN_LAVORAZIONE" };
+
 export interface RecordingRepository {
   create(input: CreateRecordingInput): Promise<RecordingDetail>;
 
@@ -196,4 +210,21 @@ export interface RecordingRepository {
    * e' gia' in elaborazione.
    */
   requeue(userId: string, id: string, at: Date): Promise<RecordingDetail | null>;
+
+  /**
+   * Cancella la riga per davvero, e dice quale oggetto resta da togliere.
+   *
+   * E' l'unica cancellazione dura del progetto: la scheda si archivia, perche'
+   * e' un testo che si puo' sempre riscrivere e che qualcuno potrebbe rivolere;
+   * la registrazione no. Chi chiede di cancellare un audio sta chiedendo che la
+   * propria voce sparisca, e uno stato `CANCELLATA` con i byte ancora nel bucket
+   * sarebbe la risposta sbagliata a quella domanda.
+   *
+   * Rifiuta mentre e' IN_ELABORAZIONE, e non e' prudenza: il worker in quel
+   * momento sta leggendo `audioUrl` e scrivera' `saveTranscript` su un id che
+   * non esiste piu'. Gli altri stati si cancellano tutti, ESTRATTO compreso —
+   * la scheda derivata sopravvive, ed e' proprio il caso di chi vuole tenere la
+   * procedura e non l'audio.
+   */
+  deleteForUser(userId: string, id: string): Promise<DeleteRecordingOutcome>;
 }

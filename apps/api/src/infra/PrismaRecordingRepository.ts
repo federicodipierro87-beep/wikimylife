@@ -8,6 +8,7 @@ import {
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   CreateRecordingInput,
+  DeleteRecordingOutcome,
   PersistProcedureInput,
   RecordingDetail,
   RecordingFailure,
@@ -489,5 +490,31 @@ export class PrismaRecordingRepository implements RecordingRepository {
       return null;
     }
     return this.findForUser(userId, id);
+  }
+
+  async deleteForUser(userId: string, id: string): Promise<DeleteRecordingOutcome> {
+    // La chiave si legge prima perche' dopo non c'e' piu' nessuno a cui
+    // chiederla. Non serve una transazione: `audioUrl` si scrive alla creazione
+    // e nessuna rotta la tocca, quindi fra questa `SELECT` e la `DELETE` non
+    // puo' diventare un'altra.
+    const row = await this.#prisma.recording.findFirst({
+      where: { id, userId },
+      select: { audioUrl: true },
+    });
+    if (row === null) {
+      return { kind: "ASSENTE" };
+    }
+
+    // `deleteMany` con lo stato nel WHERE, non `delete` dopo un `if`: fra la
+    // lettura e la cancellazione un worker puo' aver reclamato la riga, e la
+    // condizione deve valere nel momento in cui si cancella, non un istante
+    // prima. E' lo stesso compare-and-swap di `claim`, al contrario.
+    const deleted = await this.#prisma.recording.deleteMany({
+      where: { id, userId, status: { not: RecordingStatus.IN_ELABORAZIONE } },
+    });
+    if (deleted.count === 0) {
+      return { kind: "IN_LAVORAZIONE" };
+    }
+    return { kind: "CANCELLATA", audioUrl: row.audioUrl };
   }
 }

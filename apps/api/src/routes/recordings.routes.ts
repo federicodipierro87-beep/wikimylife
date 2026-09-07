@@ -4,7 +4,7 @@ import { parseRecordingUpload, rawUploadBody } from "../http/multipart.js";
 import type { RecordingsService } from "../services/recordings.service.js";
 
 /**
- * Le tre rotte della §1.
+ * Le rotte delle registrazioni.
  *
  * `POST` risponde **202**, non 201: i byte sono al sicuro e la riga esiste, ma
  * la scheda no — e potrebbe non esistere mai, se il testo si rivela un
@@ -78,6 +78,24 @@ export function createRecordingsRouter(deps: {
     const { userId } = authContext(req);
     const state = await deps.recordingsService.retry(userId, req.params.id);
     res.status(202).json(state);
+  });
+
+  /**
+   * Cancella davvero: la riga e l'audio.
+   *
+   * Risponde **204**, dove `DELETE /api/procedures/:id` risponde 200 con la
+   * scheda archiviata. Non e' un'incoerenza: li' un 204 direbbe «non c'e' piu'
+   * niente da vedere» e sarebbe falso, perche' la scheda esiste ancora e il
+   * client deve poterne mostrare lo stato nuovo. Qui e' vero, e restituire un
+   * corpo vorrebbe dire descrivere una cosa che non c'e'.
+   *
+   * 409 mentre e' in elaborazione, e non 404: la registrazione esiste ed e'
+   * dell'utente: il rifiuto e' temporaneo e va detto come tale.
+   */
+  router.delete("/:id", async (req, res) => {
+    const { userId } = authContext(req);
+    await deps.recordingsService.remove(userId, req.params.id);
+    res.status(204).end();
   });
 
   return router;
