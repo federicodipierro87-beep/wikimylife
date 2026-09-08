@@ -187,7 +187,7 @@ function Scheda({
         </button>
       )}
 
-      <Origine p={p} />
+      <Origine p={p} onCambiata={onCambiata} />
     </main>
   );
 }
@@ -391,8 +391,24 @@ function Conferma({
  * In fondo e chiuso in un `<details>`, non nascosto: chi legge la procedura per
  * usarla non deve scorrere il trascritto per arrivare ai passi, e chi sospetta
  * che il modello abbia frainteso lo trova dove si aspetta di trovarlo.
+ *
+ * ## Ed e' anche l'unico posto da cui si puo' buttare
+ *
+ * Il pulsante che cancella un vocale sta qui e non nella lista delle sospese,
+ * dove pure ce n'e' uno: quella lista mostra solo cio' che non e' ancora
+ * diventato una scheda, quindi da li' non si e' mai potuto cancellare un vocale
+ * che ne aveva prodotta una. Questa e' l'unica schermata dell'app in cui la
+ * voce e la scheda che ne e' nata sono sotto gli occhi insieme, ed e' l'unica
+ * in cui la domanda «e la scheda?» si puo' porre a chi sa gia' quale scheda
+ * sia.
  */
-function Origine({ p }: { p: ProcedureDetail }): React.JSX.Element | null {
+function Origine({
+  p,
+  onCambiata,
+}: {
+  p: ProcedureDetail;
+  onCambiata: () => void;
+}): React.JSX.Element | null {
   if (p.recordings.length === 0) {
     return null;
   }
@@ -412,8 +428,129 @@ function Origine({ p }: { p: ProcedureDetail }): React.JSX.Element | null {
           ) : (
             <p className="trascrizione">{r.transcript}</p>
           )}
+          {/*
+            Dentro il `<details>`, e non accanto al riassunto: per premerlo
+            bisogna aver aperto il vocale, cioe' aver visto di quale si tratta.
+            Un pulsante «elimina» in fila sotto tre riquadri chiusi tutti
+            intitolati «Vocale del 3 marzo» e' un modo di far buttare via quello
+            sbagliato.
+          */}
+          <EliminaVocale recordingId={r.id} onFatto={onCambiata} />
         </details>
       ))}
     </section>
+  );
+}
+
+/**
+ * Le due cose che «elimina» puo' voler dire, dette prima di sceglierne una.
+ *
+ * Il secondo tocco non chiede conferma, chiede *quale*: la domanda vera non e'
+ * «sei sicuro» — chi ha aperto un vocale e cercato il pulsante e' sicuro — ma
+ * cosa ne sia della scheda. Fuori di qui non c'e' nessun posto dove porla: la
+ * scheda archiviata non ricorda da dove sia arrivata la richiesta, e la riga
+ * che le teneva insieme viene distrutta dalla stessa chiamata.
+ *
+ * I due bottoni dicono per esteso cosa resta in piedi invece di essere un
+ * bottone e una casella da spuntare. Una casella si preme per sbaglio e poi si
+ * preme «Elimina davvero» leggendo solo quello; qui non esiste un pulsante
+ * chiamato «davvero», esistono due frasi diverse e bisogna sceglierne una.
+ *
+ * Dopo si ricarica e si resta. Le schede archiviate restano leggibili — e'
+ * quello che «archiviata» significa qui — e mandare via chi ha appena premuto
+ * gli toglierebbe l'unico modo di vedere che il gesto ha fatto le due cose che
+ * aveva promesso: il vocale non c'e' piu', e in cima c'e' il bollino.
+ */
+function EliminaVocale({
+  recordingId,
+  onFatto,
+}: {
+  recordingId: string;
+  onFatto: () => void;
+}): React.JSX.Element {
+  const apiClient = useApi();
+  const [aperta, setAperta] = useState(false);
+  // Quale delle due, non un booleano: mentre la richiesta e' in volo l'etichetta
+  // deve continuare a dire cosa si e' scelto. Un «Elimino…» su entrambi i
+  // pulsanti sarebbe il momento peggiore per non saperlo piu'.
+  const [attesa, setAttesa] = useState<"solo" | "anche" | null>(null);
+  const [errore, setErrore] = useState<string | null>(null);
+
+  async function elimina(ancheLaScheda: boolean): Promise<void> {
+    setAttesa(ancheLaScheda ? "anche" : "solo");
+    setErrore(null);
+    try {
+      await apiClient.deleteRecording(recordingId, { ancheLaScheda });
+      onFatto();
+    } catch (error: unknown) {
+      setErrore(messaggioDi(error));
+      // Si richiude. Il 409 «e' in elaborazione» e' l'errore probabile qui, e
+      // lasciare aperti due pulsanti rossi sotto il messaggio invita a
+      // ripremere subito lo stesso che ha appena fallito.
+      setAperta(false);
+    } finally {
+      setAttesa(null);
+    }
+  }
+
+  return (
+    <div className="origine__azioni">
+      {errore !== null && (
+        <p className="avviso avviso--errore" role="alert">
+          {errore}
+        </p>
+      )}
+
+      {aperta ? (
+        <>
+          <p className="muto">
+            La voce sparisce e non torna: e&apos; l&apos;unica cosa in questa scheda che
+            non si possa rifare.
+          </p>
+          <button
+            type="button"
+            className="bottone bottone--pericolo"
+            disabled={attesa !== null}
+            onClick={() => {
+              void elimina(false);
+            }}
+          >
+            {attesa === "solo" ? "Elimino il vocale…" : "Solo il vocale"}
+            <span className="muto"> — la scheda resta</span>
+          </button>
+          <button
+            type="button"
+            className="bottone bottone--pericolo"
+            disabled={attesa !== null}
+            onClick={() => {
+              void elimina(true);
+            }}
+          >
+            {attesa === "anche" ? "Elimino tutti e due…" : "Il vocale e la scheda"}
+            <span className="muto"> — la scheda va in archivio</span>
+          </button>
+          <button
+            type="button"
+            className="bottone bottone--piatto"
+            disabled={attesa !== null}
+            onClick={() => {
+              setAperta(false);
+            }}
+          >
+            Annulla
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          className="bottone bottone--piatto"
+          onClick={() => {
+            setAperta(true);
+          }}
+        >
+          Elimina questo vocale
+        </button>
+      )}
+    </div>
   );
 }

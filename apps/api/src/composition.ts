@@ -257,6 +257,15 @@ export function compose(config: AppConfig, overrides?: {
     onOrphanedAudio: ({ key, error }) => {
       logger.error("audio non cancellato dopo la registrazione", { key, error });
     },
+    // A livello di informazione e non di avviso: e' successo cio' che era stato
+    // chiesto. Ma va scritto, perche' dopo la transazione non esiste piu' niente
+    // che leghi quella scheda archiviata alla richiesta che l'ha archiviata.
+    onCardArchived: ({ recordingId, procedureId }) => {
+      logger.info("scheda archiviata insieme alla registrazione", {
+        recordingId,
+        procedureId,
+      });
+    },
   });
 
   // Senza osservatori, al contrario degli altri servizi: gli orfani li annuncia

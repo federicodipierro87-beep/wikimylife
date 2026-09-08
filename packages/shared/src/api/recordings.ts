@@ -166,6 +166,36 @@ export type PendingRecordings = z.infer<typeof pendingRecordingsSchema>;
 /** Quante se ne restituiscono al massimo. */
 export const MAX_PENDING_RECORDINGS = 50;
 
+/**
+ * L'unica opzione della cancellazione: portarsi via anche la scheda.
+ *
+ * Sta nella query e non in un corpo perche' una `DELETE` con un corpo e' una
+ * richiesta che proxy, cache e client trattano ognuno a modo suo: c'e' chi lo
+ * spoglia per strada. Un'opzione che decide cosa viene distrutto non puo'
+ * viaggiare in un campo che qualcuno potrebbe togliere senza dirlo.
+ *
+ * Assente significa «no», ed e' la ragione per cui questa opzione esiste invece
+ * di essere il nuovo comportamento: cancellare la registrazione e tenere la
+ * scheda e' il caso legittimo di chi vuole la procedura ma non la propria voce,
+ * ed e' cio' che la rotta ha sempre fatto. Cambiarlo in silenzio avrebbe
+ * archiviato delle schede a chi aveva imparato che non succedeva.
+ *
+ * `"1"` e `"0"` e nient'altro. Un `z.coerce.boolean()` qui sarebbe il difetto
+ * classico: `"false"` e' una stringa non vuota, quindi `true`, e
+ * `?ancheLaScheda=false` archivierebbe la scheda di chi stava chiedendo il
+ * contrario. Su un'operazione distruttiva un valore che non si riconosce deve
+ * essere un 400, non un'interpretazione generosa.
+ */
+export const deleteRecordingQuerySchema = z
+  .object({
+    ancheLaScheda: z.enum(["1", "0"]).default("0"),
+  })
+  .strict()
+  .transform((q) => ({ ancheLaScheda: q.ancheLaScheda === "1" }));
+
+export type DeleteRecordingQuery = z.infer<typeof deleteRecordingQuerySchema>;
+export type DeleteRecordingQueryInput = z.input<typeof deleteRecordingQuerySchema>;
+
 export type CaptureMetadata = z.infer<typeof captureMetadataSchema>;
 export type CaptureMetadataInput = z.input<typeof captureMetadataSchema>;
 export type ExtractionIssue = z.infer<typeof extractionIssueSchema>;

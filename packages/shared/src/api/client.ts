@@ -149,8 +149,19 @@ export interface ApiClient {
    * che si sta buttando via, e chiedere che la propria voce sparisca non si
    * soddisfa con un cambio di stato. Fallisce con `CONFLICT` finche' un worker
    * la sta elaborando.
+   *
+   * Con `ancheLaScheda` la procedura nata da questa registrazione viene
+   * archiviata nella stessa chiamata. Archiviata e non cancellata: a ciascuna
+   * delle due cose si fa cio' che cancellare significa per lei — la voce
+   * sparisce dal bucket, il testo va nel cestino da cui si puo' riprendere. Se
+   * quella registrazione non ha prodotto nessuna scheda l'opzione non fa
+   * niente, e non e' un errore: e' la risposta giusta alla domanda «togli anche
+   * cio' che ne e' derivato» quando non ne e' derivato niente.
    */
-  deleteRecording(id: string): Promise<void>;
+  deleteRecording(
+    id: string,
+    opzioni?: { readonly ancheLaScheda?: boolean },
+  ): Promise<void>;
   /**
    * I byte originali, per il player della scheda.
    *
@@ -494,7 +505,18 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       );
     },
 
-    async deleteRecording(id: string): Promise<void> {
+    async deleteRecording(
+      id: string,
+      opzioni: { readonly ancheLaScheda?: boolean } = {},
+    ): Promise<void> {
+      // Il parametro si omette quando non serve, invece di mandare `0`: cosi'
+      // la richiesta normale resta identica a quella di prima, e nei registri
+      // del server la sola presenza di `ancheLaScheda` distingue chi ha chiesto
+      // le due cose da chi ne ha chiesta una.
+      const query = queryString({
+        ancheLaScheda: opzioni.ancheLaScheda === true ? "1" : undefined,
+      });
+
       // `execute` e non `send`: un 204 non ha corpo, e `send` chiamerebbe
       // `response.json()` su una risposta vuota. La gestione della sessione,
       // rotazione su 401 compresa, resta identica — e' proprio per casi come
@@ -503,7 +525,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       await execute(
         {
           method: "DELETE",
-          path: `/api/recordings/${encodeURIComponent(id)}`,
+          path: `/api/recordings/${encodeURIComponent(id)}${query}`,
           accept: "application/json",
           auth: true,
         },

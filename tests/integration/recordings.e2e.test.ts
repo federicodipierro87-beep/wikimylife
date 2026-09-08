@@ -8,6 +8,8 @@ import {
   authSessionSchema,
   errorBodySchema,
   pendingRecordingsSchema,
+  procedureDetailSchema,
+  procedureListSchema,
   recordingStateSchema,
   type CaptureMetadataInput,
   type ExtractionContract,
@@ -1187,6 +1189,212 @@ describe("DELETE /api/recordings/:id", () => {
     await expect(
       server.prisma.recording.findUnique({ where: { id: state.id } }),
     ).resolves.not.toBeNull();
+  });
+});
+
+/**
+ * `?ancheLaScheda=1`: le due meta' del gesto, o nessuna.
+ *
+ * Il servizio prova gia' che l'opzione archivia e che il 409 non archivia. Qui
+ * si prova cio' che il fake non puo' provare, perche' il fake non ha una
+ * transazione: che le due scritture stiano su due tabelle diverse e finiscano
+ * insieme, e che archiviare la scheda dalla rotta delle registrazioni produca
+ * esattamente lo stato che produce `DELETE /api/procedures/:id` — se le due
+ * strade portassero a due stati diversi, «archiviata» vorrebbe dire due cose.
+ */
+describe("DELETE /api/recordings/:id?ancheLaScheda=1", () => {
+  /** Un vocale gia' diventato scheda: l'unico caso in cui l'opzione conta. */
+  async function estratta(): Promise<{ token: string; id: string; procedureId: string }> {
+    const { token } = await signup();
+    const state = await carica(token);
+    const procedureId = procedureIdDi(await elabora());
+    return { token, id: state.id, procedureId };
+  }
+
+  /**
+   * Che la scheda sia ancora dove l'utente l'aveva lasciata.
+   *
+   * Non si asserisce lo stato esatto: una scheda appena estratta nasce
+   * `COMPLETA` o `DA_RIVEDERE` a seconda di quanto era completo il racconto, e
+   * legarci un test lo farebbe cadere il giorno in cui la §5 cambia idea su una
+   * soglia. L'unica cosa che questi casi guardano e' che non sia in archivio.
+   */
+  async function fuoriDalCestino(procedureId: string): Promise<void> {
+    expect((await scheda(procedureId)).status).not.toBe(CardStatus.ARCHIVIATA);
+  }
+
+  it("toglie il vocale e manda la scheda in archivio, con lo stesso 204", async () => {
+    const { token, id, procedureId } = await estratta();
+    const chiave = (await server.prisma.recording.findUniqueOrThrow({ where: { id } })).audioUrl;
+
+    const res = await call(server, "DELETE", `/api/recordings/${id}?ancheLaScheda=1`, {
+      accessToken: token,
+    });
+
+    // 204 e non 200 con dentro la scheda archiviata, che e' cio' che risponde
+    // `DELETE /api/procedures/:id`: li' il client deve poter ridisegnare la
+    // riga, qui ha chiesto di far sparire due cose e non gliene serve indietro
+    // una.
+    expect(res.status).toBe(204);
+    expect(res.body).toBeNull();
+
+    await expect(server.prisma.recording.findUnique({ where: { id } })).resolves.toBeNull();
+    expect(await blob.exists(chiave)).toBe(false);
+    await expect(scheda(procedureId)).resolves.toMatchObject({
+      status: CardStatus.ARCHIVIATA,
+    });
+  });
+
+  it("archivia la scheda, non la cancella: il testo resta leggibile", async () => {
+    // La differenza fra le due meta' e' il punto di tutta la funzione. La voce
+    // e' l'unica cosa dell'app che nessuno puo' rigenerare, e per lei
+    // «elimina» vuol dire elimina; il testo si e' pagato una volta e sta nel
+    // cestino, da cui si torna indietro.
+    const { token, id, procedureId } = await estratta();
+    const titolo = (await scheda(procedureId)).titolo;
+
+    await call(server, "DELETE", `/api/recordings/${id}?ancheLaScheda=1`, {
+      accessToken: token,
+    });
+
+    // Si legge ancora per intero, dalla rotta pubblica: l'archiviazione e' un
+    // `UPDATE` di una colonna, e se qualcuno un giorno la riscrivesse come un
+    // `DELETE` questa riga se ne accorgerebbe prima degli utenti.
+    const dettaglio = await call(server, "GET", `/api/procedures/${procedureId}`, {
+      accessToken: token,
+    });
+    expect(dettaglio.status).toBe(200);
+    expect(procedureDetailSchema.parse(dettaglio.body)).toMatchObject({
+      id: procedureId,
+      titolo,
+      status: CardStatus.ARCHIVIATA,
+    });
+  });
+
+  it("l'assenza del parametro vale «no», e la scheda resta in lista", async () => {
+    // La compatibilita' detta dal lato che conta: chi cancellava un vocale
+    // prima che l'opzione esistesse chiedeva di togliere la voce e basta, e
+    // deve continuare a ottenere quello. Un default a vero avrebbe archiviato
+    // le schede di chi aveva imparato che non succedeva.
+    const { token, id, procedureId } = await estratta();
+
+    await call(server, "DELETE", `/api/recordings/${id}`, { accessToken: token });
+
+    await fuoriDalCestino(procedureId);
+  });
+
+  it("`ancheLaScheda=0` e' un no esplicito e si comporta come l'assenza", async () => {
+    const { token, id, procedureId } = await estratta();
+
+    const res = await call(server, "DELETE", `/api/recordings/${id}?ancheLaScheda=0`, {
+      accessToken: token,
+    });
+
+    expect(res.status).toBe(204);
+    await fuoriDalCestino(procedureId);
+  });
+
+  it("un valore che non si riconosce e' un 400, e non cancella niente", async () => {
+    // Il difetto contro cui questo test esiste ha un nome: `?ancheLaScheda=false`
+    // interpretato come vero, perche' `"false"` e' una stringa non vuota. Chi
+    // scrive quella richiesta sta chiedendo di *non* archiviare la scheda, e
+    // riceverla come un si' e' il modo piu' stupido di buttare via il lavoro di
+    // qualcuno. Su un'operazione distruttiva un valore ignoto e' un rifiuto.
+    const { token, id, procedureId } = await estratta();
+
+    const res = await call(server, "DELETE", `/api/recordings/${id}?ancheLaScheda=false`, {
+      accessToken: token,
+    });
+
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
+    // Il 400 arriva prima di qualunque scrittura: nessuna delle due meta'.
+    await expect(server.prisma.recording.findUnique({ where: { id } })).resolves.not.toBeNull();
+    await fuoriDalCestino(procedureId);
+  });
+
+  it("un parametro scritto male e' un 400, non una cancellazione a meta'", async () => {
+    // Lo `.strict()` dello schema. Senza, `?ancheLascheda=1` — la `s` minuscola
+    // — passerebbe come una richiesta senza opzioni: la voce sparirebbe, la
+    // scheda resterebbe, e la risposta sarebbe un 204 che dice che e' andato
+    // tutto bene. Un refuso non deve poter cambiare cosa viene distrutto.
+    const { token, id } = await estratta();
+
+    const res = await call(server, "DELETE", `/api/recordings/${id}?ancheLascheda=1`, {
+      accessToken: token,
+    });
+
+    expect(res.status).toBe(400);
+    await expect(server.prisma.recording.findUnique({ where: { id } })).resolves.not.toBeNull();
+  });
+
+  it("dal 409 non esce ne' una riga cancellata ne' una scheda archiviata", async () => {
+    // Le due scritture stanno in una transazione sola, e questo e' l'unico modo
+    // di vederlo da fuori: la seconda non deve sopravvivere al fallimento della
+    // prima. Con due statement in fila, nell'ordine sbagliato, qui ci sarebbe
+    // un 409 e una scheda nel cestino.
+    const { token, id, procedureId } = await estratta();
+    await server.prisma.recording.update({
+      where: { id },
+      data: { status: RecordingStatus.IN_ELABORAZIONE },
+    });
+
+    const res = await call(server, "DELETE", `/api/recordings/${id}?ancheLaScheda=1`, {
+      accessToken: token,
+    });
+
+    expect(res.status).toBe(409);
+    await expect(server.prisma.recording.findUnique({ where: { id } })).resolves.not.toBeNull();
+    await fuoriDalCestino(procedureId);
+  });
+
+  it("non archivia la scheda di un altro, perche' il 404 arriva prima", async () => {
+    const a = await signup();
+    const b = await signup();
+    const state = await carica(a.token);
+    const procedureId = procedureIdDi(await elabora());
+
+    const res = await call(server, "DELETE", `/api/recordings/${state.id}?ancheLaScheda=1`, {
+      accessToken: b.token,
+    });
+
+    expect(res.status).toBe(404);
+    await fuoriDalCestino(procedureId);
+  });
+
+  it("non e' un errore chiederlo per un vocale che non ha prodotto niente", async () => {
+    // Un vocale ancora in coda non nomina nessuna scheda. «Togli anche cio' che
+    // ne e' derivato» ha comunque una risposta giusta, ed e' averlo tolto.
+    const { token } = await signup();
+    const state = await carica(token);
+
+    const res = await call(server, "DELETE", `/api/recordings/${state.id}?ancheLaScheda=1`, {
+      accessToken: token,
+    });
+
+    expect(res.status).toBe(204);
+    await expect(
+      server.prisma.recording.findUnique({ where: { id: state.id } }),
+    ).resolves.toBeNull();
+  });
+
+  it("la scheda archiviata non torna piu' nella lista, ne' come duplicato", async () => {
+    // La conseguenza che si nota per ultima. Senza il filtro sulle archiviate
+    // in `findMostSimilar`, il vocale successivo sullo stesso argomento
+    // verrebbe fermato come duplicato di una scheda buttata, e l'unica via
+    // d'uscita offerta all'utente sarebbe «aggiorna quella esistente».
+    const { token, id } = await estratta();
+
+    await call(server, "DELETE", `/api/recordings/${id}?ancheLaScheda=1`, {
+      accessToken: token,
+    });
+
+    const elenco = await call(server, "GET", "/api/procedures", { accessToken: token });
+    expect(procedureListSchema.parse(elenco.body).items).toEqual([]);
+
+    await carica(token);
+    const secondo = await elabora();
+    expect(secondo.kind).toBe("ESTRATTO");
   });
 });
 

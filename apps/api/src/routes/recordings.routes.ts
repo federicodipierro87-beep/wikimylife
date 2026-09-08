@@ -1,6 +1,8 @@
+import { deleteRecordingQuerySchema } from "@wikimylife/shared";
 import { Router, type RequestHandler } from "express";
 import { authContext } from "../http/middleware/requireAuth.js";
 import { parseRecordingUpload, rawUploadBody } from "../http/multipart.js";
+import { parseQuery } from "../http/validate.js";
 import type { RecordingsService } from "../services/recordings.service.js";
 
 /**
@@ -91,10 +93,20 @@ export function createRecordingsRouter(deps: {
    *
    * 409 mentre e' in elaborazione, e non 404: la registrazione esiste ed e'
    * dell'utente: il rifiuto e' temporaneo e va detto come tale.
+   *
+   * Con `?ancheLaScheda=1` la procedura nata da questa registrazione finisce
+   * archiviata nella stessa transazione. Il 204 resta 204 anche allora, e non
+   * diventa un 200 con dentro la scheda archiviata: chi ha chiesto di far
+   * sparire due cose non ha bisogno che gliene si restituisca una.
    */
   router.delete("/:id", async (req, res) => {
     const { userId } = authContext(req);
-    await deps.recordingsService.remove(userId, req.params.id);
+    // `parseQuery` e non `req.query.ancheLaScheda === "1"`: e' lo `.strict()`
+    // dello schema a rendere `?ancheLascheda=1` un 400 invece di una
+    // cancellazione che ignora in silenzio l'unica parte della richiesta che
+    // diceva cosa distruggere.
+    const opzioni = parseQuery(deleteRecordingQuerySchema, req.query);
+    await deps.recordingsService.remove(userId, req.params.id, opzioni);
     res.status(204).end();
   });
 

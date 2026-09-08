@@ -1,6 +1,7 @@
 import { RecordingStatus } from "@wikimylife/shared";
 import type {
   CreateRecordingInput,
+  DeleteRecordingOptions,
   DeleteRecordingOutcome,
   PersistProcedureInput,
   RecordingDetail,
@@ -27,6 +28,9 @@ import type {
  *  3. `persistProcedure` conserva l'input integrale, cosi' un test puo'
  *     asserire che i passi arrivino rinumerati e che la scheda nasca nello
  *     stato deciso dalla §5.
+ *  4. `deleteForUser` archivia la scheda derivata solo se ha davvero cancellato
+ *     la riga. E' l'atomicita' della transazione vera ridotta all'unica cosa
+ *     che un test puo' osservare: che dal 409 non esca una scheda nel cestino.
  */
 
 interface SeededProcedure {
@@ -34,6 +38,13 @@ interface SeededProcedure {
   readonly userId: string;
   readonly titolo: string;
   readonly embedding: readonly number[];
+  /**
+   * Le procedure qui dentro hanno un solo stato possibile, e serve solo a
+   * distinguerlo: questa e' la copia in memoria di `Procedure` che alla pipeline
+   * interessa — un titolo e un vettore — piu' l'unica colonna che la
+   * cancellazione tocca.
+   */
+  archiviata: boolean;
 }
 
 function cosine(a: readonly number[], b: readonly number[]): number {
@@ -134,6 +145,7 @@ export class InMemoryRecordingRepository implements RecordingRepository {
       userId: input.userId,
       titolo: input.titolo,
       embedding: input.embedding,
+      archiviata: false,
     };
     this.#procedures.push(procedure);
     return procedure;
@@ -141,6 +153,15 @@ export class InMemoryRecordingRepository implements RecordingRepository {
 
   snapshot(id: string): RecordingDetail {
     return this.#require(id);
+  }
+
+  /** Se quella scheda sia finita nel cestino. Errore se non esiste proprio. */
+  schedaArchiviata(id: string): boolean {
+    const procedure = this.#procedures.find((p) => p.id === id);
+    if (procedure === undefined) {
+      throw new Error(`Procedura sconosciuta: ${id}`);
+    }
+    return procedure.archiviata;
   }
 
   async create(input: CreateRecordingInput): Promise<RecordingDetail> {
@@ -220,7 +241,10 @@ export class InMemoryRecordingRepository implements RecordingRepository {
     embedding: readonly number[],
   ): Promise<SimilarProcedure | null> {
     const scored = this.#procedures
-      .filter((p) => p.userId === userId)
+      // Le archiviate no, come nell'originale: proporre di aggiornare una
+      // scheda che si e' appena buttata sarebbe il suggerimento peggiore
+      // possibile, e il `WHERE status <> 'ARCHIVIATA'` dell'SQL sta li' apposta.
+      .filter((p) => p.userId === userId && !p.archiviata)
       .map((p) => ({
         procedureId: p.id,
         titolo: p.titolo,
@@ -321,19 +345,38 @@ export class InMemoryRecordingRepository implements RecordingRepository {
     });
   }
 
-  async deleteForUser(userId: string, id: string): Promise<DeleteRecordingOutcome> {
+  async deleteForUser(
+    userId: string,
+    id: string,
+    opzioni: DeleteRecordingOptions,
+  ): Promise<DeleteRecordingOutcome> {
     const row = this.#recordings.get(id);
     if (row === undefined || row.userId !== userId) {
       return { kind: "ASSENTE" };
     }
     if (row.status === RecordingStatus.IN_ELABORAZIONE) {
+      // Prima di toccare qualunque cosa, ed e' il punto: nell'originale i due
+      // rami stanno dentro una transazione, quindi il rifiuto non puo' lasciare
+      // dietro di se' una scheda archiviata. Qui si ottiene la stessa cosa
+      // uscendo prima, ed e' l'unica forma in cui l'atomicita' si puo'
+      // riprodurre senza un database.
       return { kind: "IN_LAVORAZIONE" };
     }
     this.#recordings.delete(id);
-    // La procedura eventualmente derivata resta dov'e': la riga cancellata la
-    // nominava, non la possedeva. Se qui la togliessimo anche da `#procedures`
-    // il test "la scheda sopravvive" passerebbe contro una finzione compiacente.
-    return { kind: "CANCELLATA", audioUrl: row.audioUrl };
+
+    // Senza l'opzione la procedura resta dov'e': la riga cancellata la
+    // nominava, non la possedeva. Se qui la togliessimo comunque il test "la
+    // scheda sopravvive" passerebbe contro una finzione compiacente.
+    if (!opzioni.archiviaLaScheda || row.procedureId === null) {
+      return { kind: "CANCELLATA", audioUrl: row.audioUrl, schedaArchiviata: null };
+    }
+
+    const procedure = this.#procedures.find((p) => p.id === row.procedureId);
+    if (procedure === undefined) {
+      return { kind: "CANCELLATA", audioUrl: row.audioUrl, schedaArchiviata: null };
+    }
+    procedure.archiviata = true;
+    return { kind: "CANCELLATA", audioUrl: row.audioUrl, schedaArchiviata: procedure.id };
   }
 
   /**

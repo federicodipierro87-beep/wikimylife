@@ -7,6 +7,7 @@ import { buildExtractionContract } from "@wikimylife/shared/testing";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AppError } from "../../apps/api/src/errors/AppError.js";
 import { FakeStorageProvider } from "../../apps/api/src/providers/fake/index.js";
+import type { RecordingDetail } from "../../apps/api/src/services/ports/RecordingRepository.js";
 import {
   audioExtension,
   createRecordingsService,
@@ -383,6 +384,7 @@ describe("remove", () => {
     await h.service.remove(USER, recording.id);
 
     await expect(h.repo.findForUser(USER, recording.id)).resolves.toBeNull();
+    expect(h.repo.schedaArchiviata(procedura.id)).toBe(false);
     await expect(h.repo.findMostSimilar(USER, [1, 0, 0])).resolves.toMatchObject({
       procedureId: procedura.id,
     });
@@ -433,6 +435,165 @@ describe("remove", () => {
 
     await expect(repo.findForUser(USER, recording.id)).resolves.toBeNull();
     expect(orfani).toEqual(["user-1/rimasto.webm"]);
+  });
+});
+
+/**
+ * L'opzione che si porta via anche cio' che la voce aveva prodotto.
+ *
+ * Le tre cose che vale la pena provare qui non sono che l'opzione funzioni —
+ * quella e' una riga — ma che non faccia danni nei tre modi in cui potrebbe:
+ * archiviando quando nessuno l'ha chiesto, archiviando dopo un rifiuto, e
+ * fallendo su una registrazione che non ha mai prodotto niente.
+ */
+describe("remove — anche la scheda", () => {
+  /** Un vocale gia' diventato scheda, che e' l'unico caso in cui l'opzione conta. */
+  function estratta(status: RecordingDetail["status"] = RecordingStatus.ESTRATTO): {
+    proceduraId: string;
+    recordingId: string;
+  } {
+    const procedura = h.repo.seedProcedure({
+      userId: USER,
+      titolo: "Richiedere il casellario giudiziale",
+      embedding: [1, 0, 0],
+    });
+    const recording = h.repo.seedRecording({
+      userId: USER,
+      status,
+      procedureId: procedura.id,
+    });
+    return { proceduraId: procedura.id, recordingId: recording.id };
+  }
+
+  it("manda la scheda in archivio insieme alla registrazione", async () => {
+    const { proceduraId, recordingId } = estratta();
+
+    await h.service.remove(USER, recordingId, { ancheLaScheda: true });
+
+    await expect(h.repo.findForUser(USER, recordingId)).resolves.toBeNull();
+    expect(h.repo.schedaArchiviata(proceduraId)).toBe(true);
+  });
+
+  it("archivia e non cancella: la scheda resta, il vocale no", async () => {
+    // Le due meta' del gesto non vogliono dire la stessa cosa, ed e' voluto. Il
+    // testo si puo' ripescare dal cestino; la voce e' l'unica cosa dell'app che
+    // nessuno puo' rigenerare, e per lei «elimina» deve voler dire elimina.
+    const { proceduraId, recordingId } = estratta();
+    const chiave = h.repo.snapshot(recordingId).audioUrl;
+
+    await h.service.remove(USER, recordingId, { ancheLaScheda: true });
+
+    // `schedaArchiviata` solleva se la scheda non c'e' proprio: che risponda
+    // qualcosa e' gia' meta' dell'asserzione.
+    expect(h.repo.schedaArchiviata(proceduraId)).toBe(true);
+    await expect(h.storage.exists(chiave)).resolves.toBe(false);
+  });
+
+  it("non la propone piu' come duplicato da aggiornare", async () => {
+    // La conseguenza meno ovvia dell'archiviazione, e quella che si nota per
+    // ultima: senza il filtro, il vocale successivo sullo stesso argomento
+    // verrebbe fermato come duplicato di una scheda che l'utente ha buttato, e
+    // l'unica via d'uscita offerta sarebbe «aggiorna quella esistente».
+    const { recordingId } = estratta();
+
+    await h.service.remove(USER, recordingId, { ancheLaScheda: true });
+
+    await expect(h.repo.findMostSimilar(USER, [1, 0, 0])).resolves.toBeNull();
+  });
+
+  it("senza l'opzione non archivia niente, come ha sempre fatto", async () => {
+    // Chiamare `remove` con due argomenti e' cio' che facevano tutte le rotte
+    // prima che l'opzione esistesse, e deve continuare a fare la stessa cosa:
+    // il difetto da cui questo test protegge e' il valore per difetto messo a
+    // vero per comodita', che archivierebbe le schede di chi non l'ha chiesto.
+    const { proceduraId, recordingId } = estratta();
+
+    await h.service.remove(USER, recordingId, { ancheLaScheda: false });
+    expect(h.repo.schedaArchiviata(proceduraId)).toBe(false);
+
+    const secondo = estratta();
+    await h.service.remove(USER, secondo.recordingId);
+    expect(h.repo.schedaArchiviata(secondo.proceduraId)).toBe(false);
+    expect(h.repo.schedaArchiviata(proceduraId)).toBe(false);
+  });
+
+  it("dal 409 non esce nessuna scheda archiviata", async () => {
+    // Il caso per cui le due operazioni stanno nella stessa transazione. Se
+    // l'archiviazione avvenisse per prima e la cancellazione fallisse dopo,
+    // l'utente riceverebbe un errore e si ritroverebbe comunque la scheda nel
+    // cestino: il peggiore dei due mondi, perche' la richiesta ha detto di no e
+    // meta' e' successa lo stesso.
+    //
+    // Lo stato e' costruito a mano perche' in produzione la finestra e' stretta
+    // — e' il worker che riprende in mano una registrazione gia' estratta —
+    // e un test che aspettasse la coincidenza non la vedrebbe mai.
+    const { proceduraId, recordingId } = estratta(RecordingStatus.IN_ELABORAZIONE);
+
+    await expect(
+      h.service.remove(USER, recordingId, { ancheLaScheda: true }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(h.repo.schedaArchiviata(proceduraId)).toBe(false);
+    expect(h.repo.snapshot(recordingId).status).toBe(RecordingStatus.IN_ELABORAZIONE);
+  });
+
+  it("non e' un errore chiedere anche la scheda quando non ne e' nata nessuna", async () => {
+    // E' il caso di chi cancella un vocale fallito dal dettaglio di un'altra
+    // scheda, o dopo un ritentativo che non ha mai prodotto niente. «Togli
+    // anche cio' che ne e' derivato» quando non ne e' derivato niente ha una
+    // risposta giusta, ed e' averlo tolto — non un 404 su una scheda mai nata.
+    const recording = h.repo.seedRecording({
+      userId: USER,
+      status: RecordingStatus.ESTRAZIONE_FALLITA,
+      procedureId: null,
+    });
+
+    await expect(
+      h.service.remove(USER, recording.id, { ancheLaScheda: true }),
+    ).resolves.toBeUndefined();
+    await expect(h.repo.findForUser(USER, recording.id)).resolves.toBeNull();
+  });
+
+  it("segnala la coppia di id, che dopo non esiste piu' da nessuna parte", async () => {
+    // La riga che legava scheda e vocale viene distrutta dalla stessa chiamata
+    // che archivia. Senza questa notifica, «perche' questa procedura e' nel
+    // cestino» non ha risposta in nessuna tabella.
+    const archiviate: { recordingId: string; procedureId: string }[] = [];
+    const repo = new InMemoryRecordingRepository();
+    const service = createRecordingsService({
+      repo,
+      storage: new FakeStorageProvider(),
+      clock: new FixedClock(NOW),
+      onCardArchived: (info) => archiviate.push(info),
+    });
+    const procedura = repo.seedProcedure({ userId: USER, titolo: "T", embedding: [1, 0, 0] });
+    const recording = repo.seedRecording({
+      userId: USER,
+      status: RecordingStatus.ESTRATTO,
+      procedureId: procedura.id,
+    });
+
+    await service.remove(USER, recording.id, { ancheLaScheda: true });
+    expect(archiviate).toEqual([{ recordingId: recording.id, procedureId: procedura.id }]);
+
+    // E non la segnala quando non c'e' niente da segnalare: una riga di
+    // registro per ogni cancellazione normale renderebbe invisibili le poche
+    // che hanno davvero archiviato qualcosa.
+    const sola = repo.seedRecording({ userId: USER, procedureId: null });
+    await service.remove(USER, sola.id, { ancheLaScheda: true });
+    expect(archiviate).toHaveLength(1);
+  });
+
+  it("non archivia la scheda di un altro utente, perche' non arriva a guardarla", async () => {
+    // Il 404 viene dalla registrazione, prima che l'opzione conti qualcosa: chi
+    // non possiede il vocale non ha nessun modo di nominare la scheda.
+    const { proceduraId, recordingId } = estratta();
+
+    await expect(
+      h.service.remove(ALTRO, recordingId, { ancheLaScheda: true }),
+    ).rejects.toMatchObject({ status: 404 });
+
+    expect(h.repo.schedaArchiviata(proceduraId)).toBe(false);
   });
 });
 

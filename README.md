@@ -115,6 +115,7 @@ GET  /api/recordings           quelle che non sono ancora una scheda
 GET  /api/recordings/:id       stato di avanzamento
 POST /api/recordings/:id/retry riprocessa dalla trascrizione → 202
 DEL  /api/recordings/:id       cancella riga e audio → 204, 409 se in elaborazione
+     ?ancheLaScheda=1          e archivia la procedura che ne era nata
 ```
 
 L'API non elabora niente: salva i byte, scrive la riga, risponde. Il resto lo fa
@@ -136,6 +137,31 @@ l'oggetto. Alla creazione i byte vanno per primi perché sono il dato non
 riproducibile; alla cancellazione la riga va per prima perché è lei a essere
 condivisa con il worker, e toglierla per seconda lascerebbe per il tempo di una
 chiamata di rete una riga reclamabile che punta a un audio che non c'è più.
+
+**`?ancheLaScheda=1` si porta via anche ciò che quel vocale aveva prodotto.**
+Senza il parametro la procedura resta, ed è il caso di chi vuole tenersi la
+scheda e non la propria voce: è ciò che la rotta ha sempre fatto, e cambiarlo in
+silenzio avrebbe archiviato le schede di chi aveva imparato che non succedeva.
+Con il parametro le due cose avvengono **nella stessa transazione**, e alle due
+metà si fa ciò che «cancellare» significa per ciascuna: l'audio sparisce dal
+bucket, la scheda passa ad `ARCHIVIATA` e si può ripescare dal cestino.
+
+Insieme e non in fila, perché in fila esisterebbe sempre un ordine sbagliato.
+Cancellare prima lascia, se l'archiviazione fallisce, una voce persa per sempre
+e una scheda che l'utente credeva via — con un 500 che non si può nemmeno
+ritentare. Archiviare prima lascia, quando la cancellazione risponde 409 perché
+un worker ha ripreso in mano la riga, una scheda finita nel cestino per una
+richiesta che ha risposto errore: il peggiore dei due mondi, perché la risposta
+dice di no e metà è successa lo stesso. Dentro una transazione non c'è un ordine
+sbagliato perché non c'è un mezzo risultato.
+
+Il valore è `1` o `0` e nient'altro, e lo schema è `.strict()`. Un
+`z.coerce.boolean()` avrebbe letto `?ancheLaScheda=false` come vero — `"false"`
+è una stringa non vuota — e avrebbe archiviato la scheda di chi stava chiedendo
+il contrario; senza lo `.strict()`, `?ancheLascheda=1` con la `s` minuscola
+sarebbe passato per una richiesta senza opzioni, restituendo un 204 che dice che
+è andato tutto bene. Su un'operazione distruttiva un refuso deve essere un 400,
+non un'interpretazione generosa di cosa distruggere.
 
 Si può cancellare in ogni stato tranne `IN_ELABORAZIONE`, e quel rifiuto è un
 **409**, non un 404: la registrazione esiste ed è di chi la chiede, il no è
@@ -988,9 +1014,17 @@ oggetto spariscano entrambi, che una `IN_ELABORAZIONE` dia `409` e resti dov'è,
 e i due casi in cui lo storage non collabora — l'oggetto già assente, che è un
 successo perché tutti e tre i provider trattano così una `delete` a vuoto, e il
 bucket irraggiungibile, che invece deve lasciare all'utente il suo `204` e la
-chiave a chi tiene il bucket.
+chiave a chi tiene il bucket. Di `?ancheLaScheda=1`, ciò che il repository in
+memoria non può provare perché non ha una transazione: che le due scritture
+stiano su due tabelle e finiscano insieme, e soprattutto che dal `409` non esca
+una scheda archiviata — con due statement in fila, nell'ordine sbagliato, lì ci
+sarebbero un errore e una procedura nel cestino. Accanto, i due modi di scrivere
+male il parametro: `=false` letto come un sì e `?ancheLascheda=1` con la `s`
+minuscola letto come un'assenza. Sono entrambi `400`, e sono entrambi test che
+esistono per un difetto che avrebbe cancellato il lavoro di qualcuno senza
+dirlo.
 
-**web** monta tre schermate in `jsdom` e ne prova cinque proprietà, non
+**web** monta quattro schermate in `jsdom` e ne prova le proprietà, non
 l'aspetto. Non è una copertura: è l'elenco dei posti dove una regressione non
 produce nessun sintomo visibile.
 
@@ -1022,6 +1056,19 @@ movimento, non parte affatto su una lista di sole registrazioni ferme, e si
 spegne *da solo* nel momento in cui l'ultima elaborazione finisce. Accanto, che
 un errore lì non produca un avviso rosso in cima a una schermata che funziona, e
 che eliminare chieda il secondo tocco.
+
+Del dettaglio, solo la parte che butta via una voce. È l'unico gesto
+irreversibile dell'applicazione, e da lì partono due chiamate quasi identiche che
+fanno due cose molto diverse: la differenza fra «solo il vocale» e «il vocale e
+la scheda» è un booleano, invisibile sullo schermo — in tutti e due i casi la
+pagina si ricarica e il vocale sparisce — e il test è l'unico posto in cui si
+vede. I casi guardano che il primo tocco apra la domanda invece di eseguire, che
+ciascuno dei due pulsanti mandi il proprio valore, che con tre vocali sotto la
+stessa scheda si cancelli quello su cui si è premuto e non il primo della lista
+(ogni riquadro ha il proprio stato: se fosse uno solo, l'errore non si vedrebbe
+in prova a mano, perché un vocale sparisce comunque), e che dopo un `409` la
+scheda resti intera — nessuna sparizione ottimistica, o l'utente crederebbe di
+aver cancellato ciò che è ancora lì.
 
 Il finto dell'API lancia su ogni metodo non insegnato, col proprio nome dentro:
 un finto che risponde a tutto con valori plausibili avrebbe fatto passare una
@@ -1866,9 +1913,12 @@ Non installate, e il perché:
   (`[nome 1]`, `[nome 2]`) avrebbe conservato la struttura e insieme un dato in
   più — quante persone distinte comparivano — che è esattamente ciò che una
   scheda condivisa non deve dire.
-- **Di schermate ne sono provate tre.** Redazione, ingresso e registrazioni in
-  sospeso hanno i loro casi, scelti perché lì una regressione non ha sintomi. Le
-  altre no, e la più scoperta è quella che nessun `jsdom` potrebbe coprire: che
+- **Di schermate ne sono provate quattro.** Redazione, ingresso, registrazioni in
+  sospeso e la parte del dettaglio che cancella un vocale hanno i loro casi,
+  scelti perché lì una regressione non ha sintomi: il resto del dettaglio — i
+  badge, l'ordine delle sezioni, i tre pulsanti dell'esito — no. Le altre
+  schermate nemmeno, e la più scoperta è quella che nessun `jsdom` potrebbe
+  coprire: che
   il pulsante di registrazione sia davvero collegato al microfono non lo dice
   nessun test, perché `MediaRecorder` in un ambiente finto è un oggetto che
   finge. Lo dice solo premerlo su un telefono vero.
@@ -1896,13 +1946,33 @@ Non installate, e il perché:
   spazzatura quanto un comando che nessuno esegue. È voluto — la prima passata
   su un bucket vero è meglio guardarla, e `elenca` esiste per guardarla senza
   rischi — ma finché la variabile resta al default il difetto è quello di prima.
-- **Cancellare una registrazione non cancella ciò che ne è derivato.** La scheda
-  resta, con la sua trascrizione dentro i campi che l'estrazione ha riempito. È
-  voluto e sta scritto sopra, ma vale la pena dirlo anche qui, perché chi preme
-  «Elimina» su un vocale può ragionevolmente credere di aver cancellato tutto
-  quello che quel vocale ha prodotto. Non esiste un gesto solo che faccia le due
-  cose: per togliere anche la scheda bisogna archiviarla a parte, e archiviarla
-  non la cancella.
+- **Il gesto che toglie tutte e due le cose sta in un posto solo.** È nella
+  sezione «Da cosa nasce» del dettaglio, dentro il riquadro del vocale, ed è
+  l'unico punto dell'app in cui la voce e la scheda che ne è nata sono sotto gli
+  occhi insieme — quindi l'unico in cui la domanda «e la scheda?» si può porre a
+  chi sa già quale scheda sia. L'elenco delle sospese ha un «Elimina» che toglie
+  solo il vocale, e va bene così: quella lista mostra per costruzione ciò che non
+  è ancora diventato una scheda. Ma se un giorno cambiasse filtro, quel pulsante
+  tornerebbe a promettere più di quello che fa.
+- **Archiviare non è cancellare, e per il testo non c'è altro.** Con
+  `?ancheLaScheda=1` la procedura va nel cestino, non via: le frasi che l'utente
+  ha detto restano nei campi che l'estrazione ha riempito, per sempre, finché
+  qualcuno non svuota il cestino — e svuotare il cestino non è una cosa che
+  questa applicazione sappia fare. Chi vuole che spariscano anche quelle oggi non
+  ha nessun gesto da premere. È il rovescio esatto della scelta scritta sopra: il
+  testo è recuperabile perché costa denaro rigenerarlo, e recuperabile vuol dire
+  che è ancora lì.
+- **L'opzione dà per scontato che i vocali siano uno.** `Procedure.recordings` è
+  uno a molti, ma oggi `persistProcedure` crea sempre una scheda nuova, quindi
+  due registrazioni non condividono mai un `procedureId` e il caso non si può
+  presentare. Si presenterà il giorno in cui arriverà la risposta a
+  `DUPLICATO_SOSPETTO` — «aggiorna quella esistente», che oggi nessuna rotta
+  implementa — perché allora un secondo vocale punterà a una scheda già nata, e
+  «il vocale e la scheda» premuto su uno dei due manderà in archivio una
+  procedura che anche l'altro aveva prodotto, lasciandolo lì a puntare al
+  cestino. Non c'è nessun controllo che lo impedisca, e nessuna schermata che
+  avverta che i vocali erano due: chi scriverà quella rotta deve saperlo, ed è
+  scritto qui perché non c'è un test che glielo dica.
 - **La CI non ferma un deploy.** I test girano a ogni push, ma Railway e Netlify
   costruiscono ciò che sta su `master` appena ci arriva, senza chiedere niente a
   GitHub: un rosso è una notifica, non un cancello. Farlo diventare un cancello

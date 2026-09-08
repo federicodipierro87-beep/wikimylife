@@ -124,11 +124,28 @@ export interface RecordingFailure {
  * chiave dell'audio, che dopo il DELETE non e' piu' leggibile da nessuna parte.
  * Restituirla insieme all'esito e' l'unico modo di non doverla rileggere prima,
  * sperando che nel frattempo non cambi.
+ *
+ * `schedaArchiviata` e' l'id della scheda portata via insieme, e `null` copre
+ * tre casi che al chiamante non servono distinti: non era stato chiesto, quella
+ * registrazione non aveva prodotto niente, o la scheda non c'era piu'. Non e'
+ * un valore su cui decidere — la risposta HTTP e' 204 in tutti e quattro i
+ * casi — ma e' l'unico punto in cui quell'id passa ancora, e un registro che
+ * dice *quale* scheda e' finita nel cestino e' l'unica traccia che resta di una
+ * richiesta che ha toccato due tabelle.
  */
 export type DeleteRecordingOutcome =
-  | { readonly kind: "CANCELLATA"; readonly audioUrl: string }
+  | {
+      readonly kind: "CANCELLATA";
+      readonly audioUrl: string;
+      readonly schedaArchiviata: string | null;
+    }
   | { readonly kind: "ASSENTE" }
   | { readonly kind: "IN_LAVORAZIONE" };
+
+/** Cosa fare della scheda nata da questa registrazione. */
+export interface DeleteRecordingOptions {
+  readonly archiviaLaScheda: boolean;
+}
 
 export interface RecordingRepository {
   create(input: CreateRecordingInput): Promise<RecordingDetail>;
@@ -225,8 +242,27 @@ export interface RecordingRepository {
    * non esiste piu'. Gli altri stati si cancellano tutti, ESTRATTO compreso —
    * la scheda derivata sopravvive, ed e' proprio il caso di chi vuole tenere la
    * procedura e non l'audio.
+   *
+   * Con `archiviaLaScheda` sopravvive nel cestino invece che nella lista: la
+   * scheda passa ad ARCHIVIATA **nella stessa transazione** della cancellazione.
+   * Insieme e non in fila, e la ragione e' che le due operazioni non sono
+   * annullabili allo stesso modo. In fila esisterebbe sempre un ordine
+   * sbagliato: cancellare prima e archiviare poi lascia, se la seconda fallisce,
+   * una voce persa per sempre e una scheda che l'utente credeva via; archiviare
+   * prima e cancellare poi lascia, se la seconda fallisce con il 409 del worker,
+   * una scheda finita nel cestino per una richiesta che ha risposto errore.
+   * Nella stessa transazione non c'e' un ordine sbagliato perche' non c'e' un
+   * mezzo risultato.
+   *
+   * Se la registrazione non ha prodotto nessuna scheda l'opzione non fa niente,
+   * e non e' un caso da segnalare: e' la risposta esatta a «togli anche cio' che
+   * ne e' derivato» quando non ne e' derivato niente.
    */
-  deleteForUser(userId: string, id: string): Promise<DeleteRecordingOutcome>;
+  deleteForUser(
+    userId: string,
+    id: string,
+    opzioni: DeleteRecordingOptions,
+  ): Promise<DeleteRecordingOutcome>;
 
   /**
    * Quali di queste chiavi sono ancora nominate da una riga.

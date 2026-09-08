@@ -128,8 +128,24 @@ export interface RecordingsService {
   /** I byte originali, per il player in fondo alla scheda (§ Fase 4). */
   audio(userId: string, id: string): Promise<UploadedAudio>;
   /** Cancella riga e audio. Rifiuta finche' un worker la sta elaborando. */
-  remove(userId: string, id: string): Promise<void>;
+  remove(userId: string, id: string, opzioni?: RemoveRecordingOptions): Promise<void>;
 }
+
+/**
+ * Cosa fare, oltre alla voce, di cio' che quella voce ha prodotto.
+ *
+ * Opzionale e con il falso per difetto, e non e' timidezza verso una funzione
+ * nuova: cancellare la registrazione e tenere la scheda e' un caso legittimo —
+ * e' chi vuole la procedura ma non la propria voce dentro il bucket — ed e'
+ * l'unica cosa che questa rotta abbia mai fatto. Chi la chiamava prima
+ * continua a ottenere cio' che otteneva.
+ */
+export interface RemoveRecordingOptions {
+  readonly ancheLaScheda: boolean;
+}
+
+/** Cio' che si intende quando non si dice niente. */
+const SOLO_LA_VOCE: RemoveRecordingOptions = { ancheLaScheda: false };
 
 export interface RecordingsServiceDeps {
   readonly repo: RecordingRepository;
@@ -150,6 +166,17 @@ export interface RecordingsServiceDeps {
    * fattura.
    */
   readonly onOrphanedAudio?: ((info: { key: string; error: unknown }) => void) | undefined;
+  /**
+   * Una cancellazione si e' portata via anche una scheda.
+   *
+   * L'unico posto in cui quella coppia di id compare ancora: la riga che li
+   * teneva insieme non c'e' piu', e la scheda archiviata non porta scritto da
+   * dove sia arrivata la richiesta. Senza questa riga di registro, la domanda
+   * «perche' questa procedura e' nel cestino» non ha risposta da nessuna parte.
+   */
+  readonly onCardArchived?:
+    | ((info: { recordingId: string; procedureId: string }) => void)
+    | undefined;
 }
 
 export function createRecordingsService(deps: RecordingsServiceDeps): RecordingsService {
@@ -251,9 +278,22 @@ export function createRecordingsService(deps: RecordingsServiceDeps): Recordings
      * Cadendo dopo il DELETE resta un oggetto che nessuno riferisce piu': la
      * stessa perdita della creazione interrotta, e la stessa raccolta che
      * ancora non c'e'.
+     *
+     * `ancheLaScheda` non aggiunge un secondo passo qui: lo aggiunge dentro la
+     * transazione del repository, accanto alla DELETE. Farlo qui avrebbe voluto
+     * dire scegliere fra archiviare prima di cancellare — e mettere nel cestino
+     * la scheda di chi poi si sente rispondere 409 — e archiviare dopo, cioe'
+     * dopo l'unica operazione che non si annulla. Nessuno dei due e' l'ordine
+     * giusto, perche' il problema non era l'ordine.
      */
-    async remove(userId: string, id: string): Promise<void> {
-      const esito = await repo.deleteForUser(userId, id);
+    async remove(
+      userId: string,
+      id: string,
+      opzioni: RemoveRecordingOptions = SOLO_LA_VOCE,
+    ): Promise<void> {
+      const esito = await repo.deleteForUser(userId, id, {
+        archiviaLaScheda: opzioni.ancheLaScheda,
+      });
 
       if (esito.kind === "ASSENTE") {
         throw AppError.notFound("Registrazione non trovata");
@@ -265,6 +305,10 @@ export function createRecordingsService(deps: RecordingsServiceDeps): Recordings
         throw AppError.conflict(
           "Registrazione in elaborazione: riprova quando ha finito",
         );
+      }
+
+      if (esito.schedaArchiviata !== null) {
+        deps.onCardArchived?.({ recordingId: id, procedureId: esito.schedaArchiviata });
       }
 
       // Un fallimento qui non si propaga all'utente. La riga non c'e' piu',

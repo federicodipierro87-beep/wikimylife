@@ -1,4 +1,5 @@
 import {
+  CardStatus,
   RecordingStatus,
   Scope,
   Visibility,
@@ -8,6 +9,7 @@ import {
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   CreateRecordingInput,
+  DeleteRecordingOptions,
   DeleteRecordingOutcome,
   PersistProcedureInput,
   RecordingDetail,
@@ -492,30 +494,61 @@ export class PrismaRecordingRepository implements RecordingRepository {
     return this.findForUser(userId, id);
   }
 
-  async deleteForUser(userId: string, id: string): Promise<DeleteRecordingOutcome> {
-    // La chiave si legge prima perche' dopo non c'e' piu' nessuno a cui
-    // chiederla. Non serve una transazione: `audioUrl` si scrive alla creazione
-    // e nessuna rotta la tocca, quindi fra questa `SELECT` e la `DELETE` non
-    // puo' diventare un'altra.
-    const row = await this.#prisma.recording.findFirst({
-      where: { id, userId },
-      select: { audioUrl: true },
-    });
-    if (row === null) {
-      return { kind: "ASSENTE" };
-    }
+  async deleteForUser(
+    userId: string,
+    id: string,
+    opzioni: DeleteRecordingOptions,
+  ): Promise<DeleteRecordingOutcome> {
+    // Una transazione, e non tre statement in fila come prima che l'opzione
+    // esistesse. Per i primi due non servirebbe ancora: `audioUrl` si scrive
+    // alla creazione e nessuna rotta la tocca, quindi fra la SELECT e la DELETE
+    // non puo' diventare un'altra. Serve per il terzo, che sta su un'altra
+    // tabella: l'archiviazione della scheda e la cancellazione della riga
+    // devono riuscire o fallire insieme, altrimenti esiste un ordine in cui il
+    // guasto lascia una voce cancellata e una scheda ancora in lista, e per
+    // quella meta' non c'e' nessun modo di tornare indietro.
+    return this.#prisma.$transaction(async (tx) => {
+      const row = await tx.recording.findFirst({
+        where: { id, userId },
+        select: { audioUrl: true, procedureId: true },
+      });
+      if (row === null) {
+        return { kind: "ASSENTE" };
+      }
 
-    // `deleteMany` con lo stato nel WHERE, non `delete` dopo un `if`: fra la
-    // lettura e la cancellazione un worker puo' aver reclamato la riga, e la
-    // condizione deve valere nel momento in cui si cancella, non un istante
-    // prima. E' lo stesso compare-and-swap di `claim`, al contrario.
-    const deleted = await this.#prisma.recording.deleteMany({
-      where: { id, userId, status: { not: RecordingStatus.IN_ELABORAZIONE } },
+      // `deleteMany` con lo stato nel WHERE, non `delete` dopo un `if`: fra la
+      // lettura e la cancellazione un worker puo' aver reclamato la riga, e la
+      // condizione deve valere nel momento in cui si cancella, non un istante
+      // prima. E' lo stesso compare-and-swap di `claim`, al contrario.
+      const deleted = await tx.recording.deleteMany({
+        where: { id, userId, status: { not: RecordingStatus.IN_ELABORAZIONE } },
+      });
+      if (deleted.count === 0) {
+        return { kind: "IN_LAVORAZIONE" };
+      }
+
+      if (!opzioni.archiviaLaScheda || row.procedureId === null) {
+        return { kind: "CANCELLATA", audioUrl: row.audioUrl, schedaArchiviata: null };
+      }
+
+      // `updateMany` e con lo `userId` nel WHERE, come in
+      // `PrismaProcedureRepository.archive`: l'id della scheda arriva da una
+      // riga di questo utente, quindi la condizione e' gia' vera, ma e' la
+      // regola di ownership del progetto e vale anche dove sembra ridondante.
+      // `count` a zero non e' un errore — la scheda puo' essere stata cancellata
+      // altrove — e non deve far tornare indietro la cancellazione dell'audio,
+      // che e' cio' che l'utente ha chiesto per primo.
+      const archiviate = await tx.procedure.updateMany({
+        where: { id: row.procedureId, userId },
+        data: { status: CardStatus.ARCHIVIATA },
+      });
+
+      return {
+        kind: "CANCELLATA",
+        audioUrl: row.audioUrl,
+        schedaArchiviata: archiviate.count === 0 ? null : row.procedureId,
+      };
     });
-    if (deleted.count === 0) {
-      return { kind: "IN_LAVORAZIONE" };
-    }
-    return { kind: "CANCELLATA", audioUrl: row.audioUrl };
   }
 
   async findExistingAudioKeys(keys: readonly string[]): Promise<ReadonlySet<string>> {
