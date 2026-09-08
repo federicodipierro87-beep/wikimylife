@@ -137,6 +137,30 @@ model RefreshToken {
   @@index([expiresAt])
 }
 
+/// Il limite dei tentativi sulle rotte con credenziali, una riga per finestra.
+///
+/// Sta nel database e non nella memoria del processo perche' un conteggio per
+/// processo non e' un limite: con due repliche vale il doppio, e un redeploy lo
+/// azzera. E' l'unico stato mutabile dell'API che due repliche debbano vedere
+/// uguale, ed e' anche il motivo per cui questa tabella non somiglia alle altre
+/// — non e' una registrazione di qualcosa che e' successo, e' un contatore.
+///
+/// Nessuna relazione con `User`: si conta per IP e per rotta, non per email, e
+/// quando il conteggio serve non si sa ancora se l'utente esista. Si veda
+/// `http/middleware/rateLimit.ts`.
+model RateLimitBucket {
+  /// «{ip} {metodo} {rotta}», composta dal middleware. Chiave primaria perche'
+  /// e' su questa che l'INSERT fa `ON CONFLICT`, ed e' quel conflitto a rendere
+  /// atomico l'incremento fra repliche.
+  key     String   @id
+  count   Int
+  /// Istante in cui la finestra si chiude e il conteggio riparte da uno.
+  resetAt DateTime
+
+  /// Per la pulizia, che cancella per intervallo e non per chiave.
+  @@index([resetAt])
+}
+
 model Recording {
   id     String @id @default(cuid())
   userId String

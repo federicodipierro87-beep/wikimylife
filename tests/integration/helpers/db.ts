@@ -60,6 +60,11 @@ const TABLES = [
   "Procedure",
   "Tag",
   "RefreshToken",
+  // Senza genitori e senza figli: non e' legata a `User` perche' si conta per
+  // IP, e quando si conta non si sa ancora chi stia bussando. Sta qui perche'
+  // adesso il limite dei tentativi vive nel database, e un test che consumasse
+  // il proprio budget lo lascerebbe consumato per il file successivo.
+  "RateLimitBucket",
   "User",
 ] as const;
 

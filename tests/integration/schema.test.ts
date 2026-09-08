@@ -237,6 +237,40 @@ describe("vincoli che il dominio da' per scontati", () => {
     expect(rows.map((r) => r.indexname)).toContain("RefreshToken_tokenHash_key");
   });
 
+  it("la chiave del limite dei tentativi e' la primary key, non un indice qualsiasi", async () => {
+    // `INSERT ... ON CONFLICT ("key")` non compila senza un vincolo di unicita'
+    // su quella colonna: se `key` diventasse un indice normale, l'atomicita' del
+    // conteggio non degraderebbe in silenzio — smetterebbe proprio di partire.
+    // Ma il vincolo e' anche cio' che impedisce due righe per la stessa chiave,
+    // e quello si', si perderebbe senza rumore.
+    const rows = await prisma.$queryRaw<{ constraint_type: string }[]>`
+      SELECT tc.constraint_type
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu
+        ON kcu.constraint_name = tc.constraint_name
+      WHERE tc.table_schema = 'public'
+        AND tc.table_name = 'RateLimitBucket'
+        AND kcu.column_name = 'key'
+    `;
+
+    expect(rows.map((r) => r.constraint_type)).toContain("PRIMARY KEY");
+  });
+
+  it("RateLimitBucket ha l'indice su resetAt, per la pulizia", async () => {
+    // La DELETE della pulizia filtra su `resetAt <= adesso` e gira su tutta la
+    // tabella. Senza indice sarebbe una scansione completa ogni cinquecento
+    // richieste, dentro una richiesta di login: nessun test fallirebbe, e il
+    // costo si vedrebbe solo il giorno in cui la tabella e' grande.
+    const rows = await prisma.$queryRaw<{ indexdef: string }[]>`
+      SELECT indexdef FROM pg_indexes
+      WHERE schemaname = 'public'
+        AND tablename = 'RateLimitBucket'
+        AND indexname = 'RateLimitBucket_resetAt_idx'
+    `;
+
+    expect(rows[0]?.indexdef).toContain("resetAt");
+  });
+
   it("Recording ha l'indice del polling, e comprende il backoff [D3][D11]", async () => {
     // Composto e non due indici separati: `claimNext` filtra sulle due colonne
     // insieme, e `(status)` resta servito da `(status, nextAttemptAt)` come
@@ -305,6 +339,7 @@ describe("storia delle migration", () => {
       "20260902165725_recording_dedup",
       "20260903100000_procedure_fulltext",
       "20260906120000_recording_next_attempt_at",
+      "20260907100000_rate_limit_bucket",
     ]);
     expect(rows.every((r) => r.finished_at !== null && r.rolled_back_at === null)).toBe(true);
   });

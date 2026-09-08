@@ -1466,12 +1466,12 @@ fallisce.
 ### Il limite dei tentativi
 
 `POST /api/auth/signup`, `/login` e `/refresh` passano da
-`apps/api/src/http/middleware/rateLimit.ts`: finestra fissa, in memoria del
-processo, **dieci tentativi al minuto per IP e per rotta** di default
-(`AUTH_RATE_LIMIT_MAX`, `AUTH_RATE_LIMIT_WINDOW_SEC`). Oltre il limite è un `429`
-con `error.code: "RATE_LIMITED"`, `Retry-After`, e le tre `RateLimit-*` — che ci
-sono anche quando la richiesta passa, così un client attento rallenta da solo
-invece di scoprire il muro sbattendoci.
+`apps/api/src/http/middleware/rateLimit.ts`: finestra fissa, **dieci tentativi al
+minuto per IP e per rotta** di default (`AUTH_RATE_LIMIT_MAX`,
+`AUTH_RATE_LIMIT_WINDOW_SEC`). Oltre il limite è un `429` con
+`error.code: "RATE_LIMITED"`, `Retry-After`, e le tre `RateLimit-*` — che ci sono
+anche quando la richiesta passa, così un client attento rallenta da solo invece
+di scoprire il muro sbattendoci.
 
 Quattro decisioni, e il perché:
 
@@ -1486,11 +1486,9 @@ Quattro decisioni, e il perché:
   più preciso e regala due cose a chi attacca: la possibilità di chiudere fuori
   un utente vero bombardando il suo indirizzo, e la possibilità di distribuire i
   tentativi su indirizzi email diversi senza mai toccare il limite.
-- **In memoria, non su Redis.** Redis sarebbe un quarto servizio, un'altra
-  variabile e un altro modo di rompersi, per proteggere l'account di una persona.
-  Il prezzo è scritto: con più repliche il limite effettivo è
-  `AUTH_RATE_LIMIT_MAX × repliche`. Con una replica — che è la configurazione —
-  è esatto.
+- **Su Postgres, non su Redis e non in memoria.** Redis sarebbe un quarto
+  servizio, un'altra variabile e un altro modo di rompersi, per proteggere
+  l'account di una persona. Postgres c'è già, e il conteggio ci sta in una riga.
 
 `/logout` e `/me` non sono limitati. Il primo non regala niente a chi lo martella;
 il secondo sta già dietro `requireAuth`, e limitarlo significherebbe rompere
@@ -1499,6 +1497,56 @@ l'app in mano a un utente legittimo che ricarica.
 Le voci scadute si eliminano ogni 500 richieste, dentro la richiesta stessa: un
 `setInterval` terrebbe vivo l'event loop e un processo che non muore su `SIGTERM`
 viene ucciso dalla piattaforma dopo il timeout, ogni singolo deploy.
+
+#### Una riga, e una sola istruzione
+
+I conteggi stanno in `RateLimitBucket`: `key` (l'IP più la rotta), `count`,
+`resetAt`. Una riga per finestra aperta, che sparisce con la pulizia. Non serve
+nessuna variabile d'ambiente nuova: il deposito è `DATABASE_URL`, che c'era già.
+
+La cosa che conta non è la tabella, è l'istruzione. La versione ovvia —
+leggi la riga, decidi il numero nuovo, scrivilo — ha tre viaggi, e fra il primo e
+il terzo passa altra gente: venti richieste in parallelo leggono quasi tutte lo
+stesso conteggio e scrivono quasi tutte lo stesso numero. Il limitatore si
+lascerebbe scavalcare esattamente da chi manda tante richieste insieme, cioè
+nell'unico momento in cui serve. Non è teoria: `tests/integration` ha visto un
+deposito ingenuo arrivare a **1** su venti tentativi simultanei, diciannove persi.
+
+Quello vero è un `INSERT ... ON CONFLICT ("key") DO UPDATE` con dentro un `CASE`
+che decide se la finestra è scaduta, e un `RETURNING` che riporta il conteggio
+appena scritto. Un viaggio solo, e Postgres prende il lock sulla riga: venti
+richieste simultanee contano da 1 a 20, nessun numero saltato e nessuno
+ripetuto. È il test che giustifica la complessità del `CASE`.
+
+#### Se Postgres non risponde, si passa
+
+Il deposito ora può fallire, e la scelta è **lasciare passare** e scriverlo nel
+log — non rispondere `503`. La ragione è che le rotte protette hanno bisogno del
+database comunque: `/login` deve leggere `User` per verificare una password. Se
+Postgres è giù, nella finestra in cui il limite manca non c'è niente da forzare —
+tutte quelle richieste falliscono lo stesso, più a valle. Negare l'accesso in
+quel momento significherebbe solo trasformare un guasto del database in
+un'indisponibilità più larga di quella che è già.
+
+Quando succede, il limitatore **non dichiara le `RateLimit-*`**: non sa a che
+punto sia il conteggio, e un `RateLimit-Remaining` inventato è peggio di uno
+assente. La pulizia periodica che fallisce viene ingoiata allo stesso modo: è
+manutenzione, e non deve far cadere la richiesta di chi passava di lì.
+
+#### La stessa regola scritta due volte
+
+L'aritmetica della finestra ora esiste in due posti: dentro il `CASE` in SQL, e
+in `tests/support/InMemoryRateLimitStore.ts` per i test che girano senza Docker.
+Due scritture della stessa regola divergono, e questa divergerebbe in silenzio —
+il `429` continuerebbe a uscire, e nessuno si accorgerebbe che la finestra non si
+riapre più.
+
+Perciò le regole stanno scritte una volta sola, in
+`tests/support/rateLimitStoreContract.ts`, e girano contro entrambe: `npm test`
+le passa la Map, `npm run test:integration` le passa Postgres. Quello che solo
+Postgres può avere — l'atomicità, e due depositi sullo stesso database che sono
+lo stesso deposito — sta nel file di integrazione, perché chiedere alla Map di
+dimostrarlo sarebbe chiederle di mentire.
 
 ### `TRUST_PROXY_HOPS`, senza cui niente di tutto questo conta
 
@@ -1697,10 +1745,11 @@ Non installate, e il perché:
 
 ## Cosa non c'è ancora, e si sa
 
-- **Il limite dei tentativi sta in memoria del processo.** Con una replica è
-  esatto; con `n` repliche il limite effettivo è `AUTH_RATE_LIMIT_MAX × n`, e un
-  riavvio azzera i conteggi. Un attacco lento e paziente resta possibile: questo
-  ferma la forza bruta, non chi prova dieci password al minuto per un mese.
+- **Il limite dei tentativi ferma la forza bruta, non la pazienza.** Adesso il
+  conteggio è condiviso, quindi le repliche e i riavvii non lo diluiscono più; la
+  finestra fissa resta però una finestra fissa, e chi prova dieci password al
+  minuto per un mese non incontra mai il muro. Fermarlo vorrebbe dire contare per
+  account e su giorni, cioè un'altra cosa da questa.
 - **Il refresh token vive 30 giorni, l'access token 15 minuti.** Un access token
   già emesso resta valido fino alla scadenza anche dopo la revoca della famiglia:
   invalidarlo richiederebbe una lettura del database a ogni richiesta, cioè

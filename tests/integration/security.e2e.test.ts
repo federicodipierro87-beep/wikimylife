@@ -13,10 +13,17 @@ import { call, startTestServer, type TestServer } from "./helpers/server.js";
  * intestazioni sopravvivano al viaggio, e che il middleware sia montato sulle
  * rotte giuste e non su tutte.
  *
- * Ogni test parte da un server nuovo perche' il limitatore tiene i conteggi in
- * memoria di processo: `resetDatabase()` non li tocca, e un test che consumasse
- * il budget lo lascerebbe consumato per il successivo. Con `max` basso il costo
- * e' qualche login in piu', non qualche secondo di attesa.
+ * I conteggi stanno in `RateLimitBucket`, e `resetDatabase()` la svuota insieme
+ * al resto: e' quella riga in `helpers/db.ts` a rendere indipendenti i casi qui
+ * sotto, non il server nuovo. Il server nuovo serve a un'altra cosa — montare
+ * il middleware con `max` a tre invece che a diecimila — e con `max` basso il
+ * costo di provare il superamento e' qualche login in piu', non qualche secondo
+ * di attesa.
+ *
+ * Che il conteggio ora viaggi nel database non cambia niente per questi test, e
+ * questa e' esattamente la proprieta' che devono continuare a mostrare: le
+ * intestazioni, il 429 e le rotte protette sono le stesse di prima. Il deposito
+ * in se' lo prova `tests/integration/rateLimitStore.test.ts`.
  */
 
 const EMAIL = "limite@wikimylife.test";

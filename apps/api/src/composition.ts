@@ -15,6 +15,7 @@ import { Argon2PasswordHasher } from "./infra/Argon2PasswordHasher.js";
 import { JoseTokenIssuer } from "./infra/JoseTokenIssuer.js";
 import { PrismaAuthRepository } from "./infra/PrismaAuthRepository.js";
 import { PrismaProcedureRepository } from "./infra/PrismaProcedureRepository.js";
+import { PrismaRateLimitStore } from "./infra/PrismaRateLimitStore.js";
 import { PrismaRecordingRepository } from "./infra/PrismaRecordingRepository.js";
 import { SystemClock } from "./infra/SystemClock.js";
 import { createLogger, type Logger } from "./logger.js";
@@ -220,6 +221,13 @@ export function compose(config: AppConfig, overrides?: {
     config: config.auth,
   });
 
+  // Sullo stesso `prisma` di tutto il resto, e quindi sullo stesso database:
+  // e' l'unico modo perche' due repliche dell'API contino gli stessi tentativi.
+  // Non passa da `AuthService` perche' non e' autenticazione — il limite si
+  // applica prima di sapere chi stia bussando, e a `/signup` anche quando non
+  // c'e' ancora nessuno.
+  const rateLimitStore = new PrismaRateLimitStore(prisma);
+
   const providers = buildProviders(config);
   const recordingRepo = new PrismaRecordingRepository(prisma);
 
@@ -309,6 +317,7 @@ export function compose(config: AppConfig, overrides?: {
     // sviluppatore per un anno. Si veda securityHeaders.ts.
     hsts: config.nodeEnv === "production",
     authRateLimit: config.auth.rateLimit,
+    rateLimitStore,
     trustProxyHops: config.trustProxyHops,
   });
 

@@ -11,6 +11,7 @@ import { createProceduresRouter } from "./routes/procedures.routes.js";
 import { createRecordingsRouter } from "./routes/recordings.routes.js";
 import { createSearchRouter } from "./routes/search.routes.js";
 import type { AuthService } from "./services/auth.service.js";
+import type { RateLimitStore } from "./services/ports/RateLimitStore.js";
 import type { ProceduresService } from "./services/procedures.service.js";
 import type { RecordingsService } from "./services/recordings.service.js";
 import type { SearchService } from "./services/search.service.js";
@@ -46,6 +47,15 @@ export interface AppDeps {
    * e argon2id e' lento apposta.
    */
   readonly authRateLimit: { readonly windowMs: number; readonly max: number };
+  /**
+   * Dove il limitatore tiene i conteggi.
+   *
+   * Iniettato e non costruito qui perche' e' l'unico stato mutabile dell'API
+   * che due repliche debbano vedere uguale, e quindi l'unico che non puo'
+   * nascere dentro `createApp`: nasce dove nasce il resto delle dipendenze
+   * persistenti, cioe' nella composizione.
+   */
+  readonly rateLimitStore: RateLimitStore;
   /**
    * Salti di proxy da scartare per arrivare all'IP del client.
    *
@@ -100,7 +110,18 @@ export function createApp(deps: AppDeps): Express {
       requireAuth: deps.requireAuth,
       // Quali rotte proteggere lo decide il router: sa lui quali portano
       // credenziali e quali no.
-      rateLimit: createRateLimit(deps.authRateLimit),
+      rateLimit: createRateLimit({
+        ...deps.authRateLimit,
+        store: deps.rateLimitStore,
+        // Il limitatore lascia passare quando il deposito non risponde, e senza
+        // questa riga lo farebbe in silenzio: un tetto spento e un tetto mai
+        // acceso si distinguono solo di qui.
+        onErrore: (error) => {
+          deps.logger.error("limite dei tentativi non applicato", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+      }),
     }),
   );
 
