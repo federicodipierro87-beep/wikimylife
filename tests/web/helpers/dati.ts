@@ -1,9 +1,15 @@
-import type {
-  AuthSession,
-  ProcedureDetail,
-  RecordingState,
-  RedactionProposal,
-  RedactionReport,
+import {
+  PROCEDURE_PAGE_SIZE,
+  SEARCH_PAGE_SIZE,
+  type AuthSession,
+  type ProcedureDetail,
+  type ProcedureList,
+  type ProcedureSummary,
+  type RecordingState,
+  type RedactionProposal,
+  type RedactionReport,
+  type SearchHit,
+  type SearchResult,
 } from "@wikimylife/shared";
 
 /**
@@ -48,18 +54,19 @@ export function unaRegistrazione(campi: Partial<RecordingState> = {}): Recording
 }
 
 /**
- * Una scheda completa e senza niente di notevole.
+ * Una riga dell'elenco: la scheda vista da fuori.
  *
- * Trentaquattro campi, di cui un test ne guarda due. Il predefinito e' la
- * scheda che non ha nessuno dei bollini: non obsoleta, senza dati sensibili,
- * `COMPLETA`, mai eseguita — cosi' un caso che vuole uno di quei riquadri lo
- * chiede, e chi legge sa che gli altri non ci sono per scelta e non per caso.
+ * Diciannove campi, e il predefinito e' quello senza nessuno dei bollini: non
+ * obsoleta, senza dati sensibili, `COMPLETA`, mai eseguita. Un caso che vuole
+ * uno di quei riquadri lo chiede, e chi legge sa che gli altri mancano per
+ * scelta e non per distrazione.
  *
- * Le liste sono vuote tranne `steps`, che ne ha uno: una scheda senza nemmeno
- * un passo non e' un caso limite interessante, e' una scheda che l'estrazione
- * non avrebbe mai prodotto.
+ * Sta prima di `unaScheda` perche' `unaScheda` la usa: `ProcedureDetail` e'
+ * `ProcedureSummary` piu' quindici campi, ed erano scritti due volte. Copiare
+ * significa che il giorno in cui il sommario prende un campo nuovo, meta' dei
+ * test lo hanno e meta' no — e nessuno sa quale meta' senza contarli.
  */
-export function unaScheda(campi: Partial<ProcedureDetail> = {}): ProcedureDetail {
+export function unaVoce(campi: Partial<ProcedureSummary> = {}): ProcedureSummary {
   return {
     id: "proc-1",
     titolo: "Richiedere il casellario giudiziale",
@@ -80,6 +87,24 @@ export function unaScheda(campi: Partial<ProcedureDetail> = {}): ProcedureDetail
     tag: [],
     createdAt: "2026-01-01T10:00:00.000Z",
     updatedAt: "2026-01-01T10:00:00.000Z",
+    ...campi,
+  };
+}
+
+/**
+ * Una scheda completa e senza niente di notevole.
+ *
+ * Trentaquattro campi, di cui un test ne guarda due. I primi diciannove sono
+ * quelli di `unaVoce`; qui si aggiungono solo i quindici che il dettaglio ha in
+ * piu'.
+ *
+ * Le liste sono vuote tranne `steps`, che ne ha uno: una scheda senza nemmeno
+ * un passo non e' un caso limite interessante, e' una scheda che l'estrazione
+ * non avrebbe mai prodotto.
+ */
+export function unaScheda(campi: Partial<ProcedureDetail> = {}): ProcedureDetail {
+  return {
+    ...unaVoce(),
     validitaEsito: null,
     luogoDettaglio: null,
     latitude: null,
@@ -114,6 +139,57 @@ export function unVocale(
     recordedAt: "2026-01-01T10:00:00.000Z",
     durationMs: 42_000,
     transcript: "Sono andato in Procura e ho chiesto il casellario",
+    ...campi,
+  };
+}
+
+/**
+ * Una pagina dell'elenco.
+ *
+ * `total` non ha un valore fisso come gli altri campi: quando il caso non lo
+ * scrive vale il numero di voci passate, cioe' «questa e' tutta la roba che
+ * c'e'». Un `total: 1` predefinito accanto a una lista di tre voci sarebbe una
+ * risposta che il server non manderebbe mai, e i test di paginazione
+ * ragionerebbero su un'aritmetica impossibile.
+ *
+ * Chi vuole la pagina di mezzo scrive `total` a mano, ed e' esattamente li' che
+ * il caso diventa interessante.
+ */
+export function unElenco(campi: Partial<ProcedureList> = {}): ProcedureList {
+  const items = campi.items ?? [unaVoce()];
+  return {
+    items,
+    total: items.length,
+    limit: PROCEDURE_PAGE_SIZE,
+    offset: 0,
+    ...campi,
+  };
+}
+
+/** Una scheda trovata dalla ricerca: la voce dell'elenco piu' il perche'. */
+export function unRisultato(campi: Partial<SearchHit> = {}): SearchHit {
+  return {
+    ...unaVoce(),
+    score: 0.5,
+    matchedBy: "TESTO",
+    ...campi,
+  };
+}
+
+/**
+ * Una risposta della ricerca.
+ *
+ * `hasMore: false` e `offset: 0` di predefinito, che e' il caso in cui la
+ * paginazione non si disegna affatto: chi la vuole la chiede, e nel caso si
+ * legge subito quale delle due cose l'ha fatta comparire.
+ */
+export function unaRicerca(campi: Partial<SearchResult> = {}): SearchResult {
+  return {
+    q: "casellario",
+    items: [unRisultato()],
+    limit: SEARCH_PAGE_SIZE,
+    offset: 0,
+    hasMore: false,
     ...campi,
   };
 }

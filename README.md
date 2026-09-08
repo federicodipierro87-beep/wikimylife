@@ -1034,9 +1034,9 @@ sezione. Il worker non ha altri test perché il suo entry point finisce con un
 `await main()`: entrambe le decisioni stanno in un modulo a parte esattamente
 per poter essere provate.
 
-**web** monta quattro schermate in `jsdom` e ne prova le proprietà, non
-l'aspetto. Non è una copertura: è l'elenco dei posti dove una regressione non
-produce nessun sintomo visibile.
+**web** monta sette fra schermate e pezzi di schermata in `jsdom` e ne prova le
+proprietà, non l'aspetto. Non è una copertura: è l'elenco dei posti dove una
+regressione non produce nessun sintomo visibile.
 
 Della schermata di redazione, che nessuna casella sia spuntata all'apertura —
 è la §9 alla lettera, e un valore iniziale diverso trasformerebbe la pagina in
@@ -1079,6 +1079,57 @@ stessa scheda si cancelli quello su cui si è premuto e non il primo della lista
 in prova a mano, perché un vocale sparisce comunque), e che dopo un `409` la
 scheda resti intera — nessuna sparizione ottimistica, o l'utente crederebbe di
 aver cancellato ciò che è ancora lì.
+
+Dell'elenco, il filtro di ambito e la paginazione. Né l'uno né l'altra si
+rompono in modo visibile: una schermata che sbaglia a paginare mostra una lista,
+che è esattamente ciò che ci si aspetta di vedere — solo che è la lista
+sbagliata, oppure è vuota. E una lista vuota, qui, ha già un significato scritto
+a schermo: «Qui non c'è ancora niente», che a chi ha ottanta procedure non dice
+«difetto di paginazione», dice «hai perso l'archivio». I casi guardano che
+passare a «Lavoro» dalla pagina due riparta dalla prima — restando all'offset 20
+si chiederebbe la seconda pagina di un ambito che ne ha tre in tutto, e la
+risposta vuota diventerebbe quella frase — che «Tutte» non si porti dietro
+l'ambito di prima, che «Precedenti» sia spento sulla prima pagina e «Successive»
+sull'ultima (accesi chiederebbero rispettivamente un offset negativo, che il
+server rifiuta, e una pagina vuota), che la barra resti però disegnata
+sull'ultima pagina, o da lì si tornerebbe indietro solo ricaricando, e che
+sparisca del tutto quando l'archivio sta in una pagina sola.
+
+Della ricerca, quante volte parte. Ogni ricerca calcola un embedding, cioè una
+chiamata a pagamento verso OpenAI, e i 300 ms di silenzio fra l'ultimo tasto e
+la partenza sono l'unica cosa che separa una parola scritta da una richiesta. Se
+sparissero, la schermata funzionerebbe *meglio* del solito — i risultati
+comparirebbero prima — e il conto arriverebbe a fine mese moltiplicato per nove:
+nessuna prova manuale lo vedrebbe. Il caso principale scrive «residenza» una
+lettera alla volta e conta le chiamate: una. Accanto, che una lettera sola non
+parta (il minimo dello schema condiviso è due, e mandarne una sarebbe un avviso
+rosso comparso mentre si scrive), che gli spazi intorno non entrino nella
+domanda, che svuotare il campo non faccia partire una ricerca vuota, e che
+cambiare domanda riparta dalla prima pagina — restare all'offset 20 farebbe
+scrivere «Non c'è altro per «passaporto»» a chi non ha ancora visto niente. Qui
+i gesti si mandano con `fireEvent` e non con `userEvent`: i due non si mescolano
+con i timer finti — React 18 pianifica su un `MessageChannel` che i timer finti
+non toccano — e in questo file i timer finti non sono negoziabili, perché il
+tempo *è* l'oggetto del test.
+
+Del player dell'audio, `revokeObjectURL`. Un object URL non revocato non si
+vede: la schermata è giusta, l'audio si sente, e intanto un blob di qualche
+megabyte resta in memoria finché la scheda del browser non si chiude — dieci
+schede aperte una dopo l'altra e su un telefono l'applicazione viene uccisa dal
+sistema, il che si racconta come «si chiude da sola» e non assomiglia a nessuna
+riga di codice. Lo sbaglio opposto, revocare troppo presto, lascia un `<audio>`
+con un `src` che non punta più a niente. Quindi i casi non contano le revoche:
+guardano *quando* avvengono e *quale* URL portano via. Che smontando si revochi
+esattamente quello creato, e non un momento prima; che cambiando registrazione
+il vecchio venga liberato invece di restare appeso sotto la scheda nuova; che
+aprire una scheda non scarichi niente finché nessuno lo chiede (§3: sempre
+accessibile, non sempre scaricato); e che il pulsante spento durante il download
+impedisca il secondo tocco, che scaricherebbe di nuovo gli stessi megabyte
+lasciando il primo blob in memoria senza che nessuno abbia più il suo URL per
+revocarlo. `URL.createObjectURL` e `URL.revokeObjectURL` non esistono in `jsdom`
+e vengono messe a mano: tengono l'elenco di ciò che hanno creato e revocato, che
+è l'unico modo di dire che l'URL revocato è *quello* — chiamarla il numero
+giusto di volte sull'oggetto sbagliato passerebbe qualunque conteggio.
 
 Il finto dell'API lancia su ogni metodo non insegnato, col proprio nome dentro:
 un finto che risponde a tutto con valori plausibili avrebbe fatto passare una
@@ -1952,14 +2003,16 @@ Non installate, e il perché:
   (`[nome 1]`, `[nome 2]`) avrebbe conservato la struttura e insieme un dato in
   più — quante persone distinte comparivano — che è esattamente ciò che una
   scheda condivisa non deve dire.
-- **Di schermate ne sono provate quattro.** Redazione, ingresso, registrazioni in
-  sospeso e la parte del dettaglio che cancella un vocale hanno i loro casi,
-  scelti perché lì una regressione non ha sintomi: il resto del dettaglio — i
-  badge, l'ordine delle sezioni, i tre pulsanti dell'esito — no. Le altre
-  schermate nemmeno, e la più scoperta è quella che nessun `jsdom` potrebbe
-  coprire: che
-  il pulsante di registrazione sia davvero collegato al microfono non lo dice
-  nessun test, perché `MediaRecorder` in un ambiente finto è un oggetto che
+- **Di schermate ne sono provate sette, e non è la stessa cosa di sette
+  schermate provate.** Redazione, ingresso, registrazioni in sospeso, elenco,
+  ricerca, player dell'audio e la parte del dettaglio che cancella un vocale
+  hanno i loro casi, scelti perché lì una regressione non ha sintomi. Non li ha
+  il resto: del dettaglio — i badge, l'ordine delle sezioni, i tre pulsanti
+  dell'esito — non c'è niente, e dell'elenco e della ricerca si prova cosa
+  chiedono al server e quali pulsanti sono spenti, non che le schede si vedano
+  per intero. La più scoperta resta quella che nessun `jsdom` potrebbe coprire:
+  che il pulsante di registrazione sia davvero collegato al microfono non lo
+  dice nessun test, perché `MediaRecorder` in un ambiente finto è un oggetto che
   finge. Lo dice solo premerlo su un telefono vero.
 - **I minuti che restano sono una stima, non una misura.** L'avviso sopra il
   pulsante di registrazione moltiplica lo spazio libero per una costante di byte
