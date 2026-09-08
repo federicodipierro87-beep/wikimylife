@@ -84,4 +84,44 @@ export interface AuthRepository extends FamilyRegistry {
 
   /** Revoca ogni token non ancora revocato della famiglia. Restituisce quanti. */
   revokeFamily(familyId: string, revokedAt: Date): Promise<number>;
+
+  /**
+   * Sostituisce la password e chiude ogni sessione dell'utente, insieme.
+   *
+   * ## Perche' e' un metodo solo
+   *
+   * Le due scritture sembrano indipendenti e non lo sono: la seconda e' cio'
+   * che rende vera la promessa della prima. Se fossero due chiamate, esiste una
+   * riga di codice fra l'una e l'altra in cui il processo puo' morire, e i due
+   * modi di morire non si equivalgono.
+   *
+   * Password cambiata, revoca mancata: chi era dentro ci resta, e la persona
+   * che ha appena cambiato password crede di averlo cacciato. E' il caso
+   * peggiore, perche' il danno e' silenzioso — non c'e' niente che glielo dica.
+   *
+   * Revoca fatta, password non cambiata: tutti fuori, la vecchia password
+   * ancora buona. E' fastidioso e visibile: si rientra, ci si accorge che non
+   * ha funzionato, si riprova.
+   *
+   * Una transazione toglie di mezzo la scelta fra i due. Se non ci fosse modo
+   * di averla, l'ordine giusto sarebbe comunque revoca-poi-password, cioe'
+   * quello che sbaglia dalla parte rumorosa.
+   *
+   * ## Perche' per utente e non per famiglia
+   *
+   * `revokeFamily` chiude una catena: e' il gesto giusto per «esci da questo
+   * telefono». Qui il gesto e' un altro — «non so piu' chi abbia questa
+   * password» — e una revoca che risparmiasse le altre sessioni lascerebbe in
+   * piedi esattamente quelle di cui si sospetta.
+   *
+   * Restituisce quante sessioni sono cadute: serve a chi chiama per dire
+   * all'utente quanti dispositivi ha appena scollegato, e ai test per
+   * distinguere «ha revocato tutto» da «non ha revocato niente e nessuno se ne
+   * accorge».
+   */
+  changePassword(input: {
+    readonly userId: string;
+    readonly passwordHash: string;
+    readonly revokedAt: Date;
+  }): Promise<number>;
 }

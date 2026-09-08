@@ -29,6 +29,7 @@ import {
   logoutResponseSchema,
   meResponseSchema,
   type AuthSession,
+  type ChangePasswordRequest,
   type HealthResponse,
   type LoginRequest,
   type MeResponse,
@@ -123,6 +124,20 @@ export interface ApiClient {
   /** Ruota esplicitamente. Di norma ci pensa il client da solo su 401. */
   refresh(): Promise<AuthSession>;
   logout(): Promise<void>;
+  /**
+   * Cambia la password e scollega ogni altro dispositivo.
+   *
+   * E' anche l'unico «esci da tutti» che ci sia: la revoca normale e' per
+   * sessione, questa e' per utente. La sessione da cui la si chiama sopravvive
+   * — i token nuovi tornano nella risposta e questo metodo li salva — quindi
+   * chi la usa non deve rifare login qui, ma deve rifarlo ovunque altro.
+   *
+   * Fallisce con `INVALID_CREDENTIALS` se `currentPassword` non e' quella
+   * giusta, e con `CONFLICT` se la nuova coincide con la vecchia. Nessuno dei
+   * due tocca la sessione in corso: sono errori del modulo, non della
+   * credenziale con cui si sta chiamando.
+   */
+  changePassword(input: ChangePasswordRequest): Promise<AuthSession>;
   getAccessToken(): string | null;
   restoreSession(): Promise<PublicUser | null>;
 
@@ -278,11 +293,26 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
     if (!response.ok) {
       const error = await toApiError(response);
+
+      /**
+       * Un 401 che parla del corpo, non della sessione.
+       *
+       * Su una rotta autenticata che accetta a sua volta una password —
+       * `/api/auth/password` — «credenziali non valide» significa «hai
+       * sbagliato a digitare», e il token con cui hai chiesto e' perfettamente
+       * vivo. Trattarlo come gli altri 401 farebbe due danni in fila: una
+       * rotazione inutile, e poi, al secondo rifiuto identico, la sessione
+       * svuotata. Cioe' chi sbaglia la password attuale verrebbe buttato fuori
+       * dall'account che stava proteggendo.
+       */
+      const sbagliatoIlCorpo = error.code === ErrorCode.INVALID_CREDENTIALS;
+
       const recoverable =
         opts.auth &&
         allowRetry &&
         response.status === 401 &&
-        error.code !== ErrorCode.TOKEN_REUSED;
+        error.code !== ErrorCode.TOKEN_REUSED &&
+        !sbagliatoIlCorpo;
 
       if (recoverable) {
         try {
@@ -295,7 +325,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         return execute(opts, false);
       }
 
-      if (opts.auth && response.status === 401) {
+      if (opts.auth && response.status === 401 && !sbagliatoIlCorpo) {
         await clear();
         options.onSessionExpired?.();
       }
@@ -422,6 +452,26 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         }
       }
       await clear();
+    },
+
+    async changePassword(input: ChangePasswordRequest): Promise<AuthSession> {
+      const session = await send(
+        {
+          method: "POST",
+          path: "/api/auth/password",
+          body: input,
+          schema: authSessionSchema,
+          auth: true,
+        },
+        // Con rotazione, come ogni altra chiamata autenticata. Ripetere non
+        // rischia di cambiare la password due volte: si ripete solo dopo un
+        // 401, e un 401 significa che la prima non ha cambiato niente. Il caso
+        // che questo salva e' banale e frequente — l'access token scade mentre
+        // si compila il modulo — e senza la rotazione finirebbe con l'utente
+        // buttato sulla schermata di ingresso e la password ancora vecchia.
+        true,
+      );
+      return persist(session);
     },
 
     getAccessToken(): string | null {

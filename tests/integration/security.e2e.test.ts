@@ -171,6 +171,35 @@ describe("limite dei tentativi", () => {
     expect(res.status).toBe(429);
   });
 
+  it("anche il cambio password e' limitato, pur essendo autenticato", async () => {
+    // E' l'unico posto in cui chi ha rubato un access token puo' indovinare la
+    // password online, ed e' l'unica rotta che paga due argon2 per richiesta.
+    // Il fatto che stia dietro `requireAuth` non la mette al riparo: la mette
+    // al riparo da chi non ha rubato niente.
+    for (let i = 0; i < 3; i += 1) {
+      await call(server, "POST", "/api/auth/password", {
+        body: { currentPassword: PASSWORD, newPassword: "un-altra-password-lunga" },
+      });
+    }
+
+    const quarto = await call(server, "POST", "/api/auth/password", {
+      body: { currentPassword: PASSWORD, newPassword: "un-altra-password-lunga" },
+    });
+    expect(quarto.status).toBe(429);
+  });
+
+  it("il cambio password non consuma il budget del login", async () => {
+    // Budget separati, come fra login e refresh: chi cambia password non deve
+    // ritrovarsi chiuso fuori dalla schermata di ingresso.
+    for (let i = 0; i < 4; i += 1) {
+      await call(server, "POST", "/api/auth/password", {
+        body: { currentPassword: PASSWORD, newPassword: "un-altra-password-lunga" },
+      });
+    }
+
+    expect((await login()).status).not.toBe(429);
+  });
+
   it("le rotte non autenticanti non sono limitate", async () => {
     // `/health` lo chiama l'host a intervalli fissi: limitarlo vorrebbe dire
     // far dichiarare morto il servizio a chi lo sorveglia.

@@ -111,6 +111,36 @@ export class PrismaAuthRepository implements AuthRepository {
     });
     return result.count;
   }
+
+  /**
+   * Le due scritture in una transazione sola: il motivo per cui devono stare
+   * insieme e' scritto sulla porta.
+   *
+   * `updateMany` sull'indice `userId` e non una `deleteMany`: le righe revocate
+   * sono la storia delle rotazioni, ed e' quella storia a far scattare la reuse
+   * detection quando un token rubato torna. Cancellarle trasformerebbe un riuso
+   * in un TOKEN_INVALID, cioe' in un 401 qualunque, e la famiglia non morirebbe
+   * piu' — proprio nel momento in cui e' piu' importante che muoia.
+   */
+  async changePassword(input: {
+    userId: string;
+    passwordHash: string;
+    revokedAt: Date;
+  }): Promise<number> {
+    return this.#prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: input.userId },
+        data: { passwordHash: input.passwordHash },
+      });
+
+      const revoked = await tx.refreshToken.updateMany({
+        where: { userId: input.userId, revokedAt: null },
+        data: { revokedAt: input.revokedAt },
+      });
+
+      return revoked.count;
+    });
+  }
 }
 
 export class RefreshTokenRotationConflict extends Error {

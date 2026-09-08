@@ -151,6 +151,27 @@ export class InMemoryAuthRepository implements AuthRepository {
     return false;
   }
 
+  async changePassword(input: {
+    readonly userId: string;
+    readonly passwordHash: string;
+    readonly revokedAt: Date;
+  }): Promise<number> {
+    const user = this.#users.get(input.userId);
+    if (user === undefined) {
+      throw new Error(`utente assente: ${input.userId}`);
+    }
+    this.#users.set(user.id, { ...user, passwordHash: input.passwordHash });
+
+    let revoked = 0;
+    for (const [id, token] of this.#tokens) {
+      if (token.userId === input.userId && token.revokedAt === null) {
+        this.#tokens.set(id, { ...token, revokedAt: input.revokedAt });
+        revoked += 1;
+      }
+    }
+    return revoked;
+  }
+
   async revokeFamily(familyId: string, revokedAt: Date): Promise<number> {
     let revoked = 0;
     for (const [id, token] of this.#tokens) {

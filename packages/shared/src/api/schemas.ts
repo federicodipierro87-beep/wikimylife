@@ -40,6 +40,29 @@ export const loginRequestSchema = z
   })
   .strict();
 
+/**
+ * Cambio password.
+ *
+ * `currentPassword` c'e' anche se la rotta sta dietro `requireAuth`: il token
+ * dice «questa e' una sessione aperta», non «di la' dallo schermo c'e' il
+ * proprietario». Senza questo campo, un telefono lasciato sbloccato per due
+ * minuti basterebbe a prendersi l'account, e la password ricordata a memoria
+ * smetterebbe di servire a qualcosa.
+ *
+ * Le due regole di lunghezza sono deliberatamente diverse. `currentPassword`
+ * segue `loginRequestSchema` — permissiva, perche' una password vecchia piu'
+ * corta di dodici caratteri esiste e deve poter essere digitata proprio nel
+ * momento in cui la si sta sostituendo; rifiutarla qui vorrebbe dire
+ * condannare quegli account a tenersela. `newPassword` segue `passwordSchema`,
+ * perche' cio' che entra da oggi rispetta la regola di oggi.
+ */
+export const changePasswordRequestSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(256),
+    newPassword: passwordSchema,
+  })
+  .strict();
+
 export const refreshRequestSchema = z
   .object({
     refreshToken: z.string().min(1),
@@ -97,6 +120,7 @@ export const healthResponseSchema = z
 
 export type SignupRequest = z.infer<typeof signupRequestSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
+export type ChangePasswordRequest = z.infer<typeof changePasswordRequestSchema>;
 export type RefreshRequest = z.infer<typeof refreshRequestSchema>;
 export type LogoutRequest = z.infer<typeof logoutRequestSchema>;
 export type PublicUser = z.infer<typeof publicUserSchema>;

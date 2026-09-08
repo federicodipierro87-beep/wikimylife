@@ -793,6 +793,46 @@ La famiglia e non l'utente, infine, perché le sessioni restano indipendenti:
 uscire dal telefono non deve buttare fuori dal portatile, e una revoca per
 account l'avrebbe fatto.
 
+Tranne una volta. C'è un gesto in cui la revoca per account è esattamente quella
+giusta, ed è cambiare password:
+
+```powershell
+# Fai login da due "dispositivi": due chiamate a /login, due famiglie diverse.
+# Poi, con l'access token del primo:
+curl.exe -X POST http://localhost:3000/api/auth/password `
+  -H "content-type: application/json" `
+  -H "authorization: Bearer <accessToken del PRIMO login>" `
+  -d "{\"currentPassword\":\"wikimylife-demo-2026\",\"newPassword\":\"una-password-piu-lunga\"}"
+#   → 200, e nel corpo una coppia di token NUOVA
+
+# Il refresh del SECONDO dispositivo, che non ha fatto niente di male:
+curl.exe -X POST http://localhost:3000/api/auth/refresh `
+  -H "content-type: application/json" -d "{\"refreshToken\":\"<refreshToken del SECONDO login>\"}"
+#   → 401 TOKEN_REUSED
+
+# Anche l'access token con cui hai appena chiamato è morto:
+curl.exe http://localhost:3000/api/auth/me -H "authorization: Bearer <quello di prima>"
+#   → 401 UNAUTHORIZED — ma la risposta del cambio te ne ha già dato uno nuovo
+```
+
+Chi cambia password lo fa quasi sempre per un motivo solo: sospetta che sia in
+giro. Una revoca che risparmiasse le altre sessioni lascerebbe in piedi
+esattamente quelle di cui si sospetta, e la persona che ha appena cambiato
+password crederebbe di aver chiuso la porta. Quindi qui cade tutto — e la
+password nuova e la revoca vengono scritte nella **stessa transazione**, perché
+dei due modi di fallire a metà uno è molto peggio dell'altro: password cambiata
+ma sessioni ancora aperte è un danno silenzioso, mentre sessioni chiuse e
+password ancora vecchia è un fastidio che si vede subito e si riprova.
+
+La sessione da cui parte la richiesta è l'unica che sopravvive, ed è per questo
+che la risposta contiene una coppia di token intera invece di un `{"ok":true}`:
+i token vecchi sono morti un istante fa, e questo è l'unico momento in cui si
+possono sostituire senza chiedere un secondo login. Sopravvive perché è l'unica
+di cui in quell'istante si sappia qualcosa — chi la usa ha appena dimostrato di
+conoscere la password. E `currentPassword` è obbligatoria anche se la rotta sta
+dietro `requireAuth`: il token dice «questa è una sessione aperta», non «di là
+dallo schermo c'è il proprietario».
+
 ### Un vocale che diventa una scheda, a mano
 
 Servono due terminali: `npm run dev:api` e `npm run dev:worker`. Con i provider
@@ -1672,7 +1712,7 @@ fallisce.
 
 ### Il limite dei tentativi
 
-`POST /api/auth/signup`, `/login` e `/refresh` passano da
+`POST /api/auth/signup`, `/login`, `/refresh` e `/password` passano da
 `apps/api/src/http/middleware/rateLimit.ts`: finestra fissa, **dieci tentativi al
 minuto per IP e per rotta** di default (`AUTH_RATE_LIMIT_MAX`,
 `AUTH_RATE_LIMIT_WINDOW_SEC`). Oltre il limite è un `429` con
@@ -1696,6 +1736,14 @@ Quattro decisioni, e il perché:
 - **Su Postgres, non su Redis e non in memoria.** Redis sarebbe un quarto
   servizio, un'altra variabile e un altro modo di rompersi, per proteggere
   l'account di una persona. Postgres c'è già, e il conteggio ci sta in una riga.
+
+`/password` è l'unica rotta limitata che sta anche dietro `requireAuth`, e le due
+cose non si contraddicono: è l'unico posto in cui chi ha rubato un access token
+può provare a indovinare la password online, ed è l'unica rotta che paga due
+argon2 per richiesta — una verifica e un hash — quindi martellarla costa alla CPU
+dell'API molto più che a chi la martella. Le finestre non si mescolano, perché la
+chiave contiene la rotta: un cambio password non consuma i tentativi di `/login`,
+e nessuno dei due può esaurire l'altro.
 
 `/logout` e `/me` non sono limitati. Il primo non regala niente a chi lo martella;
 il secondo sta già dietro `requireAuth`, e limitarlo significherebbe rompere
@@ -1969,13 +2017,20 @@ Non installate, e il perché:
   finestra fissa resta però una finestra fissa, e chi prova dieci password al
   minuto per un mese non incontra mai il muro. Fermarlo vorrebbe dire contare per
   account e su giorni, cioè un'altra cosa da questa.
-- **Si esce da una sessione per volta, e non c'è un "esci da tutti".** La revoca
-  ora è immediata — l'access token porta `fid` e muore insieme alla sua famiglia,
-  non quindici minuti dopo — ma è per catena, il che è giusto quando si chiude il
-  telefono e non basta quando si sospetta che la password sia in giro. Manca il
-  gesto che chiude tutte le famiglie di un utente in un colpo, e manca il suo
-  innesco naturale: cambiare password oggi non revoca niente, quindi chi è già
-  dentro ci resta. Sono due righe di servizio e una rotta, e non ci sono ancora.
+- **"Esci da tutti" esiste, ma solo attaccato al cambio password.** Chi sospetta
+  che la password sia in giro ha adesso il gesto che serve: `POST
+  /api/auth/password` riscrive la password e chiude ogni sessione dell'utente
+  nella stessa transazione, e le due cose stanno insieme perché separarle
+  ammetterebbe il caso peggiore — password cambiata, sessioni no, e la persona
+  che crede di aver cacciato l'intruso. Quello che manca è lo stesso gesto senza
+  la password: "scollega tutti i dispositivi" quando la password va bene ed è il
+  telefono a essere sparito. È la stessa riga di repository con un input diverso,
+  e non c'è.
+- **Nessuna schermata chiama il cambio password.** La rotta c'è, il client
+  tipizzato ha `changePassword`, i test coprono entrambi — ma `apps/web` non ha
+  una schermata di impostazioni dove metterlo, quindi oggi il cambio password si
+  fa con `curl`. È scritto qui e non nascosto: una funzione di sicurezza che
+  esiste solo per chi sa usare un terminale protegge quasi nessuno.
 - **Un access token emesso prima di questo cambiamento non vale più.** Non porta
   `fid`, quindi non è revocabile, quindi viene rifiutato invece di essere
   accettato "finché non scade" — una scorciatoia del genere non la toglie più

@@ -561,6 +561,170 @@ describe("logout", () => {
   });
 });
 
+describe("cambio password", () => {
+  const NUOVA = "una-password-nuova-lunga";
+
+  async function login(email = EMAIL, password = PASSWORD): Promise<{ status: number; body: unknown }> {
+    return call(server, "POST", "/api/auth/login", { body: { email, password } });
+  }
+
+  async function cambia(
+    accessToken: string,
+    body: unknown,
+  ): Promise<{ status: number; body: unknown }> {
+    return call(server, "POST", "/api/auth/password", { accessToken, body });
+  }
+
+  it("chiude ogni sessione dell'utente, su tutti i dispositivi", async () => {
+    // La differenza fra questo e il logout, in una riga: li' muore una catena,
+    // qui muoiono tutte. E' il gesto per quando non si sa piu' chi abbia la
+    // password, e risparmiare una sessione vorrebbe dire risparmiare proprio
+    // quella di cui si sospetta.
+    const telefono = await signup();
+    const portatile = authSessionSchema.parse((await login()).body);
+
+    const res = await cambia(telefono.accessToken, {
+      currentPassword: PASSWORD,
+      newPassword: NUOVA,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    expect((await refresh(portatile.tokens.refreshToken)).status).toBe(401);
+    expect(
+      (
+        await call(server, "GET", "/api/auth/me", {
+          accessToken: portatile.tokens.accessToken,
+        })
+      ).status,
+    ).toBe(401);
+  });
+
+  it("la sessione restituita apre, e quella con cui si e' chiamato no", async () => {
+    // I due lati dello stesso istante, e il motivo per cui la risposta contiene
+    // token e non un `ok`: la credenziale con cui il client ha chiesto e' morta
+    // nel momento in cui ha ottenuto risposta.
+    const prima = await signup();
+
+    const res = await cambia(prima.accessToken, {
+      currentPassword: PASSWORD,
+      newPassword: NUOVA,
+    });
+    const dopo = authSessionSchema.parse(res.body);
+
+    expect(
+      (await call(server, "GET", "/api/auth/me", { accessToken: dopo.tokens.accessToken })).status,
+    ).toBe(200);
+    expect((await refresh(dopo.tokens.refreshToken)).status).toBe(200);
+
+    expect(
+      (await call(server, "GET", "/api/auth/me", { accessToken: prima.accessToken })).status,
+    ).toBe(401);
+  });
+
+  it("le due scritture cadono insieme: password nuova e sessioni chiuse", async () => {
+    // La transazione, vista da fuori. Un cambio che avesse revocato senza
+    // scrivere la password lascerebbe passare il vecchio login; uno che avesse
+    // scritto senza revocare lascerebbe dentro chi c'era.
+    const session = await signup();
+    await call(server, "POST", "/api/auth/login", { body: { email: EMAIL, password: PASSWORD } });
+    await cambia(session.accessToken, { currentPassword: PASSWORD, newPassword: NUOVA });
+
+    // Prima di aprire altre sessioni: delle tre catene che esistevano — signup,
+    // login, e quella nata dal cambio — ne resta viva una sola, l'ultima.
+    // Contato sul database e non attraverso HTTP, perche' una revoca parziale
+    // si vedrebbe solo qui.
+    const vivi = await testPrisma().refreshToken.count({
+      where: { userId: session.userId, revokedAt: null },
+    });
+    expect(vivi).toBe(1);
+
+    expect((await login(EMAIL, NUOVA)).status).toBe(200);
+
+    const vecchio = await login(EMAIL, PASSWORD);
+    expect(vecchio.status).toBe(401);
+    expect(errorCode(vecchio.body)).toBe("INVALID_CREDENTIALS");
+  });
+
+  it("senza access token non si cambia niente", async () => {
+    const session = await signup();
+
+    const res = await call(server, "POST", "/api/auth/password", {
+      body: { currentPassword: PASSWORD, newPassword: NUOVA },
+    });
+
+    expect(res.status).toBe(401);
+    expect((await login(EMAIL, PASSWORD)).status).toBe(200);
+    expect((await refresh(session.refreshToken)).status).toBe(200);
+  });
+
+  it("con la password attuale sbagliata non revoca niente", async () => {
+    // Il caso che trasformerebbe un access token rubato in un pulsante "butta
+    // fuori il proprietario": se il rifiuto arrivasse dopo la revoca, chi non
+    // sa la password potrebbe comunque scollegare tutti gli altri dispositivi.
+    const session = await signup();
+
+    const res = await cambia(session.accessToken, {
+      currentPassword: "non-e-quella-giusta",
+      newPassword: NUOVA,
+    });
+
+    expect(res.status).toBe(401);
+    expect(errorCode(res.body)).toBe("INVALID_CREDENTIALS");
+    expect((await refresh(session.refreshToken)).status).toBe(200);
+    expect((await login(EMAIL, PASSWORD)).status).toBe(200);
+  });
+
+  it("rifiuta la stessa password con CONFLICT, e lascia tutto in piedi", async () => {
+    const session = await signup();
+
+    const res = await cambia(session.accessToken, {
+      currentPassword: PASSWORD,
+      newPassword: PASSWORD,
+    });
+
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("CONFLICT");
+    expect((await refresh(session.refreshToken)).status).toBe(200);
+  });
+
+  it("rifiuta una password nuova troppo corta prima di guardare la vecchia", async () => {
+    const session = await signup();
+
+    const res = await cambia(session.accessToken, {
+      currentPassword: PASSWORD,
+      newPassword: "corta",
+    });
+
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
+    expect((await refresh(session.refreshToken)).status).toBe(200);
+  });
+
+  it("non tocca le sessioni di un altro utente", async () => {
+    const mio = await signup();
+    const altro = await signup("altro@wikimylife.test");
+
+    await cambia(mio.accessToken, { currentPassword: PASSWORD, newPassword: NUOVA });
+
+    expect(
+      (await call(server, "GET", "/api/auth/me", { accessToken: altro.accessToken })).status,
+    ).toBe(200);
+    expect((await refresh(altro.refreshToken)).status).toBe(200);
+  });
+
+  it("le righe revocate restano: la reuse detection ha ancora di che accorgersi", async () => {
+    // Se il cambio password cancellasse invece di revocare, un refresh token
+    // rubato prima del cambio tornerebbe come TOKEN_INVALID — un 401 qualunque
+    // — invece di far scattare la revoca di famiglia.
+    const session = await signup();
+    await cambia(session.accessToken, { currentPassword: PASSWORD, newPassword: NUOVA });
+
+    const res = await refresh(session.refreshToken);
+    expect(res.status).toBe(401);
+    expect(errorCode(res.body)).toBe("TOKEN_REUSED");
+  });
+});
+
 describe("forma degli errori", () => {
   it("una rotta inesistente risponde con lo stesso schema di tutto il resto", async () => {
     const res = await call(server, "GET", "/api/non-esiste");

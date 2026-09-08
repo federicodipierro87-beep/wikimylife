@@ -37,6 +37,7 @@ export function creaClienteFinto(risposte: Partial<ApiClient> = {}): ApiClient {
     me: () => nonPrevista("me"),
     refresh: () => nonPrevista("refresh"),
     logout: () => nonPrevista("logout"),
+    changePassword: () => nonPrevista("changePassword"),
     getAccessToken: () => nonPrevista("getAccessToken"),
     restoreSession: () => nonPrevista("restoreSession"),
     createRecording: () => nonPrevista("createRecording"),

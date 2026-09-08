@@ -373,6 +373,167 @@ describe("logout", () => {
   });
 });
 
+describe("changePassword", () => {
+  const NUOVA = "un-altra-password-lunga";
+
+  it("chiude ogni sessione dell'utente, non solo quella da cui si chiama", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const portatile = await harness.service.login({ email: EMAIL, password: PASSWORD });
+    const tablet = await harness.service.login({ email: EMAIL, password: PASSWORD });
+
+    await harness.service.changePassword(telefono.user.id, {
+      currentPassword: PASSWORD,
+      newPassword: NUOVA,
+    });
+
+    // Tutte e tre, compresa quella del chiamante: la famiglia con cui
+    // proseguira' e' nuova, non quella con cui ha chiesto.
+    for (const vecchia of [telefono, portatile, tablet]) {
+      await expect(harness.service.refresh(vecchia.tokens.refreshToken)).rejects.toMatchObject({
+        code: "TOKEN_REUSED",
+      });
+    }
+  });
+
+  it("la sessione restituita e' viva, e non nasce gia' revocata", async () => {
+    const harness = build();
+    const prima = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+
+    const dopo = await harness.service.changePassword(prima.user.id, {
+      currentPassword: PASSWORD,
+      newPassword: NUOVA,
+    });
+
+    // Il caso che l'ordine sbagliato — nuova famiglia e poi revoca — produce:
+    // una risposta piena di token che il client non puo' usare.
+    await expect(harness.service.refresh(dopo.tokens.refreshToken)).resolves.toBeDefined();
+  });
+
+  it("la nuova password entra in vigore e la vecchia smette di funzionare", async () => {
+    const harness = build();
+    const sessione = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+
+    await harness.service.changePassword(sessione.user.id, {
+      currentPassword: PASSWORD,
+      newPassword: NUOVA,
+    });
+
+    await expect(harness.service.login({ email: EMAIL, password: NUOVA })).resolves.toBeDefined();
+    await expect(
+      harness.service.login({ email: EMAIL, password: PASSWORD }),
+    ).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
+  });
+
+  it("la nuova password finisce nel database hashata, mai in chiaro", async () => {
+    const harness = build();
+    const sessione = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+
+    await harness.service.changePassword(sessione.user.id, {
+      currentPassword: PASSWORD,
+      newPassword: NUOVA,
+    });
+
+    const user = await harness.repo.findUserByEmail(EMAIL);
+    expect(user?.passwordHash).not.toBe(NUOVA);
+    expect(user?.passwordHash).toContain("$");
+  });
+
+  it("rifiuta chi non sa la password attuale, e non tocca niente", async () => {
+    const harness = build();
+    const sessione = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+
+    await expect(
+      harness.service.changePassword(sessione.user.id, {
+        currentPassword: "non-e-quella",
+        newPassword: NUOVA,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
+
+    // Un rifiuto che avesse comunque revocato sarebbe un modo per chiunque
+    // abbia un access token di buttare fuori tutti gli altri dispositivi senza
+    // sapere niente.
+    await expect(
+      harness.service.refresh(sessione.tokens.refreshToken),
+    ).resolves.toBeDefined();
+    await expect(harness.service.login({ email: EMAIL, password: PASSWORD })).resolves.toBeDefined();
+  });
+
+  it("rifiuta la stessa password, invece di revocare tutto per niente", async () => {
+    const harness = build();
+    const sessione = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+
+    await expect(
+      harness.service.changePassword(sessione.user.id, {
+        currentPassword: PASSWORD,
+        newPassword: PASSWORD,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    await expect(
+      harness.service.refresh(sessione.tokens.refreshToken),
+    ).resolves.toBeDefined();
+  });
+
+  it("non tocca le sessioni di un altro utente", async () => {
+    const harness = build();
+    const mio = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const altro = await harness.service.signup({
+      email: "altro@esempio.it",
+      password: PASSWORD,
+    });
+
+    await harness.service.changePassword(mio.user.id, {
+      currentPassword: PASSWORD,
+      newPassword: NUOVA,
+    });
+
+    await expect(harness.service.refresh(altro.tokens.refreshToken)).resolves.toBeDefined();
+    await expect(
+      harness.service.login({ email: "altro@esempio.it", password: PASSWORD }),
+    ).resolves.toBeDefined();
+  });
+
+  it("e' UNAUTHORIZED se l'utente non esiste piu'", async () => {
+    const harness = build();
+
+    await expect(
+      harness.service.changePassword("utente-sparito", {
+        currentPassword: PASSWORD,
+        newPassword: NUOVA,
+      }),
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("verifica la password attuale contro l'hash vero, non contro un ramo saltato", async () => {
+    const harness = build();
+    const sessione = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const prima = harness.hasher.verifyCalls;
+
+    await harness.service.changePassword(sessione.user.id, {
+      currentPassword: PASSWORD,
+      newPassword: NUOVA,
+    });
+
+    expect(harness.hasher.verifyCalls).toBe(prima + 1);
+  });
+
+  it("la revoca porta l'istante del Clock iniettato", async () => {
+    const harness = build();
+    const sessione = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    harness.clock.advanceSeconds(3600);
+
+    await harness.service.changePassword(sessione.user.id, {
+      currentPassword: PASSWORD,
+      newPassword: NUOVA,
+    });
+
+    const revocati = harness.repo.allTokens().filter((t) => t.revokedAt !== null);
+    expect(revocati).toHaveLength(1);
+    expect(revocati[0]?.revokedAt?.getTime()).toBe(T0.getTime() + 3600 * 1000);
+  });
+});
+
 describe("me", () => {
   it("restituisce l'utente pubblico", async () => {
     const harness = build();

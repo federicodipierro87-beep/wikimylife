@@ -1,4 +1,10 @@
-import type { AuthSession, LoginRequest, PublicUser, SignupRequest } from "@wikimylife/shared";
+import type {
+  AuthSession,
+  ChangePasswordRequest,
+  LoginRequest,
+  PublicUser,
+  SignupRequest,
+} from "@wikimylife/shared";
 import type { AuthConfig } from "../config/env.js";
 import { AppError } from "../errors/AppError.js";
 import type { AuthRepository, UserRecord } from "./ports/AuthRepository.js";
@@ -28,6 +34,7 @@ export interface AuthService {
   login(input: LoginRequest): Promise<AuthSession>;
   refresh(rawRefreshToken: string): Promise<AuthSession>;
   logout(rawRefreshToken: string): Promise<void>;
+  changePassword(userId: string, input: ChangePasswordRequest): Promise<AuthSession>;
   me(userId: string): Promise<PublicUser>;
 }
 
@@ -199,6 +206,73 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         return;
       }
       await repo.revokeFamily(stored.familyId, clock.now());
+    },
+
+    /**
+     * Cambia la password e chiude tutte le sessioni, tranne quella da cui la
+     * richiesta arriva.
+     *
+     * ## Perche' chiede la password che l'utente ha gia' dato
+     *
+     * La rotta sta dietro `requireAuth`, quindi chi chiama ha una sessione
+     * valida. Non basta: una sessione valida e' uno schermo sbloccato, non una
+     * persona. Il secondo fattore qui non e' un'app di codici, e' il fatto che
+     * la password sta nella testa del proprietario e non nel telefono che gli
+     * hanno preso di mano.
+     *
+     * ## Perche' rifiuta la stessa password
+     *
+     * Perche' il gesto avrebbe successo senza fare cio' che l'utente credeva di
+     * fare. Chi cambia password sospettando che sia in giro, e per errore
+     * ridigita quella, vedrebbe le sessioni cadere e ne dedurrebbe che il
+     * problema e' risolto: la credenziale sospetta invece funziona ancora. Un
+     * fallimento visibile costa una schermata di errore; il successo apparente
+     * costa l'account.
+     *
+     * ## Perche' chi chiama non viene buttato fuori
+     *
+     * La revoca cade su tutto — e' il senso della cosa — ma poi si apre una
+     * famiglia nuova per chi ha appena dimostrato di sapere la password. La
+     * sessione da cui parte la richiesta non e' fra quelle sospette: e' l'unica
+     * di cui in questo istante si sappia qualcosa. Costringere a rifare login
+     * anche li' non aggiungerebbe sicurezza, aggiungerebbe soltanto un motivo
+     * per non cambiare mai la password.
+     *
+     * L'ordine fra le due cose non e' negoziabile: prima la revoca, poi la
+     * nuova famiglia. Al contrario, il token appena emesso finirebbe nella
+     * mannaia insieme agli altri, e la risposta consegnerebbe al client una
+     * sessione gia' morta.
+     */
+    async changePassword(userId: string, input: ChangePasswordRequest): Promise<AuthSession> {
+      const user = await repo.findUserById(userId);
+      if (user === null) {
+        // Token firmato, famiglia viva, utente cancellato: e' un 401, come in
+        // `me`. Non e' un 404: non si sta cercando una risorsa, si sta
+        // scoprendo che chi chiede non esiste piu'.
+        throw AppError.unauthorized();
+      }
+
+      const ok = await hasher.verify(user.passwordHash, input.currentPassword);
+      if (!ok) {
+        // Lo stesso errore di `login`, e per la stessa ragione: qui non c'e'
+        // niente da enumerare, ma avere due codici diversi per «password
+        // sbagliata» significherebbe che prima o poi uno dei due percorsi
+        // cambia e l'altro no.
+        throw AppError.invalidCredentials();
+      }
+
+      if (input.newPassword === input.currentPassword) {
+        throw AppError.conflict("La nuova password e' identica a quella attuale");
+      }
+
+      const now = clock.now();
+      await repo.changePassword({
+        userId: user.id,
+        passwordHash: await hasher.hash(input.newPassword),
+        revokedAt: now,
+      });
+
+      return issueSession(user, tokens.newFamilyId());
     },
 
     async me(userId: string): Promise<PublicUser> {

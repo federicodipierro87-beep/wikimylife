@@ -321,6 +321,149 @@ describe("rotazione automatica su 401", () => {
   });
 });
 
+describe("cambio password", () => {
+  const CORPO = {
+    currentPassword: "password-lunga-abbastanza",
+    newPassword: "una-password-nuova-lunga",
+  };
+
+  it("salva i token nuovi: quelli di prima sono morti sul server", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      "POST /api/auth/password": () => ({ status: 200, payload: session("2") }),
+    });
+    const storage = createInMemorySecureStorage();
+    const client = createApiClient({ baseUrl: BASE, storage, fetchImpl });
+
+    await client.login({ email: "chi@esempio.it", password: CORPO.currentPassword });
+    await client.changePassword(CORPO);
+
+    expect(client.getAccessToken()).toBe("access-2");
+    expect(storage.snapshot()[AUTH_STORAGE_KEYS.refreshToken]).toBe("refresh-2");
+    // Autenticata: senza l'header, la rotta non saprebbe di chi cambiare la
+    // password, e il server risponderebbe 401 a chi ha appena fatto login.
+    expect(calls.at(-1)?.authorization).toBe("Bearer access-1");
+  });
+
+  it("non manda mai la password in chiaro nell'URL", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      "POST /api/auth/password": () => ({ status: 200, payload: session("2") }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await client.login({ email: "chi@esempio.it", password: CORPO.currentPassword });
+    await client.changePassword(CORPO);
+
+    const ultima = calls.at(-1);
+    expect(ultima?.url).toBe(`${BASE}/api/auth/password`);
+    expect(ultima?.body).toEqual(CORPO);
+  });
+
+  it("se l'access token scade mentre si compila il modulo, ruota e riprova", async () => {
+    // Ripetere non rischia un doppio cambio: si ripete solo dopo un 401, e un
+    // 401 vuol dire che la prima non ha cambiato niente.
+    let cambi = 0;
+    const { fetchImpl } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      "POST /api/auth/refresh": () => ({ status: 200, payload: session("2") }),
+      "POST /api/auth/password": () => {
+        cambi += 1;
+        return cambi === 1
+          ? { status: 401, payload: errorPayload("TOKEN_EXPIRED", "Token scaduto") }
+          : { status: 200, payload: session("3") };
+      },
+    });
+    const storage = createInMemorySecureStorage();
+    const client = createApiClient({ baseUrl: BASE, storage, fetchImpl });
+
+    await client.login({ email: "chi@esempio.it", password: CORPO.currentPassword });
+    await expect(client.changePassword(CORPO)).resolves.toMatchObject({ user: { id: "u-1" } });
+
+    expect(cambi).toBe(2);
+    expect(storage.snapshot()[AUTH_STORAGE_KEYS.refreshToken]).toBe("refresh-3");
+  });
+
+  it("una password attuale sbagliata non butta fuori chi ha sbagliato a scrivere", async () => {
+    // Il 401 di questa rotta puo' voler dire due cose opposte. Se e'
+    // INVALID_CREDENTIALS parla del corpo — «hai digitato male» — e il token
+    // con cui e' arrivata la richiesta e' vivo. Trattarlo come gli altri
+    // significherebbe ruotare per niente e poi, al secondo rifiuto identico,
+    // svuotare la sessione: chi sbaglia la password attuale verrebbe buttato
+    // fuori dall'account che stava proteggendo.
+    let refreshCalls = 0;
+    const { fetchImpl } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      "POST /api/auth/refresh": () => {
+        refreshCalls += 1;
+        return { status: 200, payload: session("2") };
+      },
+      "POST /api/auth/password": () => ({
+        status: 401,
+        payload: errorPayload("INVALID_CREDENTIALS", "Email o password non corretti"),
+      }),
+    });
+    const storage = createInMemorySecureStorage();
+    let expiredNotifications = 0;
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage,
+      fetchImpl,
+      onSessionExpired: () => {
+        expiredNotifications += 1;
+      },
+    });
+
+    await client.login({ email: "chi@esempio.it", password: CORPO.currentPassword });
+    await expect(
+      client.changePassword({ ...CORPO, currentPassword: "non-e-quella" }),
+    ).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
+
+    expect(refreshCalls).toBe(0);
+    expect(client.getAccessToken()).toBe("access-1");
+    expect(storage.snapshot()[AUTH_STORAGE_KEYS.refreshToken]).toBe("refresh-1");
+    expect(expiredNotifications).toBe(0);
+  });
+
+  it("un 401 che parla davvero della sessione la chiude ancora", async () => {
+    // Lo sbaglio opposto del caso qui sopra: l'eccezione vale per
+    // INVALID_CREDENTIALS e per nient'altro. Un access token revocato mentre si
+    // compilava il modulo deve portare alla schermata di ingresso.
+    const { fetchImpl } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      "POST /api/auth/refresh": () => ({
+        status: 401,
+        payload: errorPayload("TOKEN_REUSED", "Sessione revocata"),
+      }),
+      "POST /api/auth/password": () => ({
+        status: 401,
+        payload: errorPayload("UNAUTHORIZED", "Sessione chiusa"),
+      }),
+    });
+    const storage = createInMemorySecureStorage();
+    let expiredNotifications = 0;
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage,
+      fetchImpl,
+      onSessionExpired: () => {
+        expiredNotifications += 1;
+      },
+    });
+
+    await client.login({ email: "chi@esempio.it", password: CORPO.currentPassword });
+    await expect(client.changePassword(CORPO)).rejects.toBeInstanceOf(ApiError);
+
+    expect(client.getAccessToken()).toBeNull();
+    expect(storage.snapshot()).toEqual({});
+    expect(expiredNotifications).toBe(1);
+  });
+});
+
 describe("logout", () => {
   it("svuota lo stato locale anche se il server rifiuta", async () => {
     const { fetchImpl } = stubFetch({

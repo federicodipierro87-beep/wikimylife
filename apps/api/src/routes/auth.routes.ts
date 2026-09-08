@@ -1,4 +1,5 @@
 import {
+  changePasswordRequestSchema,
   loginRequestSchema,
   logoutRequestSchema,
   refreshRequestSchema,
@@ -23,14 +24,26 @@ export function createAuthRouter(deps: {
   authService: AuthService;
   requireAuth: RequestHandler;
   /**
-   * Sta sulle tre rotte che accettano un segreto da chi non e' ancora nessuno,
-   * e su nessun'altra.
+   * Sta sulle rotte che accettano una password, autenticate o no.
+   *
+   * Le prime tre — `/signup`, `/login`, `/refresh` — accettano un segreto da
+   * chi non e' ancora nessuno, e sono il bersaglio ovvio. `/password` e' dietro
+   * `requireAuth` e lo si limita lo stesso, per due ragioni che si sommano: e'
+   * l'unico posto in cui chi ha rubato un access token puo' indovinare la
+   * password online, ed e' l'unica rotta che paga due argon2 per richiesta —
+   * una verifica e un hash — quindi martellarla costa alla CPU dell'API molto
+   * piu' che a chi la martella.
+   *
+   * Le finestre non si mescolano: la chiave del limitatore contiene la rotta,
+   * quindi un cambio password non consuma i tentativi di `/login` e nessuno dei
+   * due puo' esaurire l'altro.
    *
    * `/logout` ne resta fuori perche' martellarlo non da' niente a chi prova: il
    * token o e' valido — e allora sta revocando la propria sessione — o non lo
    * e', e la risposta e' identica. `/me` ne resta fuori perche' e' gia' dietro
-   * `requireAuth`, e limitarlo significherebbe far cadere l'app di un utente
-   * legittimo che ricarica la pagina qualche volta di troppo.
+   * `requireAuth`, non accetta nessun segreto, e limitarlo significherebbe far
+   * cadere l'app di un utente legittimo che ricarica la pagina qualche volta di
+   * troppo.
    */
   rateLimit: RequestHandler;
 }): Router {
@@ -61,6 +74,22 @@ export function createAuthRouter(deps: {
     await deps.authService.logout(input.refreshToken);
     const body: LogoutResponse = { ok: true };
     res.status(200).json(body);
+  });
+
+  /**
+   * Risponde con una sessione intera e non con `{ ok: true }`.
+   *
+   * La chiamata ha appena revocato ogni token dell'utente, compresi quelli che
+   * il client aveva in mano un istante fa: se tornasse un ok, il client
+   * resterebbe con due credenziali morte e scoprirebbe di essere fuori alla
+   * richiesta successiva. I token nuovi stanno nella risposta perche' e'
+   * l'unico momento in cui si possono consegnare senza un secondo login.
+   */
+  router.post("/password", deps.rateLimit, deps.requireAuth, async (req, res) => {
+    const { userId } = authContext(req);
+    const input = parseBody(changePasswordRequestSchema, req.body);
+    const session = await deps.authService.changePassword(userId, input);
+    res.status(200).json(session);
   });
 
   router.get("/me", deps.requireAuth, async (req, res) => {
