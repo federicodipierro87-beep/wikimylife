@@ -1,3 +1,4 @@
+import { SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
 import { AppError } from "../../apps/api/src/errors/AppError.js";
 import { JoseTokenIssuer } from "../../apps/api/src/infra/JoseTokenIssuer.js";
@@ -13,35 +14,98 @@ import { JoseTokenIssuer } from "../../apps/api/src/infra/JoseTokenIssuer.js";
 const SECRET = "un-segreto-di-test-lungo-almeno-trentadue-caratteri";
 const TTL = 15 * 60;
 const T0 = new Date("2026-04-01T10:00:00.000Z");
+const FAMIGLIA = "fam-1";
 
 function issuer(secret = SECRET): JoseTokenIssuer {
   return new JoseTokenIssuer({ accessSecret: secret, accessTtlSeconds: TTL });
+}
+
+function emetti(tokens: JoseTokenIssuer, now = T0): Promise<string> {
+  return tokens.issueAccessToken({ userId: "u-1", familyId: FAMIGLIA, now });
 }
 
 function at(offsetSeconds: number): Date {
   return new Date(T0.getTime() + offsetSeconds * 1000);
 }
 
-describe("access token", () => {
-  it("torna il sub emesso", async () => {
-    const tokens = issuer();
-    const token = await tokens.issueAccessToken({ userId: "u-1", now: T0 });
+function payloadDi(token: string): Record<string, unknown> {
+  return JSON.parse(
+    Buffer.from(String(token.split(".")[1]), "base64url").toString("utf8"),
+  ) as Record<string, unknown>;
+}
 
-    await expect(tokens.verifyAccessToken(token, at(60))).resolves.toEqual({ userId: "u-1" });
+describe("access token", () => {
+  it("torna il sub e la famiglia emessi", async () => {
+    const tokens = issuer();
+    const token = await emetti(tokens);
+
+    await expect(tokens.verifyAccessToken(token, at(60))).resolves.toEqual({
+      userId: "u-1",
+      familyId: FAMIGLIA,
+    });
+  });
+
+  it("la famiglia esce dal token, non da un valore fisso", async () => {
+    // Se `verifyAccessToken` restituisse una costante — o lo userId al posto
+    // della famiglia — il controllo di revoca a valle interrogherebbe sempre la
+    // stessa riga, e sarebbe un middleware che finge di guardare.
+    const tokens = issuer();
+    const uno = await tokens.issueAccessToken({ userId: "u-1", familyId: "fam-a", now: T0 });
+    const due = await tokens.issueAccessToken({ userId: "u-1", familyId: "fam-b", now: T0 });
+
+    await expect(tokens.verifyAccessToken(uno, at(60))).resolves.toMatchObject({
+      familyId: "fam-a",
+    });
+    await expect(tokens.verifyAccessToken(due, at(60))).resolves.toMatchObject({
+      familyId: "fam-b",
+    });
+  });
+
+  it("rifiuta un token senza famiglia, anche se la firma e' nostra", async () => {
+    // E' la forma dei token emessi prima che il claim esistesse: firmati bene,
+    // scadenza giusta, e non revocabili. Accettarli "finche' non scadono"
+    // avrebbe lasciato aperta per quindici minuti esattamente la finestra che
+    // il claim chiude — e sarebbe stata una scorciatoia permanente, perche'
+    // nessuno la toglie piu'.
+    const senzaFid = await new SignJWT({ typ: "access" })
+      .setProtectedHeader({ alg: "HS256" })
+      .setSubject("u-1")
+      .setIssuer("wikimylife")
+      .setAudience("wikimylife-api")
+      .setIssuedAt(Math.floor(T0.getTime() / 1000))
+      .setExpirationTime(Math.floor(T0.getTime() / 1000) + TTL)
+      .sign(new TextEncoder().encode(SECRET));
+
+    await expect(issuer().verifyAccessToken(senzaFid, at(60))).rejects.toMatchObject({
+      code: "TOKEN_INVALID",
+    });
+  });
+
+  it("rifiuta un token con una famiglia vuota", async () => {
+    // Stringa vuota: passerebbe un controllo di tipo e interrogherebbe il
+    // database con `familyId = ""`, che non trova nulla. Sarebbe innocuo per
+    // caso, non per costruzione.
+    const tokens = issuer();
+    const token = await tokens.issueAccessToken({ userId: "u-1", familyId: "", now: T0 });
+
+    await expect(tokens.verifyAccessToken(token, at(60))).rejects.toMatchObject({
+      code: "TOKEN_INVALID",
+    });
   });
 
   it("e' ancora valido un secondo prima della scadenza", async () => {
     const tokens = issuer();
-    const token = await tokens.issueAccessToken({ userId: "u-1", now: T0 });
+    const token = await emetti(tokens);
 
     await expect(tokens.verifyAccessToken(token, at(TTL - 1))).resolves.toEqual({
       userId: "u-1",
+      familyId: FAMIGLIA,
     });
   });
 
   it("scade dopo il TTL", async () => {
     const tokens = issuer();
-    const token = await tokens.issueAccessToken({ userId: "u-1", now: T0 });
+    const token = await emetti(tokens);
 
     // Un minuto oltre: jose tollera qualche secondo di scarto sull'orologio, e
     // asserire sul secondo esatto renderebbe il test fragile per un motivo che
@@ -53,7 +117,7 @@ describe("access token", () => {
 
   it("rifiuta un token firmato con un altro segreto", async () => {
     const foreign = issuer("un-segreto-diverso-ma-comunque-lungo-abbastanza");
-    const token = await foreign.issueAccessToken({ userId: "u-1", now: T0 });
+    const token = await emetti(foreign);
 
     await expect(issuer().verifyAccessToken(token, at(60))).rejects.toMatchObject({
       code: "TOKEN_INVALID",
@@ -62,11 +126,11 @@ describe("access token", () => {
 
   it("rifiuta un token manomesso", async () => {
     const tokens = issuer();
-    const token = await tokens.issueAccessToken({ userId: "u-1", now: T0 });
+    const token = await emetti(tokens);
     const [header, payload, signature] = token.split(".");
     // Payload di un altro utente, firma originale.
     const forgedPayload = Buffer.from(
-      JSON.stringify({ sub: "u-2", typ: "access" }),
+      JSON.stringify({ sub: "u-2", typ: "access", fid: FAMIGLIA }),
       "utf8",
     ).toString("base64url");
 
@@ -90,27 +154,27 @@ describe("access token", () => {
     // Un token di refresh accettato dove serve un access token sarebbe un
     // aggiramento del TTL breve: il refresh vive 30 giorni.
     const tokens = issuer();
-    const token = await tokens.issueAccessToken({ userId: "u-1", now: T0 });
-    const payload = JSON.parse(
-      Buffer.from(String(token.split(".")[1]), "base64url").toString("utf8"),
-    ) as Record<string, unknown>;
+    const payload = payloadDi(await emetti(tokens));
 
     expect(payload["typ"]).toBe("access");
     expect(payload["sub"]).toBe("u-1");
   });
 
-  it("non mette nel payload niente oltre a sub, typ e i claim standard", async () => {
+  it("non mette nel payload niente oltre a sub, typ, fid e i claim standard", async () => {
     // Un JWT e' leggibile da chiunque lo intercetti. L'email nel payload
     // sarebbe una fuga di dati gratuita.
+    //
+    // `fid` e' l'unica aggiunta, ed e' un UUID opaco: dice che esiste una
+    // sessione, non di chi sia. Questo elenco chiuso e' il posto in cui
+    // accorgersi se domani qualcuno ci infilasse il ruolo, l'email o il piano
+    // di abbonamento «tanto per non fare una query».
     const tokens = issuer();
-    const token = await tokens.issueAccessToken({ userId: "u-1", now: T0 });
-    const payload = JSON.parse(
-      Buffer.from(String(token.split(".")[1]), "base64url").toString("utf8"),
-    ) as Record<string, unknown>;
+    const payload = payloadDi(await emetti(tokens));
 
     expect(Object.keys(payload).sort()).toEqual([
       "aud",
       "exp",
+      "fid",
       "iat",
       "iss",
       "jti",
@@ -118,6 +182,7 @@ describe("access token", () => {
       "sub",
       "typ",
     ]);
+    expect(payload["fid"]).toBe(FAMIGLIA);
   });
 });
 

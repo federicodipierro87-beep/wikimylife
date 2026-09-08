@@ -409,14 +409,33 @@ describe("riuso di un refresh token", () => {
     expect((await refresh(secondoDispositivo.tokens.refreshToken)).status).toBe(200);
   });
 
-  it("l'access token gia' emesso resta valido fino alla scadenza", async () => {
-    // Non e' una svista: revocare un JWT richiederebbe una lettura del database
-    // a ogni richiesta, che e' esattamente il costo che il token di accesso
-    // esiste per evitare. Il TTL di 15 minuti e' il limite superiore della
-    // finestra, ed e' una scelta consapevole — vale la pena che sia scritta in
-    // un test invece che scoperta come "bug" fra sei mesi.
+  it("il riuso spegne anche gli access token gia' emessi", async () => {
+    // Qui c'era il test opposto, e la sua motivazione era scritta bene:
+    // revocare un JWT costa una lettura del database a ogni richiesta, che e'
+    // esattamente il costo che l'access token esiste per evitare. Il conto pero'
+    // era incompleto. Nessuna rotta protetta si concludeva senza interrogare
+    // Postgres per fare il proprio lavoro, quindi la lettura in piu' e' una
+    // riga su un indice dentro un giro che il database faceva comunque; e cio'
+    // che si comprava con quel risparmio era un quarto d'ora di accesso pieno
+    // per chi avesse rubato un token, contato a partire dal momento in cui il
+    // furto e' stato scoperto.
+    //
+    // Il claim `fid` nel token e una `SELECT` su `familyId` chiudono la
+    // finestra. Questo caso e' il motivo per cui valeva la pena.
     const session = await signup();
     await refresh(session.refreshToken);
+    await refresh(session.refreshToken); // riuso: la famiglia muore
+
+    const me = await call(server, "GET", "/api/auth/me", { accessToken: session.accessToken });
+    expect(me.status).toBe(401);
+  });
+
+  it("prima del riuso lo stesso access token apriva", async () => {
+    // Il caso di sopra da solo passerebbe anche con un access token rotto per
+    // qualunque altro motivo — un claim scritto male, una firma sbagliata, un
+    // 401 che c'era gia' prima. Questo dice che l'unica differenza fra i due e'
+    // il riuso.
+    const session = await signup();
     await refresh(session.refreshToken);
 
     const me = await call(server, "GET", "/api/auth/me", { accessToken: session.accessToken });
@@ -470,6 +489,75 @@ describe("logout", () => {
     await call(server, "POST", "/api/auth/logout", { body: { refreshToken: uno.refreshToken } });
 
     expect((await refresh(due.tokens.refreshToken)).status).toBe(200);
+  });
+
+  it("dopo il logout l'access token non apre piu' niente", async () => {
+    // La promessa che "esci" fa. Il refresh moriva gia' — lo dice il caso qui
+    // sopra — ma l'access token campava fino a quindici minuti, cioe' per tutto
+    // il tempo che serve a chi ha in mano un telefono rubato.
+    const session = await signup();
+    expect(
+      (await call(server, "GET", "/api/auth/me", { accessToken: session.accessToken })).status,
+    ).toBe(200);
+
+    await call(server, "POST", "/api/auth/logout", {
+      body: { refreshToken: session.refreshToken },
+    });
+
+    const me = await call(server, "GET", "/api/auth/me", { accessToken: session.accessToken });
+    expect(me.status).toBe(401);
+    // UNAUTHORIZED e non TOKEN_REUSED: il client ritenta la rotazione su
+    // qualunque 401 tranne quello, e chi ha solo chiuso un'altra sessione deve
+    // poter tentare — fallira', ma finendo sulla schermata di ingresso invece
+    // che su un errore che nessuna schermata sa mostrare.
+    expect(errorCode(me.body)).toBe("UNAUTHORIZED");
+  });
+
+  it("uscire da un dispositivo non chiude l'access token dell'altro", async () => {
+    // Il prezzo da non pagare per la revoca. Se la sessione fosse per utente
+    // invece che per famiglia, "esci dal telefono" spegnerebbe anche il
+    // portatile: nessuno l'ha chiesto, e sarebbe una regressione peggiore del
+    // problema risolto.
+    const telefono = await signup();
+    const portatile = authSessionSchema.parse(
+      (
+        await call(server, "POST", "/api/auth/login", {
+          body: { email: EMAIL, password: PASSWORD },
+        })
+      ).body,
+    );
+
+    await call(server, "POST", "/api/auth/logout", {
+      body: { refreshToken: telefono.refreshToken },
+    });
+
+    expect(
+      (await call(server, "GET", "/api/auth/me", { accessToken: telefono.accessToken })).status,
+    ).toBe(401);
+    expect(
+      (
+        await call(server, "GET", "/api/auth/me", {
+          accessToken: portatile.tokens.accessToken,
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("una rotazione normale non invalida l'access token gia' in mano", async () => {
+    // Lo sbaglio opposto, e l'unico che si vedrebbe subito in produzione: se la
+    // revoca del vecchio refresh contasse come sessione chiusa, ogni rinnovo
+    // farebbe cadere le richieste ancora in volo con il token precedente.
+    const session = await signup();
+    const ruotata = await refresh(session.refreshToken);
+    expect(ruotata.status).toBe(200);
+
+    const me = await call(server, "GET", "/api/auth/me", { accessToken: session.accessToken });
+    expect(me.status).toBe(200);
+
+    // E quello nuovo apre a sua volta: la rotazione allunga la catena, non
+    // apre una famiglia che il database non conosce.
+    const nuovo = authSessionSchema.parse(ruotata.body).tokens.accessToken;
+    expect((await call(server, "GET", "/api/auth/me", { accessToken: nuovo })).status).toBe(200);
   });
 });
 

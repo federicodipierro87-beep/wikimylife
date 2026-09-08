@@ -1,14 +1,40 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { AppError } from "../../errors/AppError.js";
+import type { FamilyRegistry } from "../../services/ports/AuthRepository.js";
 import type { Clock } from "../../services/ports/Clock.js";
 import type { TokenIssuer } from "../../services/ports/TokenIssuer.js";
 
 /**
- * Estrae e verifica il Bearer token.
+ * Estrae il Bearer token, ne verifica la firma e chiede se la sessione da cui
+ * proviene esiste ancora.
  *
  * Header `Authorization` e mai cookie di sessione: i cookie fuori dal browser
  * funzionano male, e l'app nativa deve parlare con questo stesso backend senza
  * modifiche.
+ *
+ * ## Perche' la firma non basta
+ *
+ * Un JWT valido dice «questo l'ho emesso io e non e' ancora scaduto». Non dice
+ * «questa sessione e' ancora aperta», e le due cose smettono di coincidere
+ * esattamente nel momento peggiore: quando qualcuno preme "esci" perche' ha
+ * perso il telefono, o quando la reuse detection scopre un furto. Fermarsi alla
+ * firma lasciava a chi aveva il token in mano fino a quindici minuti di accesso
+ * pieno *dopo* che l'utente aveva fatto tutto cio' che l'app gli offre per
+ * difendersi.
+ *
+ * ## Il prezzo, detto per intero
+ *
+ * Ogni richiesta autenticata paga una lettura indicizzata in piu'. E' il costo
+ * che l'access token esisteva per evitare, quindi vale la pena essere precisi
+ * su quanto sia: e' una riga su un indice, verso lo stesso Postgres che ogni
+ * rotta protetta interroga comunque subito dopo per fare il proprio lavoro. Non
+ * c'era nessuna richiesta autenticata che si concludesse senza toccare il
+ * database; ora ne tocca una in piu'.
+ *
+ * L'alternativa era una cache in processo: quasi gratis, ma trasforma la revoca
+ * da immediata a «entro qualche secondo», e con piu' repliche quel «qualche»
+ * dipende da quale replica risponde. Una finestra piccola resta una finestra, e
+ * questo middleware esiste per chiuderla, non per accorciarla.
  */
 
 declare global {
@@ -22,6 +48,7 @@ declare global {
 export function createRequireAuth(deps: {
   tokens: TokenIssuer;
   clock: Clock;
+  families: FamilyRegistry;
 }): RequestHandler {
   return async function requireAuth(
     req: Request,
@@ -42,6 +69,21 @@ export function createRequireAuth(deps: {
 
     try {
       const claims = await deps.tokens.verifyAccessToken(token, deps.clock.now());
+
+      // Dopo la firma e prima di `req.auth`: fra i due non deve passare niente
+      // che assomigli a una richiesta autenticata.
+      const viva = await deps.families.isFamilyActive(claims.familyId);
+      if (!viva) {
+        // UNAUTHORIZED e non TOKEN_REUSED: dal punto di vista del client questo
+        // e' un 401 recuperabile, quindi prova una rotazione. La rotazione
+        // fallisce — i refresh della famiglia sono revocati quanto l'access — e
+        // a quel punto svuota tutto e mostra la schermata di ingresso. E' il
+        // percorso giusto: chi ha chiuso la sessione altrove deve rientrare
+        // dalla porta, non ricevere un errore che nessuna schermata sa gestire.
+        next(AppError.unauthorized("Sessione chiusa"));
+        return;
+      }
+
       req.auth = { userId: claims.userId };
       next();
     } catch (error) {

@@ -757,7 +757,8 @@ curl.exe -X POST http://localhost:3000/api/auth/refresh `
   -H "content-type: application/json" -d "{\"refreshToken\":\"<NUOVO refreshToken>\"}"
 #   → 401 TOKEN_REUSED
 
-curl.exe http://localhost:3000/api/auth/me
+# E l'access token emesso PRIMA di tutto questo, che non è ancora scaduto:
+curl.exe http://localhost:3000/api/auth/me -H "authorization: Bearer <accessToken>"
 #   → 401 UNAUTHORIZED
 ```
 
@@ -768,6 +769,29 @@ se arriva prima ce l'ha l'utente. In entrambi i casi la catena in circolazione �
 compromessa, quindi si revoca l'intera famiglia e si costringe a rifare login.
 Revocare solo il token riusato lascerebbe all'attaccante una catena valida per
 trenta giorni.
+
+E la revoca arriva fino in fondo, che è l'ultima riga del blocco. Un JWT firmato
+dice «l'ho emesso io e non è scaduto»; non dice «questa sessione è ancora
+aperta», e le due cose smettono di coincidere esattamente nel momento peggiore —
+quando si preme "esci" perché il telefono è sparito, o quando la reuse detection
+ha appena scoperto un furto. Per questo l'access token porta anche `fid`,
+l'identificatore della famiglia da cui è nato, e `requireAuth` chiede a Postgres
+se quella famiglia ha ancora almeno un refresh non revocato prima di lasciar
+passare la richiesta. Senza, la difesa scattava e l'attaccante restava dentro per
+un altro quarto d'ora.
+
+Il prezzo è una lettura in più su ogni richiesta autenticata, ed è precisamente
+il costo che l'access token esiste per evitare — quindi vale la pena dire quanto
+sia: una riga su `@@index([familyId])`, verso lo stesso database che ogni rotta
+protetta interroga comunque subito dopo per fare il proprio lavoro. Nessuna
+richiesta autenticata si concludeva senza toccare Postgres; adesso lo tocca una
+volta in più. L'alternativa era tenere il risultato in una cache di processo:
+quasi gratis, ma avrebbe accorciato la finestra invece di chiuderla, e con più
+repliche la sua durata sarebbe dipesa da quale replica risponde.
+
+La famiglia e non l'utente, infine, perché le sessioni restano indipendenti:
+uscire dal telefono non deve buttare fuori dal portatile, e una revoca per
+account l'avrebbe fatto.
 
 ### Un vocale che diventa una scheda, a mano
 
@@ -1945,11 +1969,18 @@ Non installate, e il perché:
   finestra fissa resta però una finestra fissa, e chi prova dieci password al
   minuto per un mese non incontra mai il muro. Fermarlo vorrebbe dire contare per
   account e su giorni, cioè un'altra cosa da questa.
-- **Il refresh token vive 30 giorni, l'access token 15 minuti.** Un access token
-  già emesso resta valido fino alla scadenza anche dopo la revoca della famiglia:
-  invalidarlo richiederebbe una lettura del database a ogni richiesta, cioè
-  esattamente il costo che quel token esiste per evitare. La finestra di 15
-  minuti è il limite, ed è una scelta.
+- **Si esce da una sessione per volta, e non c'è un "esci da tutti".** La revoca
+  ora è immediata — l'access token porta `fid` e muore insieme alla sua famiglia,
+  non quindici minuti dopo — ma è per catena, il che è giusto quando si chiude il
+  telefono e non basta quando si sospetta che la password sia in giro. Manca il
+  gesto che chiude tutte le famiglie di un utente in un colpo, e manca il suo
+  innesco naturale: cambiare password oggi non revoca niente, quindi chi è già
+  dentro ci resta. Sono due righe di servizio e una rotta, e non ci sono ancora.
+- **Un access token emesso prima di questo cambiamento non vale più.** Non porta
+  `fid`, quindi non è revocabile, quindi viene rifiutato invece di essere
+  accettato "finché non scade" — una scorciatoia del genere non la toglie più
+  nessuno. Il client, davanti a un 401, ruota una volta e prosegue: il prezzo è
+  una richiesta in più, una volta sola, al primo giro dopo il deploy.
 - **`vector(1536)` accoppia lo schema a `text-embedding-3-small`.** Passare a
   `-large` (3072 dimensioni) richiede una migration e il re-embedding di tutte le
   procedure.

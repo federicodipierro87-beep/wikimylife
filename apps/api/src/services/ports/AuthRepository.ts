@@ -34,7 +34,28 @@ export interface NewRefreshToken {
   readonly expiresAt: Date;
 }
 
-export interface AuthRepository {
+/**
+ * La sola domanda che il middleware di autenticazione pone al database.
+ *
+ * E' una porta a se' e non `AuthRepository` intero perche' `requireAuth` non
+ * deve poter creare utenti, ruotare token o revocare famiglie: gli serve
+ * leggere un bit, e questa interfaccia dice che quello e' tutto cio' che puo'
+ * fare. In composizione riceve comunque il repository vero — che la soddisfa
+ * strutturalmente — ma la firma del middleware resta onesta su quanto potere ha
+ * chiesto.
+ */
+export interface FamilyRegistry {
+  /**
+   * Vero se la famiglia ha ancora almeno un refresh token non revocato.
+   *
+   * Falso significa: quella sessione e' stata chiusa: da un logout, da una
+   * reuse detection, o dalla sparizione dell'utente. In tutti e tre i casi
+   * l'access token che porta quella famiglia non deve piu' aprire niente.
+   */
+  isFamilyActive(familyId: string): Promise<boolean>;
+}
+
+export interface AuthRepository extends FamilyRegistry {
   findUserByEmail(email: string): Promise<UserRecord | null>;
   findUserById(id: string): Promise<UserRecord | null>;
   createUser(input: {

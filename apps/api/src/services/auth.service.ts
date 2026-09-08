@@ -47,7 +47,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
   async function issueSession(user: UserRecord, familyId: string): Promise<AuthSession> {
     const now = clock.now();
-    const accessToken = await tokens.issueAccessToken({ userId: user.id, now });
+    const accessToken = await tokens.issueAccessToken({ userId: user.id, familyId, now });
     const refreshToken = tokens.generateRefreshToken();
 
     await repo.createRefreshToken({
@@ -164,7 +164,14 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         },
       });
 
-      const accessToken = await tokens.issueAccessToken({ userId: user.id, now });
+      // La famiglia e' quella di prima: la rotazione allunga la catena, non
+      // apre una sessione nuova. Se qui nascesse una famiglia diversa, il
+      // logout dovrebbe inseguirle tutte per chiuderne una.
+      const accessToken = await tokens.issueAccessToken({
+        userId: user.id,
+        familyId: stored.familyId,
+        now,
+      });
 
       return {
         user: toPublicUser(user),

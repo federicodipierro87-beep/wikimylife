@@ -316,7 +316,9 @@ export function compose(config: AppConfig, overrides?: {
     recordingsService,
     proceduresService,
     searchService,
-    requireAuth: createRequireAuth({ tokens, clock }),
+    // `repo` qui dentro vale solo per la sua `isFamilyActive`: il middleware lo
+    // riceve tipato come `FamilyRegistry`, che di metodi ne dichiara uno.
+    requireAuth: createRequireAuth({ tokens, clock, families: repo }),
     isDatabaseUp: () => isDatabaseReachable(prisma),
     now: () => clock.now(),
     version: API_VERSION,

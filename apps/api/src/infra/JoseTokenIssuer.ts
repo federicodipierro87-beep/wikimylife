@@ -29,9 +29,12 @@ export class JoseTokenIssuer implements TokenIssuer {
     this.#accessTtlSeconds = params.accessTtlSeconds;
   }
 
-  issueAccessToken(input: { userId: string; now: Date }): Promise<string> {
+  issueAccessToken(input: { userId: string; familyId: string; now: Date }): Promise<string> {
     const issuedAtSeconds = Math.floor(input.now.getTime() / 1000);
-    return new SignJWT({ typ: "access" })
+    // `fid` e' un identificatore opaco: chi intercetta il token impara che
+    // esiste una famiglia con quel UUID, e niente altro. Non e' un dato
+    // personale e non lo diventa incrociandolo con qualcosa che sta fuori.
+    return new SignJWT({ typ: "access", fid: input.familyId })
       .setProtectedHeader({ alg: ALGORITHM })
       .setSubject(input.userId)
       .setIssuer(ISSUER)
@@ -63,7 +66,17 @@ export class JoseTokenIssuer implements TokenIssuer {
       if (typeof payload.sub !== "string" || payload.sub.length === 0) {
         throw AppError.tokenInvalid();
       }
-      return { userId: payload.sub };
+      const familyId = payload["fid"];
+      if (typeof familyId !== "string" || familyId.length === 0) {
+        // Un token senza famiglia non e' revocabile, e accettarlo "per
+        // compatibilita'" vorrebbe dire tenere aperta proprio la finestra che
+        // il claim serve a chiudere. Sono i token emessi prima di questo
+        // cambiamento: il client, davanti a un 401, ruota una volta e va
+        // avanti, quindi il prezzo del rifiuto e' una richiesta in piu' una
+        // volta sola, non un utente buttato fuori.
+        throw AppError.tokenInvalid();
+      }
+      return { userId: payload.sub, familyId };
     } catch (error) {
       if (error instanceof AppError) {
         throw error;

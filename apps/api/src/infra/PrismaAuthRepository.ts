@@ -87,6 +87,23 @@ export class PrismaAuthRepository implements AuthRepository {
     });
   }
 
+  /**
+   * La lettura che ogni richiesta autenticata paga.
+   *
+   * `findFirst` con `select` di una colonna sola e non un `count`: la domanda e'
+   * «ne esiste almeno uno», e Postgres puo' fermarsi al primo che trova invece
+   * di scorrere l'intera catena di rotazioni della famiglia — che dopo un mese
+   * di uso quotidiano sono qualche centinaio di righe. L'indice e' quello su
+   * `familyId`, che c'era gia' per la revoca.
+   */
+  async isFamilyActive(familyId: string): Promise<boolean> {
+    const alive = await this.#prisma.refreshToken.findFirst({
+      where: { familyId, revokedAt: null },
+      select: { id: true },
+    });
+    return alive !== null;
+  }
+
   async revokeFamily(familyId: string, revokedAt: Date): Promise<number> {
     const result = await this.#prisma.refreshToken.updateMany({
       where: { familyId, revokedAt: null },
