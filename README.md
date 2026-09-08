@@ -1866,10 +1866,12 @@ Non installate, e il perché:
   (`[nome 1]`, `[nome 2]`) avrebbe conservato la struttura e insieme un dato in
   più — quante persone distinte comparivano — che è esattamente ciò che una
   scheda condivisa non deve dire.
-- **Le schermate non hanno test automatici.** La logica che vale la pena
-  verificare è stata spinta fuori dai componenti apposta, ma resta che nessuno
-  controlla che il pulsante di registrazione sia collegato al microfono se non
-  premendolo.
+- **Di schermate ne sono provate tre.** Redazione, ingresso e registrazioni in
+  sospeso hanno i loro casi, scelti perché lì una regressione non ha sintomi. Le
+  altre no, e la più scoperta è quella che nessun `jsdom` potrebbe coprire: che
+  il pulsante di registrazione sia davvero collegato al microfono non lo dice
+  nessun test, perché `MediaRecorder` in un ambiente finto è un oggetto che
+  finge. Lo dice solo premerlo su un telefono vero.
 - **I minuti che restano sono una stima, non una misura.** L'avviso sopra il
   pulsante di registrazione moltiplica lo spazio libero per una costante di byte
   al secondo decisa a tavolino, perché `MediaRecorder` non dichiara il bitrate
