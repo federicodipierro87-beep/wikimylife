@@ -204,12 +204,37 @@ const baseSchema = z.object({
    * spreco c'e' nel bucket, lo dice ogni giorno, e lo dice a chi non ha voglia
    * di affidare a un processo automatico un `DELETE` su file di persone.
    *
-   * Il default e' `spento` perche' e' l'unica cosa che il worker farebbe da
-   * solo senza che nessuno gliel'abbia chiesto, e perche' la prima passata su
-   * un bucket vero e' quella in cui si scopre che il `DATABASE_URL` puntava a
-   * un altro ambiente. Quella la si guarda.
+   * ## Perche' il default e' `elenca` e non `spento`
+   *
+   * Perche' `spento` non era prudenza, era il difetto di prima con un nome
+   * migliore. Una variabile che nessuno imposta raccoglie esattamente tanta
+   * spazzatura quanto un comando che nessuno esegue, e finche' il default e'
+   * stato `spento` il bucket e' cresciuto in silenzio in ogni installazione che
+   * non avesse letto questo paragrafo. La domanda vera non e' se la scopa
+   * debba passare da sola: e' se debba cancellare da sola.
+   *
+   * Il rischio che teneva il default a `spento` — la prima passata su un
+   * bucket vero e' quella in cui si scopre che il `DATABASE_URL` puntava a un
+   * altro ambiente, e allora *tutto* sembra orfano — non e' un rischio di
+   * `elenca`: e' precisamente cio' che `elenca` serve a far vedere. Una
+   * configurazione sbagliata diventa una pagina di registro che grida, invece
+   * di una perdita di dati o del nulla.
+   *
+   * `cancella` resta una cosa che si chiede a mano, e resta l'unico valore che
+   * tocchi i file di qualcuno. La regola dietro tutti e tre i valori e' la
+   * stessa che `cli/sweep.ts` applica da sempre e che ora vale per l'intera
+   * applicazione: guarda, e poi cancella.
+   *
+   * ## Cosa costa averla accesa
+   *
+   * Una scorsa del bucket ogni `SWEEP_EVERY_HOURS`, e solo a coda vuota. In
+   * voci di fattura sono richieste `LIST` — mille oggetti l'una — e nient'altro:
+   * `elenca` non chiama mai `delete`. Nel registro e' una riga per orfano, che
+   * su un sistema sano sono pochissime, perche' un orfano nasce solo da un
+   * processo morto nella finestra di millisecondi fra il `put` e la riga. Se
+   * invece sono tante, quella e' la notizia.
    */
-  SWEEP_MODE: z.enum(["spento", "elenca", "cancella"]).default("spento"),
+  SWEEP_MODE: z.enum(["spento", "elenca", "cancella"]).default("elenca"),
   /**
    * Ogni quante ore tentare una passata.
    *

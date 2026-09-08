@@ -26,8 +26,10 @@ export interface StatoScopa {
 /**
  * Tre condizioni, e la seconda e' quella che non e' ovvia.
  *
- * 1. **La scopa e' accesa.** `spento` e' il default, e con `spento` questo
- *    file non fa assolutamente niente.
+ * 1. **La scopa e' accesa.** Cioe' quasi sempre, da quando il default e'
+ *    `elenca`: la prima condizione non e' piu' quella che ferma le passate, e
+ *    a non toccare niente ci pensa `toccaCancellare` qui sotto. Con `spento`
+ *    questo file non fa assolutamente niente.
  *
  * 2. **La coda e' vuota.** Una passata su un bucket vero dura minuti, e per
  *    tutti quei minuti il worker non elabora: chi ha appena caricato un vocale
@@ -49,4 +51,25 @@ export function toccaSpazzare(stato: StatoScopa): boolean {
     return false;
   }
   return stato.adesso >= stato.nonPrimaDi;
+}
+
+/**
+ * Se questa passata puo' chiamare `delete`, o soltanto guardare.
+ *
+ * Una riga, e un confronto che si scrive in tre caratteri. Sta qui, esportata e
+ * provata, per un motivo solo: da quando il default e' `elenca` questo confronto
+ * e' l'unica cosa che separa un'installazione che non ha mai sentito nominare
+ * `SWEEP_MODE` da un `DELETE` sui file dei suoi utenti. Finche' stava in mezzo a
+ * `index.ts` — che finisce con un `await main()` e non e' importabile — non
+ * c'era modo di scrivere il test che dice che `elenca` non cancella.
+ *
+ * E' un'uguaglianza e non una negazione — `mode !== "elenca"` direbbe lo stesso
+ * oggi — per la stessa ragione per cui `SWEEP_MODE` rifiuta i valori che non
+ * conosce. Il giorno in cui i modi diventassero quattro, il quarto deve nascere
+ * innocuo e va acceso qui a mano da chi ha deciso che debba cancellare; scritto
+ * per esclusione nascerebbe con la scopa gia' in mano, e nessuno se ne
+ * accorgerebbe leggendo il nuovo valore.
+ */
+export function toccaCancellare(mode: SweepMode): boolean {
+  return mode === "cancella";
 }

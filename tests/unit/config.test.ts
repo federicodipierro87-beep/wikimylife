@@ -201,11 +201,23 @@ describe("loadConfig — s3", () => {
 
 describe("loadConfig — la scopa", () => {
   it("chi non dice niente non si trova dei file in meno", () => {
-    // E' l'unica cosa che il worker farebbe da solo su file di persone. Il
-    // default non e' una preferenza: e' la sola risposta accettabile per
-    // un'installazione che non ha mai sentito nominare SWEEP_MODE.
-    expect(loadConfig({ ...MINIMO }).sweep.mode).toBe("spento");
-    expect(loadConfig({ ...PRODUZIONE }).sweep.mode).toBe("spento");
+    // La stessa promessa di prima, mantenuta ora da un valore diverso. Il
+    // default e' passato da «non guarda» a «guarda e non tocca» perche' una
+    // variabile che nessuno imposta raccoglie tanta spazzatura quanto un
+    // comando che nessuno esegue; cio' che non e' cambiato, e che questo caso
+    // esiste per tenere fermo, e' che un'installazione muta non perde un byte.
+    // `cancella` si scrive a mano o non succede.
+    expect(loadConfig({ ...MINIMO }).sweep.mode).toBe("elenca");
+    expect(loadConfig({ ...PRODUZIONE }).sweep.mode).toBe("elenca");
+  });
+
+  it("il default vale anche quando il pannello e' pieno di altre variabili", () => {
+    // Un default non e' un valore, e' cio' che succede in assenza: una
+    // stringa vuota, o la variabile di un altro modo scritta accanto, non
+    // devono trasformarsi in `cancella` per una lettura distratta dello
+    // schema. Le altre due variabili della scopa non toccano la prima.
+    const config = loadConfig({ ...MINIMO, SWEEP_EVERY_HOURS: "1", SWEEP_GRACE_DAYS: "30" });
+    expect(config.sweep.mode).toBe("elenca");
   });
 
   it("le ore e i giorni arrivano in millisecondi", () => {
@@ -241,9 +253,14 @@ describe("loadConfig — la scopa", () => {
     expect(errore({ ...MINIMO, SWEEP_MODE: "" })).toContain("SWEEP_MODE");
   });
 
-  it("in produzione si puo' accendere, ed e' l'unico posto dove ha senso", () => {
-    expect(loadConfig({ ...PRODUZIONE, SWEEP_MODE: "elenca" }).sweep.mode).toBe("elenca");
+  it("i due valori che si scrivono a mano si scrivono anche in produzione", () => {
+    // `cancella` da una parte e `spento` dall'altra: il primo e' l'unico che
+    // tocchi i file, il secondo e' l'unico modo di tornare a com'era prima che
+    // il default cambiasse, e nessuna delle regole di produzione — quelle che
+    // vietano lo storage su disco, per dire — deve intromettersi qui.
     expect(loadConfig({ ...PRODUZIONE, SWEEP_MODE: "cancella" }).sweep.mode).toBe("cancella");
+    expect(loadConfig({ ...PRODUZIONE, SWEEP_MODE: "spento" }).sweep.mode).toBe("spento");
+    expect(loadConfig({ ...MINIMO, SWEEP_MODE: "spento" }).sweep.mode).toBe("spento");
   });
 });
 

@@ -6,12 +6,14 @@ import { formatOrfano, formatSummary, parseSweepArgs, SWEEP_USAGE } from "./swee
 /**
  * La scopa a mano: `npm run sweep`.
  *
- * Un comando e non un giro del worker, almeno per ora. La prima passata su un
- * bucket vero e' quella in cui si scopre che il prefisso era sbagliato o che il
- * `DATABASE_URL` puntava altrove, e in entrambi i casi si vuole che a decidere
- * ci sia qualcuno che guarda l'elenco. Il giorno in cui la si pianifica, il
- * servizio e' gia' pronto: e' questo file a essere il posto sbagliato per
- * metterci un timer.
+ * Il worker la passa da solo — `SWEEP_MODE` parte da `elenca` — quindi questo
+ * comando non e' piu' l'unico modo di farla girare. Resta perche' e' l'unico in
+ * cui a decidere c'e' qualcuno che guarda: la prima passata su un bucket vero e'
+ * quella in cui si scopre che il prefisso era sbagliato o che il `DATABASE_URL`
+ * puntava altrove, e leggere quell'elenco a schermo e' un'altra cosa dal
+ * ritrovarselo nel registro il giorno dopo. `--prefix` e `--giorni` esistono
+ * solo qui per la stessa ragione, e `--cancella` e' il gesto a mano che il
+ * worker per default non fa.
  *
  * `compose` e non un cablaggio a mano, per la stessa ragione del worker: la
  * scopa deve guardare esattamente lo storage che l'API ha usato per scrivere.

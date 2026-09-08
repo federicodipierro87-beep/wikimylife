@@ -1022,7 +1022,17 @@ sarebbero un errore e una procedura nel cestino. Accanto, i due modi di scrivere
 male il parametro: `=false` letto come un sì e `?ancheLascheda=1` con la `s`
 minuscola letto come un'assenza. Sono entrambi `400`, e sono entrambi test che
 esistono per un difetto che avrebbe cancellato il lavoro di qualcuno senza
-dirlo.
+dirlo. Della scopa, dove non si prova che funzioni ma che ognuna delle tre
+regole basti *da sola* a salvare un oggetto, e dove il caso peggiore ha un test
+suo: se la domanda «chi ti nomina?» fallisse in silenzio, la risposta sarebbe
+«nessuno» per tutti, quindi un errore del database interrompe la passata invece
+di saltare il blocco. Accanto, da quando `SWEEP_MODE` parte da `elenca`, le due
+decisioni del worker: quando la passata deve partire — quasi mai, e mai con la
+coda piena — e `toccaCancellare`, che è il confronto da tre caratteri fra un
+default innocuo e un `DELETE` sui file di chiunque non abbia mai letto questa
+sezione. Il worker non ha altri test perché il suo entry point finisce con un
+`await main()`: entrambe le decisioni stanno in un modulo a parte esattamente
+per poter essere provate.
 
 **web** monta quattro schermate in `jsdom` e ne prova le proprietà, non
 l'aspetto. Non è una copertura: è l'elenco dei posti dove una regressione non
@@ -1374,8 +1384,8 @@ scheduler, non c'è un terzo servizio da tenere in piedi.
 
 | | |
 |---|---|
-| `SWEEP_MODE=spento` | default: il worker non guarda nemmeno il bucket |
-| `SWEEP_MODE=elenca` | passa, scrive nel registro cosa cancellerebbe, non tocca niente |
+| `SWEEP_MODE=spento` | il worker non guarda nemmeno il bucket |
+| `SWEEP_MODE=elenca` | **default**: passa, scrive nel registro cosa cancellerebbe, non tocca niente |
 | `SWEEP_MODE=cancella` | passa e cancella |
 | `SWEEP_EVERY_HOURS` | ogni quanto, `24` per default |
 | `SWEEP_GRACE_DAYS` | la soglia della condizione 2, `1` per default |
@@ -1389,6 +1399,35 @@ finisce nel **registro dell'avvio**, dove chi guarda un deploy la vede: è
 l'unica cosa che il worker faccia sui file di qualcuno senza che gliel'abbia
 chiesto nessuno, e sapere che è accesa non deve costare una visita al pannello
 delle variabili.
+
+**Il default è `elenca`, e per un po' è stato `spento`.** Il cambio vale la pena
+di essere raccontato, perché la prudenza di prima si era rivelata un difetto con
+un nome migliore: una variabile che nessuno imposta raccoglie esattamente tanta
+spazzatura quanto un comando che nessuno esegue, e negli ambienti veri la scopa
+non passava. Il rischio che teneva fermo `spento` — la prima passata su un bucket
+vero è quella in cui si scopre che il `DATABASE_URL` puntava a un altro ambiente,
+e allora *tutto* risulta orfano — non è un rischio di `elenca`: è esattamente ciò
+che `elenca` serve a mostrare. Con il default di oggi quella configurazione
+sbagliata diventa una pagina di registro che grida, invece di una perdita di dati
+o del nulla. `cancella` resta una cosa che si chiede a mano, e resta l'unico
+valore che tocchi i file di qualcuno: la regola che il comando applicava da
+sempre — *guarda, e poi cancella* — ora vale per l'intera applicazione.
+
+Averla accesa costa una scorsa del bucket ogni `SWEEP_EVERY_HOURS`, e solo a coda
+vuota: in fattura sono richieste `LIST`, mille oggetti l'una, e niente altro,
+perché `elenca` non chiama mai `delete`. Nel registro è una riga per orfano, che
+su un sistema sano sono pochissime — un orfano nasce solo da un processo morto
+nella finestra di millisecondi fra il `put` e la riga che lo nomina. Se invece
+sono tante, quella è la notizia.
+
+A separare le due cose è una riga sola, `toccaCancellare` in
+`apps/worker/src/sweepSchedule.ts`, e sta lì invece che dentro `index.ts` per una
+ragione precisa: l'entry point del worker finisce con un `await main()` e non è
+importabile, quindi finché il confronto stava lì dentro non c'era modo di
+scrivere il test che dice che `elenca` non cancella. Ora che la passata avviene
+in ogni installazione senza che nessuno l'abbia chiesta, quel `=== "cancella"` è
+l'unica cosa che tiene innocuo il default, e un `!==` di troppo non lo
+prenderebbe nessun altro test della suite.
 
 Tre dettagli di pianificazione, ognuno per un modo di sbagliare:
 
@@ -1500,7 +1539,7 @@ significherebbe quattro deploy.
 | `S3_ENDPOINT` | ✓ | ✓ | | | vuoto = AWS. R2: `https://<account>.r2.cloudflarestorage.com` |
 | `S3_FORCE_PATH_STYLE` | ✓ | ✓ | | | `true` solo per MinIO e simili |
 | `STORAGE_DIR` | | | | ✓ | solo con `STORAGE_PROVIDER=local` |
-| `SWEEP_MODE` | | ✓ | | ✓ | solo il worker la legge. Default `spento`; `elenca` prima di `cancella` |
+| `SWEEP_MODE` | | ✓ | | ✓ | solo il worker la legge. Default `elenca`: passa e non tocca. `cancella` si scrive a mano |
 | `SWEEP_EVERY_HOURS` | | ✓ | | ✓ | default 24 |
 | `SWEEP_GRACE_DAYS` | | ✓ | | ✓ | default 1. Non è la retention: è la difesa dall'audio in corso di caricamento |
 | `TRANSCRIPTION_PROVIDER` | ✓ | ✓ | | ✓ | `openai` in produzione |
@@ -1940,12 +1979,23 @@ Non installate, e il perché:
   resto, e paga la banda due volte. Un URL prefirmato eviterebbe il doppio salto,
   ma sposterebbe l'autorizzazione dentro una firma con scadenza, e per ora non
   vale il cambio.
-- **La scopa sa partire da sola, ma nessuno l'ha accesa.** Il worker la
-  pianifica e `SWEEP_MODE=spento` è il default, quindi negli ambienti veri di
-  oggi non passa nessuno: una variabile che nessuno imposta raccoglie tanta
-  spazzatura quanto un comando che nessuno esegue. È voluto — la prima passata
-  su un bucket vero è meglio guardarla, e `elenca` esiste per guardarla senza
-  rischi — ma finché la variabile resta al default il difetto è quello di prima.
+- **La scopa passa da sola, ma per default non porta via niente.** Il default è
+  `elenca`: negli ambienti veri la passata avviene, ogni orfano finisce nel
+  registro con la sua chiave e i suoi byte, e il bucket resta grande come prima.
+  Recuperare lo spazio vuole ancora una mano — `SWEEP_MODE=cancella` nel
+  pannello, o `npm run sweep -- --cancella` da un terminale — ed è voluto, perché
+  quella mano è l'unica cosa che distingua «ho letto l'elenco» da «un processo
+  ha deciso per me». Ma va detto per quello che è: il costo dello storage non
+  scende finché qualcuno non lo chiede, e chi guarda solo la fattura non nota la
+  differenza fra oggi e quando la scopa era spenta.
+- **Sulla scopa non c'è nessun test d'integrazione.** Le tre regole hanno una
+  suite unitaria fitta e `toccaCancellare` copre la riga che decide se toccare i
+  file, ma nulla prova la scopa contro un Postgres e uno storage veri insieme:
+  il caso in cui `findExistingAudioKeys` non riconoscesse le chiavi che
+  `recordings.service.ts` ha scritto — un prefisso, una normalizzazione — darebbe
+  per orfano tutto ciò che è vivo, e nessuna delle due suite se ne accorgerebbe.
+  Con il default a `elenca` sarebbe una pagina di registro sbagliata; con
+  `cancella` sarebbe il bucket.
 - **Il gesto che toglie tutte e due le cose sta in un posto solo.** È nella
   sezione «Da cosa nasce» del dettaglio, dentro il riquadro del vocale, ed è
   l'unico punto dell'app in cui la voce e la scheda che ne è nata sono sotto gli

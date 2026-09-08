@@ -2,7 +2,7 @@ import { loadConfig } from "@wikimylife/api/config";
 import { createLogger } from "@wikimylife/api/logger";
 import { compose } from "@wikimylife/api";
 import { creaSonno } from "./sonno.js";
-import { toccaSpazzare } from "./sweepSchedule.js";
+import { toccaCancellare, toccaSpazzare } from "./sweepSchedule.js";
 
 /**
  * Il worker: prende le registrazioni in attesa e le porta a scheda.
@@ -28,10 +28,13 @@ import { toccaSpazzare } from "./sweepSchedule.js";
  * vorrebbero dire poter trascrivere con Whisper in un processo e con il fake
  * nell'altro, e accorgersene dai dati.
  *
- * FA ANCHE LA SCOPA, se gliela si accende. E' l'unica altra cosa periodica del
- * sistema, sta qui perche' qui c'e' gia' un processo che si sveglia da solo, e
- * parte spenta: si veda `SWEEP_MODE`. Quando la coda ha qualcosa dentro non
- * passa — la ragione sta in `sweepSchedule.ts`, ed e' che nessuno deve
+ * FA ANCHE LA SCOPA, e la fa senza che nessuno gliel'abbia chiesto. E' l'unica
+ * altra cosa periodica del sistema, sta qui perche' qui c'e' gia' un processo
+ * che si sveglia da solo, e dal default `elenca` in poi passa anche in
+ * un'installazione che non ha mai letto `SWEEP_MODE`: scorre il bucket, scrive
+ * cosa cancellerebbe, e non cancella. A cancellare ci vuole `cancella`, e la
+ * riga che lo decide e' `toccaCancellare`. Quando la coda ha qualcosa dentro
+ * non passa — la ragione sta in `sweepSchedule.ts`, ed e' che nessuno deve
  * aspettare la propria scheda perche' il worker sta pulendo la spazzatura di
  * ieri.
  *
@@ -112,7 +115,7 @@ async function main(): Promise<void> {
    * passata: dicono cosa sarebbe sparito, senza che sparisca.
    */
   const spazza = async (): Promise<void> => {
-    const cancella = config.sweep.mode === "cancella";
+    const cancella = toccaCancellare(config.sweep.mode);
     scopa.info("passata avviata", { cancella, graceMs: config.sweep.graceMs });
     try {
       const esito = await composition.storageSweepService.esegui({
