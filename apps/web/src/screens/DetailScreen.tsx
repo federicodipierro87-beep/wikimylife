@@ -1,6 +1,6 @@
 import type { Outcome, ProcedureDetail } from "@wikimylife/shared";
 import { useState } from "react";
-import { apiClient } from "../api";
+import { useApi } from "../api";
 import {
   badgesOf,
   formatCosto,
@@ -41,7 +41,11 @@ const ESITI: readonly { esito: Outcome; etichetta: string; classe: string }[] = 
 ];
 
 export function DetailScreen({ id }: { id: string }): React.JSX.Element {
-  const { stato, ricarica } = useAsync<ProcedureDetail>(() => apiClient.getProcedure(id), [id]);
+  const apiClient = useApi();
+  const { stato, ricarica } = useAsync<ProcedureDetail>(
+    () => apiClient.getProcedure(id),
+    [apiClient, id],
+  );
 
   if (stato.kind === "attesa") {
     return (
@@ -298,6 +302,7 @@ function Conferma({
   procedureId: string;
   onFatto: () => void;
 }): React.JSX.Element {
+  const apiClient = useApi();
   const [aperta, setAperta] = useState<Outcome | null>(null);
   const [nota, setNota] = useState("");
   const [attesa, setAttesa] = useState(false);

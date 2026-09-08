@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { apiClient } from "../api";
+import { useApi } from "../api";
 import { messaggioDi } from "../session";
 
 /**
@@ -19,6 +19,7 @@ import { messaggioDi } from "../session";
  * mobile non deve costare tre megabyte che nessuno ascoltera'.
  */
 export function AudioPlayer({ recordingId }: { recordingId: string }): React.JSX.Element {
+  const apiClient = useApi();
   const [src, setSrc] = useState<string | null>(null);
   const [attesa, setAttesa] = useState(false);
   const [errore, setErrore] = useState<string | null>(null);

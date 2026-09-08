@@ -4,7 +4,7 @@ import type {
   RedactionReport,
 } from "@wikimylife/shared";
 import { useState } from "react";
-import { apiClient } from "../api";
+import { useApi } from "../api";
 import { goBack, navigate } from "../router";
 import { messaggioDi } from "../session";
 import { useAsync } from "../useAsync";
@@ -78,9 +78,10 @@ const NOMI: Record<RedactionProposal["kind"], string> = {
 };
 
 export function RedactionScreen({ id }: { id: string }): React.JSX.Element {
+  const apiClient = useApi();
   const { stato, ricarica } = useAsync<RedactionReport>(
     () => apiClient.proposeRedaction(id),
-    [id],
+    [apiClient, id],
   );
 
   if (stato.kind === "attesa") {
@@ -127,6 +128,7 @@ function Passata({
   report: RedactionReport;
   onScaduta: () => void;
 }): React.JSX.Element {
+  const apiClient = useApi();
   const [scelte, setScelte] = useState<ReadonlySet<string>>(new Set());
   const [attesa, setAttesa] = useState(false);
   const [errore, setErrore] = useState<string | null>(null);

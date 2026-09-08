@@ -1,6 +1,6 @@
 import { ApiError, type PublicUser } from "@wikimylife/shared";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { apiClient } from "./api";
+import { useApi } from "./api";
 
 /**
  * Chi sta usando l'app.
@@ -29,6 +29,7 @@ export interface Session {
 const SessionContext = createContext<Session | null>(null);
 
 export function SessionProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
+  const apiClient = useApi();
   const [state, setState] = useState<SessionState>({ kind: "sconosciuta" });
 
   useEffect(() => {
@@ -52,20 +53,26 @@ export function SessionProvider({ children }: { children: React.ReactNode }): Re
     return () => {
       vivo = false;
     };
-  }, []);
+  }, [apiClient]);
 
-  const login = useCallback(async (email: string, password: string): Promise<void> => {
-    const session = await apiClient.login({ email, password });
-    setState({ kind: "attiva", user: session.user });
-  }, []);
+  const login = useCallback(
+    async (email: string, password: string): Promise<void> => {
+      const session = await apiClient.login({ email, password });
+      setState({ kind: "attiva", user: session.user });
+    },
+    [apiClient],
+  );
 
-  const signup = useCallback(async (email: string, password: string): Promise<void> => {
-    // `locale` dal dispositivo e non da un menu a tendina: e' la lingua che lo
-    // stadio 2 passera' a Whisper, e chiederla a chi si sta registrando
-    // significherebbe far scegliere un dettaglio tecnico.
-    const session = await apiClient.signup({ email, password, locale: navigator.language });
-    setState({ kind: "attiva", user: session.user });
-  }, []);
+  const signup = useCallback(
+    async (email: string, password: string): Promise<void> => {
+      // `locale` dal dispositivo e non da un menu a tendina: e' la lingua che
+      // lo stadio 2 passera' a Whisper, e chiederla a chi si sta registrando
+      // significherebbe far scegliere un dettaglio tecnico.
+      const session = await apiClient.signup({ email, password, locale: navigator.language });
+      setState({ kind: "attiva", user: session.user });
+    },
+    [apiClient],
+  );
 
   const logout = useCallback(async (): Promise<void> => {
     try {
@@ -76,7 +83,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }): Re
       // dentro perche' la richiesta di uscita e' fallita sarebbe assurdo.
     }
     setState({ kind: "assente" });
-  }, []);
+  }, [apiClient]);
 
   const value = useMemo<Session>(
     () => ({ state, login, signup, logout }),

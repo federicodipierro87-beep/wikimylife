@@ -1,6 +1,6 @@
 import { PROCEDURE_PAGE_SIZE, type ProcedureList } from "@wikimylife/shared";
 import { useState } from "react";
-import { apiClient } from "../api";
+import { useApi } from "../api";
 import { navigate } from "../router";
 import { useAsync } from "../useAsync";
 import { PendingRecordings } from "./PendingRecordings";
@@ -26,6 +26,7 @@ const AMBITI = [
 ] as const;
 
 export function ListScreen(): React.JSX.Element {
+  const apiClient = useApi();
   const [ambito, setAmbito] = useState<(typeof AMBITI)[number]["valore"]>(undefined);
   const [offset, setOffset] = useState(0);
 
@@ -36,7 +37,7 @@ export function ListScreen(): React.JSX.Element {
         offset,
         ...(ambito === undefined ? {} : { scope: ambito }),
       }),
-    [ambito, offset],
+    [apiClient, ambito, offset],
   );
 
   return (

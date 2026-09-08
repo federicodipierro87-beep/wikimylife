@@ -1,6 +1,6 @@
 import { SEARCH_PAGE_SIZE, type SearchResult } from "@wikimylife/shared";
 import { useEffect, useState } from "react";
-import { apiClient } from "../api";
+import { useApi } from "../api";
 import { goBack } from "../router";
 import { useAsync } from "../useAsync";
 import { ProcedureCard } from "./ProcedureCard";
@@ -21,6 +21,7 @@ const RITARDO_MS = 300;
 const MIN_CARATTERI = 2;
 
 export function SearchScreen(): React.JSX.Element {
+  const apiClient = useApi();
   const [testo, setTesto] = useState("");
   const [query, setQuery] = useState("");
   const [offset, setOffset] = useState(0);
@@ -43,7 +44,7 @@ export function SearchScreen(): React.JSX.Element {
       query === ""
         ? Promise.resolve(null)
         : apiClient.search({ q: query, limit: SEARCH_PAGE_SIZE, offset }),
-    [query, offset],
+    [apiClient, query, offset],
   );
 
   return (

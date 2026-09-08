@@ -1,3 +1,5 @@
+import type { ApiClient } from "@wikimylife/shared";
+import { ApiProvider } from "./api";
 import { formatDurataAudio, formatQuando } from "./format";
 import { CaptureProvider, useCapture } from "./recording/CaptureProvider";
 import { navigate, useRoute } from "./router";
@@ -19,13 +21,18 @@ import { SessionProvider, useSession } from "./session";
  * l'utente sta leggendo una scheda, e l'indicatore deve restare visibile
  * ovunque. Montarlo dentro `RecordScreen` avrebbe fermato i caricamenti a ogni
  * cambio di pagina.
+ *
+ * Il client arriva come parametro e non come import: chi costruisce quello vero
+ * e' `main.tsx`, e il perche' sta in `api.tsx`.
  */
 
-export function App(): React.JSX.Element {
+export function App({ client }: { client: ApiClient }): React.JSX.Element {
   return (
-    <SessionProvider>
-      <Radice />
-    </SessionProvider>
+    <ApiProvider client={client}>
+      <SessionProvider>
+        <Radice />
+      </SessionProvider>
+    </ApiProvider>
   );
 }
 

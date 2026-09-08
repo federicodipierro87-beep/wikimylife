@@ -1,6 +1,6 @@
 import type { ProcedureDetail, RecordingState } from "@wikimylife/shared";
 import { useState } from "react";
-import { apiClient } from "../api";
+import { useApi } from "../api";
 import { revisioneDa } from "../format";
 import { goBack, navigate } from "../router";
 import { messaggioDi } from "../session";
@@ -35,13 +35,14 @@ interface Dati {
 }
 
 export function ReviewScreen({ id }: { id: string }): React.JSX.Element {
+  const apiClient = useApi();
   const { stato } = useAsync<Dati>(async () => {
     const procedura = await apiClient.getProcedure(id);
     const registrazioni = await Promise.all(
       procedura.recordings.map((r) => apiClient.getRecording(r.id)),
     );
     return { procedura, registrazioni };
-  }, [id]);
+  }, [apiClient, id]);
 
   if (stato.kind === "attesa") {
     return (
@@ -65,6 +66,7 @@ export function ReviewScreen({ id }: { id: string }): React.JSX.Element {
 }
 
 function Revisione({ dati }: { dati: Dati }): React.JSX.Element {
+  const apiClient = useApi();
   const { procedura } = dati;
   const suggerimenti = revisioneDa(dati.registrazioni.map((r) => r.extraction?._meta ?? null));
 

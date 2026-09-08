@@ -1,6 +1,6 @@
 import type { RecordingState } from "@wikimylife/shared";
 import { useEffect, useState } from "react";
-import { apiClient } from "../api";
+import { useApi } from "../api";
 import { avvisoDi, formatDurataAudio, formatQuando } from "../format";
 import { messaggioDi } from "../session";
 import { useAsync } from "../useAsync";
@@ -24,9 +24,10 @@ import { useAsync } from "../useAsync";
 const RITMO_MS = 5000;
 
 export function PendingRecordings(): React.JSX.Element | null {
+  const apiClient = useApi();
   const { stato, ricarica } = useAsync<readonly RecordingState[]>(
     async () => (await apiClient.listPendingRecordings()).items,
-    [],
+    [apiClient],
   );
 
   // Il polling parte solo se c'e' qualcosa che puo' cambiare da solo. Una lista
@@ -75,6 +76,7 @@ function Sospesa({
   r: RecordingState;
   onCambiata: () => void;
 }): React.JSX.Element | null {
+  const apiClient = useApi();
   const [attesa, setAttesa] = useState(false);
   const [errore, setErrore] = useState<string | null>(null);
   // La cancellazione e' l'unica cosa irreversibile che questa schermata sappia

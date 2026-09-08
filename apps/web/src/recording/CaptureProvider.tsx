@@ -1,6 +1,6 @@
 import type { Coordinates, QueuedRecording } from "@wikimylife/shared";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { apiClient } from "../api";
+import { useApi } from "../api";
 import { GeolocationAdapter } from "./GeolocationAdapter";
 import { IndexedDbUploadQueue } from "./IndexedDbUploadQueue";
 import { MediaRecorderAdapter } from "./MediaRecorderAdapter";
@@ -135,6 +135,7 @@ function nuovoId(): string {
 }
 
 export function CaptureProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
+  const apiClient = useApi();
   const recorder = useRef(new MediaRecorderAdapter());
   const location = useRef(new GeolocationAdapter());
   const queue = useRef(new IndexedDbUploadQueue());
