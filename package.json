@@ -19,7 +19,7 @@
     "start:api": "prisma migrate deploy && node apps/api/dist/index.js",
     "start:worker": "node apps/worker/dist/index.js",
     "clean": "tsc -b --clean",
-    "typecheck": "tsc -b && tsc -p prisma && tsc -p tsconfig.tests.json",
+    "typecheck": "tsc -b && tsc -p prisma && tsc -p tsconfig.tests.json && tsc -p tsconfig.tests.web.json",
     "dev": "concurrently -n shared,api,worker,web -c blue,green,yellow,magenta \"npm run dev:shared\" \"npm run dev:api\" \"npm run dev:worker\" \"npm run dev:web\"",
     "dev:shared": "tsc -b packages/shared --watch --preserveWatchOutput",
     "dev:api": "npm run dev --workspace @wikimylife/api",
@@ -33,8 +33,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "pretest": "tsc -b packages/shared",
-    "test": "vitest run --project unit",
-    "test:watch": "vitest --project unit",
+    "test": "vitest run --project unit --project web",
+    "test:watch": "vitest --project unit --project web",
     "pretest:integration": "tsc -b apps/api",
     "test:integration": "vitest run --project integration"
   },
@@ -42,8 +42,11 @@
     "deepmerge-ts": "^8.0.0"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/node": "^22.10.2",
     "concurrently": "^9.1.2",
+    "jsdom": "^29.1.1",
     "prisma": "^6.2.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

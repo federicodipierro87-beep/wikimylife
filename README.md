@@ -900,14 +900,18 @@ curl.exe "http://localhost:3000/api/procedures/$id" -H "authorization: Bearer $a
 ## Test
 
 ```powershell
-npm test               # unit — nessun Docker, nessuna rete
+npm test               # unit + web — nessun Docker, nessuna rete
 npm run test:integration   # integration — richiede docker compose up -d
 npm run typecheck      # tsc su tutti i progetti, incluso seed e test
 ```
 
-I due gruppi sono project Vitest separati e non filtrati per nome file, perché la
+I tre gruppi sono project Vitest separati e non filtrati per nome file, perché la
 promessa deve essere verificabile: se `npm test` avesse bisogno di un container,
-il primo contributo di chiunque comincerebbe con mezz'ora di setup.
+il primo contributo di chiunque comincerebbe con mezz'ora di setup. `web` è un
+project a sé e non una cartella dentro `unit` per una ragione tecnica e non
+organizzativa: l'ambiente è una proprietà del project, e `jsdom` costa qualche
+decimo di secondo a file. Farlo pagare anche ai test che non toccano il DOM
+sarebbe stato un rallentamento silenzioso su tutta la suite.
 
 **unit** copre il contratto Zod (casi negativi con verifica del *path* della
 issue, non solo del fallimento), le guardie sull'isomorfismo, i token, il
@@ -986,12 +990,53 @@ successo perché tutti e tre i provider trattano così una `delete` a vuoto, e i
 bucket irraggiungibile, che invece deve lasciare all'utente il suo `204` e la
 chiave a chi tiene il bucket.
 
-Le schermate non hanno test, e non c'è `jsdom` fra le dipendenze. È la ragione
-per cui `format.ts`, `routes.ts`, `uploader.ts`, `salvataggio.ts` e `spazio.ts`
-esistono come moduli separati e privi di DOM: lì sta tutto ciò che si può
-sbagliare in silenzio, e
-`tsconfig.tests.json` non carica nemmeno la libreria DOM, così un modulo che
-nomina `window` non è importabile da un test e la separazione non può marcire.
+**web** monta tre schermate in `jsdom` e ne prova cinque proprietà, non
+l'aspetto. Non è una copertura: è l'elenco dei posti dove una regressione non
+produce nessun sintomo visibile.
+
+Della schermata di redazione, che nessuna casella sia spuntata all'apertura —
+è la §9 alla lettera, e un valore iniziale diverso trasformerebbe la pagina in
+un «conferma» che cancella dati che nessuno ha letto — che ad `applyRedaction`
+arrivino esattamente gli id spuntati e nessun altro, e che un `409` azzeri le
+scelte invece di lasciare selezionate caselle che si riferiscono a un testo che
+non esiste più. Accanto, le due cose che il CSS non protegge: la scritta «letto,
+non calcolato» sulle proposte di un modello, che è l'unica differenza fra
+un'ipotesi e un checksum per chi non distingue i colori, e il fatto che la frase
+di contesto finisca in pagina come testo — arriva da un modello linguistico che
+ha letto un audio, ed è l'ingresso meno fidato che questa applicazione abbia.
+
+Della schermata di ingresso, che il messaggio del server si veda (è l'unico
+punto dell'app dove l'errore *è* la risposta, non un dettaglio), che «Failed to
+fetch» non arrivi mai all'utente, che `autoComplete` passi a `new-password`
+quando si sta creando un account — sbagliarlo non ha nessun sintomo durante lo
+sviluppo e produce un account con una password che il gestore non ha mai
+salvato — e che il pulsante spento durante la richiesta impedisca davvero la
+seconda iscrizione di chi non vede reazione.
+
+Della sezione «In lavorazione», quando smette di chiedere. Il polling è il caso
+esemplare del guasto senza sintomo: se resta acceso quando non doveva, la
+schermata è identica e corretta, la prova manuale passa, e l'unico segno è una
+richiesta ogni cinque secondi su una connessione mobile finché la pagina resta
+aperta. I casi contano i giri con i timer finti: continua finché qualcosa è in
+movimento, non parte affatto su una lista di sole registrazioni ferme, e si
+spegne *da solo* nel momento in cui l'ultima elaborazione finisce. Accanto, che
+un errore lì non produca un avviso rosso in cima a una schermata che funziona, e
+che eliminare chieda il secondo tocco.
+
+Il finto dell'API lancia su ogni metodo non insegnato, col proprio nome dentro:
+un finto che risponde a tutto con valori plausibili avrebbe fatto passare una
+schermata che chiama la rotta sbagliata. Il lancio è sincrono e non una promessa
+rifiutata, perché una promessa rifiutata diventerebbe un avviso rosso in pagina,
+cioè uno degli stati che questi test verificano di proposito.
+
+Le altre schermate restano senza test, ed è la ragione per cui `format.ts`,
+`routes.ts`, `uploader.ts`, `salvataggio.ts` e `spazio.ts` esistono come moduli
+separati e privi di DOM: lì sta il resto di ciò che si può sbagliare in
+silenzio, e provarlo senza montare niente costa mille righe di test che girano
+in un secondo. `tsconfig.tests.json` continua a non caricare la libreria DOM —
+`tests/web/` è escluso e ha il proprio `tsconfig.tests.web.json` — così un
+modulo puro che cominciasse a nominare `window` non sarebbe più importabile dai
+test unitari, e la separazione non può marcire in silenzio.
 
 Fra i test unitari c'è anche `deploy.test.ts`, che non prova codice ma i tre file
 di configurazione del deploy. `netlify.toml` e i due `railway.toml` sono
@@ -1102,8 +1147,9 @@ silenzio.
 
 Il primo non ha il database, e non è una svista: il repository promette che
 `npm test` giri senza Docker, e una promessa che nessuno verifica scade da sola.
-Con un job solo, il giorno in cui un test unitario aprisse una connessione
-nessuno se ne accorgerebbe — il database ci sarebbe, e sarebbe verde.
+Con un job solo, il giorno in cui un test unitario o una schermata aprisse una
+connessione nessuno se ne accorgerebbe — il database ci sarebbe, e sarebbe
+verde.
 
 Due dettagli del job di integrazione. Il database di test lo crea `initdb` con
 `POSTGRES_DB`, perché in locale lo crea `docker/initdb` e lì non si può: i
@@ -1722,6 +1768,17 @@ ce ne sono **due**, entrambe conseguenza dell'autenticazione:
 - **`@node-rs/argon2`** — argon2id con binari napi precompilati: niente
   `node-gyp` su Windows né toolchain sul server.
 
+Fra le sole dipendenze di sviluppo, `jsdom`, `@testing-library/react` e
+`@testing-library/user-event` sono arrivate dopo, quando è diventato chiaro che
+le tre regole che costano privacy o dati — nessuna casella spuntata, solo gli id
+scelti, il polling che si spegne — non stanno in nessun modulo puro: stanno in
+uno `useState` iniziale e in un `useEffect`, e l'unico modo di provarle è
+montare. Il resto è ancora fuori: `@testing-library/jest-dom` non c'è, perché
+`.checked` e `.disabled` si leggono con una riga, e `@vitejs/plugin-react`
+nemmeno, perché il JSX lo compila l'esbuild che Vitest ha già dentro — quel
+plugin porta Babel e il fast refresh, che in un test non ha niente da
+aggiornare.
+
 Non installate, e il perché:
 
 | Pacchetto | Al suo posto |
@@ -1739,7 +1796,8 @@ Non installate, e il perché:
 | `@tanstack/react-query` | `useAsync`, venti righe: carica e ricarica |
 | `vite-plugin-pwa` `workbox` | un service worker di sessanta righe |
 | `tailwind` e simili | un foglio di stile di 2 kB compressi |
-| `jsdom` `@testing-library` | la logica sta nei moduli puri, e quelli sono testati |
+| `@testing-library/jest-dom` | `.checked` e `.disabled` si leggono senza matcher |
+| `@vitejs/plugin-react` | il JSX lo compila l'esbuild che Vitest ha già dentro |
 
 ---
 
@@ -1874,6 +1932,6 @@ Non installate, e il perché:
 | `npm run db:reset` | ricrea il database da zero |
 | `npm run db:studio` | Prisma Studio |
 | `npm run sweep` | elenca gli oggetti che nessuna riga nomina più; `-- --cancella` per toglierli |
-| `npm test` | unit |
+| `npm test` | unit + web, senza Docker |
 | `npm run test:integration` | integration |
 | `npm run preview --workspace @wikimylife/web` | la build vera, service worker compreso |

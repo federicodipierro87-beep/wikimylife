@@ -3,9 +3,9 @@
 #
 # `verifica` non ha nessun service container, e non e' una svista: il repository
 # promette che `npm test` giri senza Docker, e una promessa che nessuno verifica
-# scade da sola. Se i due gruppi fossero un job solo, il giorno in cui un test
-# unitario cominciasse ad aprire una connessione al database nessuno se ne
-# accorgerebbe — il database ci sarebbe, e sarebbe verde.
+# scade da sola. Se girassero in un job solo, il giorno in cui un test unitario
+# o una schermata cominciasse ad aprire una connessione al database nessuno se
+# ne accorgerebbe — il database ci sarebbe, e sarebbe verde.
 #
 # `build` esegue esattamente i tre comandi che girano su Railway e su Netlify.
 # Non serve a compilare qualcosa che poi si usa: serve a scoprire qui un
@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   verifica:
-    name: typecheck e unit
+    name: typecheck, unit e schermate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

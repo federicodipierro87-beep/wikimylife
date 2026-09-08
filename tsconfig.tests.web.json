@@ -1,0 +1,27 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    // Il contrario esatto di `tsconfig.tests.json`, e per la stessa ragione.
+    // Quel file toglie "DOM" perche' i test dell'API ricompilano i sorgenti
+    // dell'API, che vogliono i Blob di Node. Questi test ricompilano i sorgenti
+    // di `apps/web`, che vogliono quelli del browser: un `input`, un
+    // `HTMLFormElement`, `document`. Due gruppi di file con due mondi diversi
+    // sotto, quindi due configurazioni — non una sola che accontenta a meta'.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    // Niente "node": qui non si legge `process.env` ne' si apre un file, e
+    // aggiungere quei globali rimetterebbe in campo i doppioni (Blob, FormData,
+    // Response) che l'altra configurazione evita togliendo "DOM".
+    "types": [],
+    "jsx": "react-jsx",
+    // `apps/web` importa senza estensione, perche' a risolvere e' Vite. Un test
+    // che importa quei file deve risolverli con le stesse regole, altrimenti
+    // fallisce sul primo `from "../api"`.
+    "module": "ESNext",
+    "moduleResolution": "Bundler"
+  },
+  "include": ["tests/web/**/*.ts", "tests/web/**/*.tsx"]
+}
