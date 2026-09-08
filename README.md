@@ -452,14 +452,14 @@ non lo distingue, proprio sulla differenza che qui cambia una decisione.
 
 ## L'app
 
-Sei schermate, un router a `hashchange` di trenta righe, nessuna libreria di
+Sette schermate, un router a `hashchange` di trenta righe, nessuna libreria di
 componenti e nessun framework CSS. Il bundle sta in **72 kB compressi**, foglio
 di stile compreso.
 
 ```
 apps/web/src/
   recording/   MediaRecorder, GPS, coda IndexedDB, svuotamento, disco pieno, contesto React
-  screens/     login, registrazione, lista, ricerca, scheda, revisione, redazione
+  screens/     login, registrazione, lista, ricerca, scheda, revisione, redazione, account
   format.ts    le regole di presentazione, pure e testate
   routes.ts    rotta ⇄ hash, puro e testato
   router.ts    le tre righe che toccano location e history
@@ -596,6 +596,37 @@ aggiunge che nemmeno un nome o un indirizzo è stato riconosciuto, e che resta
 una lettura e non una garanzia. Con la passata caduta lo dice, con un avviso
 sopra. È l'unico dei tre casi che merita un avviso: `NON_CONFIGURATA` sarebbe
 pubblicità travestita da allarme, `ESEGUITA` un invito a fidarsi.
+
+**La settima schermata si chiama «Il tuo account» e non «Impostazioni»**, perché
+non ci sono impostazioni: la lingua viene dal dispositivo, l'ordinamento lo
+decide il server, i provider stanno nell'API. Contiene le tre cose che
+esistevano già e che nessuno poteva premere — con quale account si sta
+parlando, il cambio password, l'uscita. Le ultime due erano codice raggiungibile
+solo da un terminale: `POST /api/auth/password` si chiamava con `curl`, e
+`logout` stava in `session.tsx` da sempre senza che lo invocasse nessuno, quindi
+uscire voleva dire svuotare lo storage del browser. Ci si arriva da un pulsante
+nella testata dell'elenco e non da una quarta voce nella barra bassa: la barra
+ha tre voci intorno al tasto rosso, che è grande perché deve restare premibile
+di fretta con una mano sola, e stringerlo per una schermata che si apre due
+volte l'anno sarebbe stato il peggior scambio possibile.
+
+Il campo «ripeti la password nuova» non è cortesia: **non esiste recupero
+password in nessuna parte di questo prodotto**, quindi una password nuova
+digitata male e confermata male non chiude fuori per dieci minuti — chiude fuori
+e basta. Per lo stesso motivo i tre `autoComplete` sono espliciti
+(`current-password` sul primo, `new-password` sugli altri due): sbagliarli non
+dà nessun sintomo mentre si sviluppa, e produce un gestore di password che dopo
+il cambio conserva ancora quella vecchia. Delle regole del server, qui se ne
+ripete una sola — la lunghezza minima, importata da `PASSWORD_MIN_LENGTH` così
+che il numero esista in un posto solo. Il criterio non è «controllare presto» ma
+se il server, davanti allo stesso sbaglio, sappia dire qualcosa di utile: sulla
+password uguale alla precedente lo sa (`CONFLICT`, con una frase mostrabile così
+com'è), sulla lunghezza risponderebbe «La richiesta non è valida», che è vero e
+non dice cosa correggere. Dopo un cambio riuscito i campi si svuotano, perché
+`currentPassword` contiene ormai una password morta e un secondo invio
+stamperebbe «password sbagliata» sotto «password cambiata»; dopo un rifiuto
+invece restano, perché il campo sbagliato è uno solo e ridigitare due volte una
+password nuova che era giusta sono due occasioni in più di sbagliarla.
 
 ### Il service worker fa una cosa sola
 
@@ -1098,7 +1129,7 @@ sezione. Il worker non ha altri test perché il suo entry point finisce con un
 `await main()`: entrambe le decisioni stanno in un modulo a parte esattamente
 per poter essere provate.
 
-**web** monta sette fra schermate e pezzi di schermata in `jsdom` e ne prova le
+**web** monta otto fra schermate e pezzi di schermata in `jsdom` e ne prova le
 proprietà, non l'aspetto. Non è una copertura: è l'elenco dei posti dove una
 regressione non produce nessun sintomo visibile.
 
@@ -1120,6 +1151,25 @@ quando si sta creando un account — sbagliarlo non ha nessun sintomo durante lo
 sviluppo e produce un account con una password che il gestore non ha mai
 salvato — e che il pulsante spento durante la richiesta impedisca davvero la
 seconda iscrizione di chi non vede reazione.
+
+Dell'account, la schermata dove si sbaglia una volta sola: senza recupero
+password, ogni difetto qui è un archivio perso, e nessuno di quelli che contano
+si vede provandola a mano. I tre `autoComplete` sono lo stesso guasto silenzioso
+della schermata di ingresso, moltiplicato — un `current-password` sul campo
+sbagliato fa sì che il gestore, dopo il cambio, conservi ancora la vecchia. Che
+`currentPassword` e `newPassword` non finiscano scambiate nel corpo non lo
+mostra nessuna prova manuale, se per fare in fretta si digita due volte la
+stessa stringa. Che la ripetizione *fermi* la richiesta e non la accompagni è
+tutta la difesa che esiste contro un refuso. E i due comportamenti dei campi
+dopo l'invio sono opposti apposta: vuoti dopo un successo, perché `attuale`
+contiene ormai una password morta e il secondo invio stamperebbe «sbagliata»
+sotto «cambiata»; intatti dopo un rifiuto, perché ridigitare una password nuova
+che era giusta è un'occasione in più di perdersi. Accanto, che l'errore sparisca
+appena si corregge il campo che l'ha causato — «non coincidono» appeso sopra il
+campo che le ha appena fatte coincidere si legge come «non hai corretto
+abbastanza» — che il doppio tocco non mandi due cambi di fila, e che «Esci»
+chiami davvero `logout`, che per tutta la vita di `session.tsx` prima di questa
+schermata non lo chiamava nessuno.
 
 Della sezione «In lavorazione», quando smette di chiedere. Il polling è il caso
 esemplare del guasto senza sintomo: se resta acceso quando non doveva, la
@@ -1157,7 +1207,13 @@ l'ambito di prima, che «Precedenti» sia spento sulla prima pagina e «Successi
 sull'ultima (accesi chiederebbero rispettivamente un offset negativo, che il
 server rifiuta, e una pagina vuota), che la barra resti però disegnata
 sull'ultima pagina, o da lì si tornerebbe indietro solo ricaricando, e che
-sparisca del tutto quando l'archivio sta in una pagina sola.
+sparisca del tutto quando l'archivio sta in una pagina sola. Nello stesso file,
+un caso che non parla di liste: che il pulsante «Account» nella testata porti
+davvero all'account. È l'unica porta che esiste — la barra bassa ha tre voci e
+nessuna è quella — e di là ci sono il cambio password e l'uscita: se sparisse in
+una riscrittura della testata, o navigasse altrove, la schermata tornerebbe
+irraggiungibile, che è lo stato esatto in cui la rotta del cambio password è
+rimasta per un commit intero.
 
 Della ricerca, quante volte parte. Ogni ricerca calcola un embedding, cioè una
 chiamata a pagamento verso OpenAI, e i 300 ms di silenzio fra l'ultimo tasto e
@@ -2001,7 +2057,7 @@ Non installate, e il perché:
 | `express-rate-limit` | quaranta righe, e la certezza su cosa viene contato |
 | `eslint` | il test di guardia copre le due regole che ci interessano |
 | `uuid` `nanoid` | `crypto.randomUUID()` |
-| `react-router` | `hashchange`, trenta righe per sei schermate |
+| `react-router` | `hashchange`, trenta righe per sette schermate |
 | `@tanstack/react-query` | `useAsync`, venti righe: carica e ricarica |
 | `vite-plugin-pwa` `workbox` | un service worker di sessanta righe |
 | `tailwind` e simili | un foglio di stile di 2 kB compressi |
@@ -2026,11 +2082,14 @@ Non installate, e il perché:
   la password: "scollega tutti i dispositivi" quando la password va bene ed è il
   telefono a essere sparito. È la stessa riga di repository con un input diverso,
   e non c'è.
-- **Nessuna schermata chiama il cambio password.** La rotta c'è, il client
-  tipizzato ha `changePassword`, i test coprono entrambi — ma `apps/web` non ha
-  una schermata di impostazioni dove metterlo, quindi oggi il cambio password si
-  fa con `curl`. È scritto qui e non nascosto: una funzione di sicurezza che
-  esiste solo per chi sa usare un terminale protegge quasi nessuno.
+- **Non si recupera una password dimenticata.** Non c'è rotta, non c'è mail, non
+  c'è nulla: chi dimentica la password perde l'archivio. La schermata
+  dell'account fa quel che può — chiede la nuova due volte e dice che non c'è
+  modo di recuperarla — ma è un avviso, non un rimedio. Il rimedio vero richiede
+  un canale che oggi il prodotto non ha (un mittente, un dominio, un token a
+  scadenza da custodire), e mezza implementazione sarebbe peggio di nessuna:
+  un reset per mail fatto male è la porta di servizio da cui si entra
+  nell'account senza saperne la password.
 - **Un access token emesso prima di questo cambiamento non vale più.** Non porta
   `fid`, quindi non è revocabile, quindi viene rifiutato invece di essere
   accettato "finché non scade" — una scorciatoia del genere non la toglie più

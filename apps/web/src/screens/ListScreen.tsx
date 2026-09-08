@@ -53,6 +53,19 @@ export function ListScreen(): React.JSX.Element {
         >
           Cerca
         </button>
+        {/* L'unica porta per l'account, e sta qui e non nella barra bassa: la
+            barra ha tre voci e il tasto rosso al centro, che e' grande perche'
+            deve restare premibile di fretta con una mano sola. Una quarta voce
+            lo avrebbe stretto per una schermata che si apre due volte l'anno. */}
+        <button
+          type="button"
+          className="bottone bottone--piatto"
+          onClick={() => {
+            navigate({ name: "account" });
+          }}
+        >
+          Account
+        </button>
       </header>
 
       <div className="filtri" role="tablist" aria-label="Ambito">

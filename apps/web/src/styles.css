@@ -586,6 +586,13 @@ button:focus-visible {
   color: var(--bad);
 }
 
+/* Il verde non porta l'informazione: la porta la parola «cambiata» dentro il
+   riquadro, che si legge anche senza distinguere il verde dal rosso. */
+.avviso--fatto {
+  border-color: var(--good);
+  color: var(--good);
+}
+
 .avviso--obsoleta,
 .avviso--spazio,
 .avviso--degradata {

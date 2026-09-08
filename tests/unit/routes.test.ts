@@ -13,6 +13,7 @@ const ROTTE: readonly Route[] = [
   { name: "lista" },
   { name: "registra" },
   { name: "cerca" },
+  { name: "account" },
   { name: "scheda", id: "cku123" },
   { name: "revisione", id: "cku123" },
   { name: "redazione", id: "cku123" },

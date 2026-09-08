@@ -16,11 +16,22 @@ export const emailSchema = z
   .email();
 
 /**
+ * Il minimo, esportato perche' serve anche a chi non valida.
+ *
+ * L'API risponde a una password troppo corta con VALIDATION_FAILED e il
+ * messaggio "La richiesta non e' valida", che e' giusto per un client e
+ * inservibile per una persona: non dice cosa correggere. Una schermata che
+ * voglia dirlo prima di inviare deve conoscere il numero, e l'unico modo di non
+ * farne due copie destinate a divergere e' che il numero sia questo.
+ */
+export const PASSWORD_MIN_LENGTH = 12;
+
+/**
  * 12 caratteri minimi, nessun requisito di composizione. Le regole "almeno una
  * maiuscola e un simbolo" spingono verso password piu' corte e piu' prevedibili:
  * la lunghezza e' l'unico parametro che paghi davvero.
  */
-export const passwordSchema = z.string().min(12).max(256);
+export const passwordSchema = z.string().min(PASSWORD_MIN_LENGTH).max(256);
 
 export const signupRequestSchema = z
   .object({

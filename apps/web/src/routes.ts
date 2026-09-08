@@ -14,6 +14,7 @@ export type Route =
   | { readonly name: "registra" }
   | { readonly name: "lista" }
   | { readonly name: "cerca" }
+  | { readonly name: "account" }
   | { readonly name: "scheda"; readonly id: string }
   | { readonly name: "revisione"; readonly id: string }
   | { readonly name: "redazione"; readonly id: string };
@@ -28,6 +29,8 @@ export function toHash(route: Route): string {
       return "#/";
     case "cerca":
       return "#/cerca";
+    case "account":
+      return "#/account";
     case "scheda":
       return `#/scheda/${encodeURIComponent(route.id)}`;
     case "revisione":
@@ -47,6 +50,9 @@ export function parseHash(hash: string): Route {
   if (primo === "cerca") {
     return { name: "cerca" };
   }
+  if (primo === "account") {
+    return { name: "account" };
+  }
   if (primo === "scheda" && secondo !== undefined) {
     const id = decodeURIComponent(secondo);
     if (terzo === "revisione") {
@@ -61,6 +67,6 @@ export function parseHash(hash: string): Route {
     return { name: "scheda", id };
   }
   // Qualsiasi cosa non riconosciuta e' la home. Una schermata "404" dentro
-  // un'app di sei pagine sarebbe piu' codice che valore.
+  // un'app di sette pagine sarebbe piu' codice che valore.
   return HOME;
 }

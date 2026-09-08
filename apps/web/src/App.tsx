@@ -4,6 +4,7 @@ import { formatDurataAudio, formatQuando } from "./format";
 import { CaptureProvider, useCapture } from "./recording/CaptureProvider";
 import { navigate, useRoute } from "./router";
 import type { Route } from "./routes";
+import { AccountScreen } from "./screens/AccountScreen";
 import { DetailScreen } from "./screens/DetailScreen";
 import { ListScreen } from "./screens/ListScreen";
 import { LoginScreen } from "./screens/LoginScreen";
@@ -66,6 +67,8 @@ function Schermate(): React.JSX.Element {
       return <RecordScreen />;
     case "cerca":
       return <SearchScreen />;
+    case "account":
+      return <AccountScreen />;
     case "scheda":
       return <DetailScreen id={route.id} />;
     case "revisione":

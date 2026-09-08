@@ -8,6 +8,7 @@ import { ApiError, PROCEDURE_PAGE_SIZE } from "@wikimylife/shared";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { toHash } from "../../apps/web/src/routes";
 import { ListScreen } from "../../apps/web/src/screens/ListScreen";
 import { creaClienteFinto } from "./helpers/clienteFinto";
 import { unaVoce, unElenco } from "./helpers/dati";
@@ -239,5 +240,25 @@ describe("ListScreen: quando il server non risponde", () => {
     // tutta qui: la seconda frase, letta da chi ha ottanta procedure, dice che
     // le ha perse.
     expect(screen.queryByText("Qui non c'e' ancora niente.")).toBeNull();
+  });
+});
+
+describe("ListScreen: la porta dell'account", () => {
+  it("«Account» ci porta davvero, perche' non ce n'e' un'altra", async () => {
+    const { client } = clienteElenco(archivioDa45);
+
+    montaConApi(client, <ListScreen />);
+    await screen.findByText("Procedura 1");
+
+    window.location.hash = "";
+    const utente = userEvent.setup();
+    await utente.click(bottone("Account"));
+
+    // Il cambio password e il logout stanno di la' da questo pulsante e da
+    // nessun altro posto: la barra bassa ha tre voci e nessuna e' questa. Se
+    // qui si navigasse altrove, o se il pulsante sparisse in una riscrittura
+    // della testata, la schermata tornerebbe irraggiungibile — che e' lo stato
+    // esatto in cui la rotta e' rimasta per un commit intero.
+    expect(window.location.hash).toBe(toHash({ name: "account" }));
   });
 });
