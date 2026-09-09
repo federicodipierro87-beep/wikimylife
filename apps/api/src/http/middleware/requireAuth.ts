@@ -37,10 +37,21 @@ import type { TokenIssuer } from "../../services/ports/TokenIssuer.js";
  * questo middleware esiste per chiuderla, non per accorciarla.
  */
 
+/**
+ * `familyId` accanto a `userId`, e non solo lo userId.
+ *
+ * Per quasi tutte le rotte la famiglia non serve: le procedure sono
+ * dell'utente, non del telefono. Serve all'unica rotta che deve distinguere
+ * «questo dispositivo» da «tutti gli altri», e la risposta a quella domanda non
+ * puo' arrivare dal corpo della richiesta — sarebbe il chiamante a dichiarare
+ * quale sessione risparmiare, cioe' esattamente la cosa che non deve poter
+ * scegliere. Qui invece e' il token stesso a dirlo, ed e' un token firmato di
+ * cui la riga sopra ha appena verificato che la famiglia sia viva.
+ */
 declare global {
   namespace Express {
     interface Request {
-      auth?: { userId: string };
+      auth?: { userId: string; familyId: string };
     }
   }
 }
@@ -84,7 +95,7 @@ export function createRequireAuth(deps: {
         return;
       }
 
-      req.auth = { userId: claims.userId };
+      req.auth = { userId: claims.userId, familyId: claims.familyId };
       next();
     } catch (error) {
       next(error);
@@ -106,7 +117,7 @@ export function createRequireAuth(deps: {
  * `findUnique` seguito da un `if`. Risorsa altrui: 404, non 403 — un 403
  * confermerebbe che quell'id esiste.
  */
-export function authContext(req: Request): { userId: string } {
+export function authContext(req: Request): { userId: string; familyId: string } {
   const auth = req.auth;
   if (auth === undefined) {
     throw AppError.unauthorized();

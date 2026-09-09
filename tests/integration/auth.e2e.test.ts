@@ -1,4 +1,9 @@
-import { authSessionSchema, errorBodySchema, meResponseSchema } from "@wikimylife/shared";
+import {
+  authSessionSchema,
+  errorBodySchema,
+  meResponseSchema,
+  type AuthSession,
+} from "@wikimylife/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectTestPrisma, resetDatabase, testPrisma } from "./helpers/db.js";
 import { call, startTestServer, type TestServer } from "./helpers/server.js";
@@ -722,6 +727,184 @@ describe("cambio password", () => {
     const res = await refresh(session.refreshToken);
     expect(res.status).toBe(401);
     expect(errorCode(res.body)).toBe("TOKEN_REUSED");
+  });
+});
+
+/**
+ * «Scollega gli altri dispositivi», contro il database vero.
+ *
+ * Qui la parte che non si puo' provare in memoria e' la clausola: `WHERE userId
+ * = ... AND familyId <> ... AND revokedAt IS NULL` e' una riga sola, e ognuno
+ * dei tre pezzi, tolto, produce un guasto che i tipi non vedono. Senza
+ * `userId`, il gesto scollega i dispositivi di tutti; senza il `<>`, scollega
+ * anche chi ha premuto; senza `revokedAt IS NULL`, il numero in risposta conta
+ * anche le sessioni chiuse settimane fa.
+ *
+ * L'altra meta' e' che `requireAuth` porti davvero la famiglia fino alla rotta.
+ * In memoria il servizio la riceve come parametro e il caso la sceglie; qui
+ * deve uscire dal claim `fid` di un access token vero, attraversare il
+ * middleware e arrivare intera — e se si perdesse per strada, l'unico modo di
+ * accorgersene e' che la sessione del chiamante cada insieme alle altre.
+ */
+describe("scollega gli altri dispositivi", () => {
+  async function login(): Promise<AuthSession> {
+    const res = await call(server, "POST", "/api/auth/login", {
+      body: { email: EMAIL, password: PASSWORD },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return authSessionSchema.parse(res.body);
+  }
+
+  async function scollega(
+    accessToken: string,
+    body: unknown = { currentPassword: PASSWORD },
+  ): Promise<{ status: number; body: unknown }> {
+    return call(server, "POST", "/api/auth/sessions/revoke", { accessToken, body });
+  }
+
+  async function apre(accessToken: string): Promise<number> {
+    return (await call(server, "GET", "/api/auth/me", { accessToken })).status;
+  }
+
+  it("chiude gli altri e lascia intatto il proprio, token compresi", async () => {
+    const telefono = await signup();
+    const portatile = await login();
+    const tablet = await login();
+
+    const res = await scollega(telefono.accessToken);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ revoked: 2 });
+
+    expect((await refresh(portatile.tokens.refreshToken)).status).toBe(401);
+    expect(await apre(tablet.tokens.accessToken)).toBe(401);
+
+    // Il caso per cui esiste il claim `fid` nel contesto autenticato. Se la
+    // famiglia non arrivasse fino alla clausola, questi due sarebbero 401 come
+    // gli altri, e la risposta — che non contiene nessun token — non avrebbe
+    // modo di rimediare: chi ha premuto il pulsante si troverebbe fuori
+    // dall'account che stava mettendo in sicurezza.
+    expect(await apre(telefono.accessToken)).toBe(200);
+    expect((await refresh(telefono.refreshToken)).status).toBe(200);
+  });
+
+  it("risparmia la famiglia anche dopo che ha ruotato", async () => {
+    const telefono = await signup();
+    await login();
+    // La rotazione tiene la famiglia e cambia il token: e' la condizione
+    // normale di un dispositivo usato da piu' di un quarto d'ora.
+    const ruotata = authSessionSchema.parse((await refresh(telefono.refreshToken)).body);
+
+    const res = await scollega(ruotata.tokens.accessToken);
+    expect(res.body).toEqual({ revoked: 1 });
+
+    expect(await apre(ruotata.tokens.accessToken)).toBe(200);
+    expect((await refresh(ruotata.tokens.refreshToken)).status).toBe(200);
+  });
+
+  it("non conta le sessioni gia' chiuse, e non le riscrive", async () => {
+    const telefono = await signup();
+    const perduto = await login();
+    await call(server, "POST", "/api/auth/logout", {
+      body: { refreshToken: perduto.tokens.refreshToken },
+    });
+
+    const primaDelGesto = await testPrisma().refreshToken.findFirst({
+      where: { userId: telefono.userId, revokedAt: { not: null } },
+      select: { id: true, revokedAt: true },
+    });
+
+    const res = await scollega(telefono.accessToken);
+    expect(res.body).toEqual({ revoked: 0 });
+
+    // `revokedAt IS NULL` nella clausola serve a due cose insieme: il numero, e
+    // l'istante. Senza, la revoca di stasera sovrascriverebbe la data di un
+    // logout di tre settimane fa, e quella data e' l'unica traccia di quando
+    // una sessione e' stata chiusa davvero.
+    const dopoIlGesto = await testPrisma().refreshToken.findUnique({
+      where: { id: primaDelGesto?.id ?? "" },
+      select: { revokedAt: true },
+    });
+    expect(dopoIlGesto?.revokedAt?.getTime()).toBe(primaDelGesto?.revokedAt?.getTime());
+  });
+
+  it("le righe revocate restano, come dopo ogni altra revoca", async () => {
+    const telefono = await signup();
+    const portatile = await login();
+    await scollega(telefono.accessToken);
+
+    // Una `deleteMany` al posto di `updateMany` passerebbe ogni caso di sopra e
+    // spegnerebbe la reuse detection: il token del dispositivo perduto, tornando
+    // domani, sarebbe un TOKEN_INVALID qualunque invece di un riuso che uccide
+    // la catena e si fa notare.
+    const riga = await testPrisma().refreshToken.count({
+      where: { userId: telefono.userId, revokedAt: { not: null } },
+    });
+    expect(riga).toBe(1);
+    expect(errorCode((await refresh(portatile.tokens.refreshToken)).body)).toBe("TOKEN_REUSED");
+  });
+
+  it("non tocca le sessioni di un altro utente", async () => {
+    const mio = await signup();
+    const altro = await signup("altra@wikimylife.test");
+
+    const res = await scollega(mio.accessToken);
+    expect(res.body).toEqual({ revoked: 0 });
+
+    expect(await apre(altro.accessToken)).toBe(200);
+    expect((await refresh(altro.refreshToken)).status).toBe(200);
+  });
+
+  it("con la password sbagliata non scollega niente", async () => {
+    const telefono = await signup();
+    const portatile = await login();
+
+    const res = await scollega(telefono.accessToken, { currentPassword: "non-e-questa" });
+    expect(res.status).toBe(401);
+    expect(errorCode(res.body)).toBe("INVALID_CREDENTIALS");
+
+    // Il campo che sembra un fastidio. Senza, chiunque abbia in mano il telefono
+    // sbloccato potrebbe premere il pulsante e restare l'unico collegato,
+    // buttando fuori il proprietario da tutto il resto.
+    expect((await refresh(portatile.tokens.refreshToken)).status).toBe(200);
+  });
+
+  it("senza access token non scollega niente", async () => {
+    const telefono = await signup();
+
+    const res = await call(server, "POST", "/api/auth/sessions/revoke", {
+      body: { currentPassword: PASSWORD },
+    });
+    expect(res.status).toBe(401);
+
+    expect((await refresh(telefono.refreshToken)).status).toBe(200);
+  });
+
+  it("non cambia la password", async () => {
+    const telefono = await signup();
+    await scollega(telefono.accessToken);
+
+    // La riga che separa questa rotta da `/auth/password`. Se cadesse, chi la
+    // usa proprio per non toccare la propria password si troverebbe fuori da
+    // ogni posto in cui l'aveva salvata.
+    expect((await login()).tokens).toBeDefined();
+  });
+
+  it("rifiuta un corpo senza password, e un corpo con campi in piu'", async () => {
+    const telefono = await signup();
+
+    const vuoto = await scollega(telefono.accessToken, {});
+    expect(vuoto.status).toBe(400);
+    expect(errorCode(vuoto.body)).toBe("VALIDATION_FAILED");
+
+    // `.strict()`: un `familyId` mandato dal client verrebbe ignorato in
+    // silenzio da uno schema permissivo, e chi lo ha scritto crederebbe di
+    // poter scegliere quale sessione risparmiare.
+    const inPiu = await scollega(telefono.accessToken, {
+      currentPassword: PASSWORD,
+      familyId: "quella-che-dico-io",
+    });
+    expect(inPiu.status).toBe(400);
+    expect(errorCode(inPiu.body)).toBe("VALIDATION_FAILED");
   });
 });
 

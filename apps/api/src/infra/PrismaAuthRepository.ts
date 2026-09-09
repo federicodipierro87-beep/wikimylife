@@ -113,6 +113,36 @@ export class PrismaAuthRepository implements AuthRepository {
   }
 
   /**
+   * Una sola `updateMany`, e nessuna transazione: qui c'e' una scrittura sola,
+   * e una scrittura sola in Postgres o avviene tutta o non avviene.
+   *
+   * `familyId: { not: ... }` dentro il WHERE e non un filtro applicato dopo la
+   * lettura: fra un `findMany` e le revoche ci sta un login su un altro
+   * dispositivo, e quel login aprirebbe una sessione che il gesto avrebbe
+   * dovuto chiudere e che invece non era ancora nell'elenco. La riga di SQL
+   * decide su cio' che c'e' nel momento in cui scrive.
+   *
+   * `updateMany` e non `deleteMany`, come nel cambio password e per la stessa
+   * ragione: le righe revocate sono cio' che fa scattare la reuse detection
+   * quando un token tornera'.
+   */
+  async revokeOtherFamilies(input: {
+    userId: string;
+    exceptFamilyId: string;
+    revokedAt: Date;
+  }): Promise<number> {
+    const revoked = await this.#prisma.refreshToken.updateMany({
+      where: {
+        userId: input.userId,
+        familyId: { not: input.exceptFamilyId },
+        revokedAt: null,
+      },
+      data: { revokedAt: input.revokedAt },
+    });
+    return revoked.count;
+  }
+
+  /**
    * Le due scritture in una transazione sola: il motivo per cui devono stare
    * insieme e' scritto sulla porta.
    *

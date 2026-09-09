@@ -74,6 +74,57 @@ export const changePasswordRequestSchema = z
   })
   .strict();
 
+/**
+ * «Scollega tutti gli altri dispositivi», senza toccare la password.
+ *
+ * ## Perche' non basta il cambio password
+ *
+ * Il cambio password fa gia' cadere ogni altra sessione, ma lo fa come effetto
+ * collaterale di un'altra cosa. Chi ha perso il telefono e usa un gestore di
+ * password non ha nessun motivo di cambiare una credenziale che sta al sicuro:
+ * gli serve chiudere una sessione che e' rimasta aperta dentro un oggetto che
+ * non ha piu'. Costringerlo a cambiare password per riuscirci vuol dire
+ * chiedergli di aggiornarla ovunque, e il costo di quell'aggiornamento e' la
+ * ragione per cui poi non lo fa nessuno.
+ *
+ * ## Perche' chiede comunque la password
+ *
+ * Per la stessa ragione del cambio password, e qui con un motivo in piu' che le
+ * e' proprio. Questo gesto risparmia la sessione da cui parte: se non chiedesse
+ * niente, chi ha in mano il telefono rubato potrebbe premerlo e restare
+ * l'unico collegato, buttando fuori il proprietario da tutto il resto. Il campo
+ * che sembra un fastidio e' l'unica cosa che tiene l'arma dalla parte giusta.
+ *
+ * `min(1).max(256)` come in `login` e non `passwordSchema`: si sta verificando
+ * una password che esiste gia', non se ne sta accettando una nuova, e una piu'
+ * corta del minimo di oggi deve poter essere digitata proprio da chi ha un
+ * problema da risolvere adesso.
+ */
+export const revokeOtherSessionsRequestSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(256),
+  })
+  .strict();
+
+/**
+ * Quante sessioni sono cadute — e non `{ ok: true }`.
+ *
+ * Zero e uno non vogliono dire la stessa cosa, e l'interfaccia deve poterli
+ * distinguere: «non c'era nessun altro dispositivo collegato» e' una risposta
+ * utile, «fatto» sopra la stessa situazione lascia credere di aver disconnesso
+ * il telefono che si sta cercando.
+ *
+ * Il numero conta i refresh token vivi revocati, che e' il numero di
+ * dispositivi perche' una famiglia viva ne ha esattamente uno: la rotazione e'
+ * una transazione che ne revoca uno e ne crea uno, e non c'e' nessun percorso
+ * che ne lasci due.
+ */
+export const revokeOtherSessionsResponseSchema = z
+  .object({
+    revoked: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export const refreshRequestSchema = z
   .object({
     refreshToken: z.string().min(1),
@@ -132,6 +183,8 @@ export const healthResponseSchema = z
 export type SignupRequest = z.infer<typeof signupRequestSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export type ChangePasswordRequest = z.infer<typeof changePasswordRequestSchema>;
+export type RevokeOtherSessionsRequest = z.infer<typeof revokeOtherSessionsRequestSchema>;
+export type RevokeOtherSessionsResponse = z.infer<typeof revokeOtherSessionsResponseSchema>;
 export type RefreshRequest = z.infer<typeof refreshRequestSchema>;
 export type LogoutRequest = z.infer<typeof logoutRequestSchema>;
 export type PublicUser = z.infer<typeof publicUserSchema>;

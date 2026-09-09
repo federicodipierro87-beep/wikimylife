@@ -172,6 +172,25 @@ export class InMemoryAuthRepository implements AuthRepository {
     return revoked;
   }
 
+  async revokeOtherFamilies(input: {
+    readonly userId: string;
+    readonly exceptFamilyId: string;
+    readonly revokedAt: Date;
+  }): Promise<number> {
+    let revoked = 0;
+    for (const [id, token] of this.#tokens) {
+      if (
+        token.userId === input.userId &&
+        token.familyId !== input.exceptFamilyId &&
+        token.revokedAt === null
+      ) {
+        this.#tokens.set(id, { ...token, revokedAt: input.revokedAt });
+        revoked += 1;
+      }
+    }
+    return revoked;
+  }
+
   async revokeFamily(familyId: string, revokedAt: Date): Promise<number> {
     let revoked = 0;
     for (const [id, token] of this.#tokens) {

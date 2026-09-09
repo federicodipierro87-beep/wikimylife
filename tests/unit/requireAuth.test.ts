@@ -182,11 +182,16 @@ describe("requireAuth: la sessione dietro al token", () => {
     return { ...esito, reg };
   }
 
-  it("famiglia viva: passa, con lo userId del token", async () => {
+  it("famiglia viva: passa, con lo userId e la famiglia del token", async () => {
     const esito = await conFamiglia("fam-1", ["fam-1"]);
 
     expect(esito.errore).toBeNull();
-    expect(esito.auth).toEqual({ userId: "u-1" });
+    // La famiglia sta nel contesto perche' `/auth/sessions/revoke` deve poter
+    // dire «tutte tranne questa», e l'unico modo onesto di sapere quale sia
+    // «questa» e' il token firmato che ha appena aperto la richiesta. Se
+    // arrivasse dal corpo, sarebbe il chiamante a scegliere quale sessione
+    // risparmiare.
+    expect(esito.auth).toEqual({ userId: "u-1", familyId: "fam-1" });
   });
 
   it("famiglia revocata: 401, e req.auth resta vuoto", async () => {

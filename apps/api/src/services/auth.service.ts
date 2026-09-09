@@ -3,6 +3,8 @@ import type {
   ChangePasswordRequest,
   LoginRequest,
   PublicUser,
+  RevokeOtherSessionsRequest,
+  RevokeOtherSessionsResponse,
   SignupRequest,
 } from "@wikimylife/shared";
 import type { AuthConfig } from "../config/env.js";
@@ -35,6 +37,11 @@ export interface AuthService {
   refresh(rawRefreshToken: string): Promise<AuthSession>;
   logout(rawRefreshToken: string): Promise<void>;
   changePassword(userId: string, input: ChangePasswordRequest): Promise<AuthSession>;
+  revokeOtherSessions(
+    userId: string,
+    familyId: string,
+    input: RevokeOtherSessionsRequest,
+  ): Promise<RevokeOtherSessionsResponse>;
   me(userId: string): Promise<PublicUser>;
 }
 
@@ -273,6 +280,64 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       });
 
       return issueSession(user, tokens.newFamilyId());
+    },
+
+    /**
+     * Chiude tutte le sessioni tranne questa, e non tocca la password.
+     *
+     * ## A cosa serve, visto che il cambio password fa gia' questo
+     *
+     * Il cambio password lo fa per un'altra ragione: la vecchia credenziale non
+     * vale piu', quindi tutto cio' che ci stava sopra deve cadere. Qui la
+     * ragione e' che un dispositivo non e' piu' in mano al proprietario, e la
+     * password non c'entra niente. Sono due guasti diversi e finora avevano una
+     * riparazione sola — quella piu' cara, perche' cambiare password significa
+     * riscriverla ovunque sia salvata, e il gesto che costa e' il gesto che non
+     * si fa.
+     *
+     * ## Perche' chiede la password lo stesso
+     *
+     * `requireAuth` dice che chi chiama ha una sessione viva. In questo caso
+     * proprio non basta: il gesto risparmia la sessione da cui parte, quindi
+     * senza verifica sarebbe uno strumento perfetto per chi ha in mano il
+     * telefono rubato — un tocco e resta lui solo, dentro, con il proprietario
+     * scollegato da tutto il resto. La password sposta la disponibilita' del
+     * gesto da chi tiene il dispositivo a chi conosce il segreto, ed e'
+     * l'inversione esatta che serve.
+     *
+     * ## Perche' non rifiuta quando non c'e' niente da revocare
+     *
+     * Zero non e' un errore, e' un'informazione: «non c'era nessun altro
+     * collegato». Chi lo chiede sospetta qualcosa e ha diritto di sapere che il
+     * sospetto era infondato. Un 409 al suo posto direbbe che il gesto e'
+     * fallito, e chi lo legge continuerebbe a cercare un dispositivo che non
+     * c'e'.
+     */
+    async revokeOtherSessions(
+      userId: string,
+      familyId: string,
+      input: RevokeOtherSessionsRequest,
+    ): Promise<RevokeOtherSessionsResponse> {
+      const user = await repo.findUserById(userId);
+      if (user === null) {
+        throw AppError.unauthorized();
+      }
+
+      const ok = await hasher.verify(user.passwordHash, input.currentPassword);
+      if (!ok) {
+        // Prima la verifica, poi la revoca: nell'ordine opposto una password
+        // sbagliata avrebbe comunque scollegato tutto, e l'errore in risposta
+        // racconterebbe il contrario di quello che e' successo.
+        throw AppError.invalidCredentials();
+      }
+
+      const revoked = await repo.revokeOtherFamilies({
+        userId: user.id,
+        exceptFamilyId: familyId,
+        revokedAt: clock.now(),
+      });
+
+      return { revoked };
     },
 
     async me(userId: string): Promise<PublicUser> {

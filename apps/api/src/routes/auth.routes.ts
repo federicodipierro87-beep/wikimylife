@@ -3,6 +3,7 @@ import {
   loginRequestSchema,
   logoutRequestSchema,
   refreshRequestSchema,
+  revokeOtherSessionsRequestSchema,
   signupRequestSchema,
   type LogoutResponse,
   type MeResponse,
@@ -27,12 +28,12 @@ export function createAuthRouter(deps: {
    * Sta sulle rotte che accettano una password, autenticate o no.
    *
    * Le prime tre — `/signup`, `/login`, `/refresh` — accettano un segreto da
-   * chi non e' ancora nessuno, e sono il bersaglio ovvio. `/password` e' dietro
-   * `requireAuth` e lo si limita lo stesso, per due ragioni che si sommano: e'
-   * l'unico posto in cui chi ha rubato un access token puo' indovinare la
-   * password online, ed e' l'unica rotta che paga due argon2 per richiesta —
-   * una verifica e un hash — quindi martellarla costa alla CPU dell'API molto
-   * piu' che a chi la martella.
+   * chi non e' ancora nessuno, e sono il bersaglio ovvio. `/password` e
+   * `/sessions/revoke` sono dietro `requireAuth` e si limitano lo stesso, per
+   * due ragioni che si sommano: sono i due posti in cui chi ha rubato un access
+   * token puo' indovinare la password online, e ogni tentativo costa un argon2
+   * alla CPU dell'API — due, su `/password`, che verifica e poi calcola —
+   * quindi martellarle costa a chi risponde piu' che a chi martella.
    *
    * Le finestre non si mescolano: la chiave del limitatore contiene la rotta,
    * quindi un cambio password non consuma i tentativi di `/login` e nessuno dei
@@ -90,6 +91,31 @@ export function createAuthRouter(deps: {
     const input = parseBody(changePasswordRequestSchema, req.body);
     const session = await deps.authService.changePassword(userId, input);
     res.status(200).json(session);
+  });
+
+  /**
+   * `POST /sessions/revoke` e non `DELETE /sessions`.
+   *
+   * La cosa da fare sarebbe la seconda — si stanno cancellando delle sessioni —
+   * se non fosse che serve mandare una password nel corpo, e un corpo su una
+   * DELETE e' consentito dallo standard ma trattato male da meta' del mondo che
+   * sta in mezzo: proxy che lo scartano, `fetch` che nelle vecchie versioni non
+   * lo manda. Una password che sparisce per strada qui non da' un errore di
+   * rete, da' un `VALIDATION_FAILED` che nessuno saprebbe spiegare.
+   *
+   * Sotto `rateLimit` per la ragione di `/password`, che qui vale identica: e'
+   * una rotta autenticata che accetta una password, quindi e' un posto da cui
+   * indovinarla online, e paga un argon2 per tentativo.
+   *
+   * Non risponde con una sessione, al contrario di `/password`: questa chiamata
+   * non revoca i token di chi la fa, quindi non c'e' niente da consegnare in
+   * cambio. Risponde con quanti dispositivi sono caduti.
+   */
+  router.post("/sessions/revoke", deps.rateLimit, deps.requireAuth, async (req, res) => {
+    const { userId, familyId } = authContext(req);
+    const input = parseBody(revokeOtherSessionsRequestSchema, req.body);
+    const body = await deps.authService.revokeOtherSessions(userId, familyId, input);
+    res.status(200).json(body);
   });
 
   router.get("/me", deps.requireAuth, async (req, res) => {

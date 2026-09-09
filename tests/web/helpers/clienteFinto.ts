@@ -3,7 +3,7 @@ import type { ApiClient } from "@wikimylife/shared";
 /**
  * Un `ApiClient` che non sa fare niente, tranne quello che il caso gli insegna.
  *
- * Ventiquattro metodi, e ogni test ne usa due o tre. La tentazione e' un finto
+ * Venticinque metodi, e ogni test ne usa due o tre. La tentazione e' un finto
  * che risponde a tutto con dei valori plausibili, ed e' la scelta che rende
  * inutile il test: una schermata che chiama una rotta sbagliata riceverebbe
  * comunque una risposta valida, e il caso passerebbe verificando la cosa
@@ -39,6 +39,7 @@ export function creaClienteFinto(risposte: Partial<ApiClient> = {}): ApiClient {
     refresh: () => nonPrevista("refresh"),
     logout: () => nonPrevista("logout"),
     changePassword: () => nonPrevista("changePassword"),
+    revokeOtherSessions: () => nonPrevista("revokeOtherSessions"),
     getAccessToken: () => nonPrevista("getAccessToken"),
     restoreSession: () => nonPrevista("restoreSession"),
     createRecording: () => nonPrevista("createRecording"),

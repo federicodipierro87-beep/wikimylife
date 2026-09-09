@@ -86,6 +86,39 @@ export interface AuthRepository extends FamilyRegistry {
   revokeFamily(familyId: string, revokedAt: Date): Promise<number>;
 
   /**
+   * Revoca ogni sessione dell'utente tranne una: quella da cui la richiesta
+   * arriva. Restituisce quante ne sono cadute.
+   *
+   * ## Perche' e' un metodo e non `changePassword` senza la password
+   *
+   * Perche' la clausola e' diversa in un punto che cambia tutto. `changePassword`
+   * revoca tutto, compreso chi chiama, e poi gli apre una famiglia nuova: deve
+   * farlo, perche' la credenziale con cui quella sessione era nata non esiste
+   * piu'. Qui la password resta quella di prima, quindi non c'e' niente da
+   * rifare: la sessione di chi chiede non e' sospetta e non ha bisogno di
+   * essere sostituita, basta non toccarla.
+   *
+   * La differenza si vede in cosa succede se la risposta si perde per strada.
+   * Con revoca-e-riemissione, i token nuovi erano in quella risposta e adesso
+   * non li ha nessuno: chi ha premuto il pulsante e' fuori dal proprio account
+   * senza aver fatto niente di male. Con l'esclusione non c'e' nessuna
+   * credenziale che viaggi una volta sola, e riprovare e' gratis.
+   *
+   * ## Perche' per famiglia e non per token
+   *
+   * Perche' un dispositivo e' una famiglia: la catena di rotazioni di quel
+   * telefono, non il singolo anello che ha in mano adesso. Escludere il token
+   * corrente e non la sua famiglia lascerebbe revocati i suoi antenati — che
+   * sono gia' revocati — e vivo il presente: identico, finche' non arriva una
+   * rotazione a meta' strada.
+   */
+  revokeOtherFamilies(input: {
+    readonly userId: string;
+    readonly exceptFamilyId: string;
+    readonly revokedAt: Date;
+  }): Promise<number>;
+
+  /**
    * Sostituisce la password e chiude ogni sessione dell'utente, insieme.
    *
    * ## Perche' e' un metodo solo

@@ -1,3 +1,4 @@
+import type { AuthSession } from "@wikimylife/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 import { JoseTokenIssuer } from "../../apps/api/src/infra/JoseTokenIssuer.js";
 import {
@@ -28,6 +29,8 @@ interface Harness {
   readonly clock: FixedClock;
   readonly hasher: FakePasswordHasher;
   readonly config: AuthConfig;
+  /** Serve a risalire dalla sessione alla sua famiglia, che il servizio non dice. */
+  readonly tokens: JoseTokenIssuer;
 }
 
 function build(overrides: Partial<AuthConfig> = {}): Harness {
@@ -46,7 +49,27 @@ function build(overrides: Partial<AuthConfig> = {}): Harness {
     clock,
     hasher,
     config,
+    tokens,
   };
+}
+
+/**
+ * La famiglia di una sessione, che nel prodotto arriva dal claim `fid`
+ * dell'access token e che qui si ricava dalla riga del refresh token.
+ *
+ * Passare per il repository e non per `verifyAccessToken` e' voluto: l'access
+ * token e' quello che il client mostra, il refresh token e' quello che il
+ * database conosce, e il caso deve dire che le due cose combaciano — se un
+ * giorno la rotazione aprisse una famiglia nuova, questa funzione e i test che
+ * la usano se ne accorgerebbero.
+ */
+function famigliaDi(harness: Harness, sessione: AuthSession): string {
+  const hash = harness.tokens.hashRefreshToken(sessione.tokens.refreshToken);
+  const riga = harness.repo.allTokens().find((t) => t.tokenHash === hash);
+  if (riga === undefined) {
+    throw new Error("La sessione non ha un refresh token nel repository: il caso non regge.");
+  }
+  return riga.familyId;
 }
 
 describe("signup", () => {
@@ -526,6 +549,201 @@ describe("changePassword", () => {
     await harness.service.changePassword(sessione.user.id, {
       currentPassword: PASSWORD,
       newPassword: NUOVA,
+    });
+
+    const revocati = harness.repo.allTokens().filter((t) => t.revokedAt !== null);
+    expect(revocati).toHaveLength(1);
+    expect(revocati[0]?.revokedAt?.getTime()).toBe(T0.getTime() + 3600 * 1000);
+  });
+});
+
+/**
+ * `revokeOtherSessions`, cioe' il cambio password senza il cambio password.
+ *
+ * Le due cose si somigliano abbastanza da poter essere scritte con lo stesso
+ * codice per sbaglio, e differiscono in tre punti che valgono l'intera
+ * funzione: qui la password non cambia, la sessione di chi chiama non viene
+ * sostituita ma risparmiata, e il numero che torna e' cio' che l'utente
+ * leggera'. Ognuno dei tre ha il suo caso, perche' sbagliarne uno solo lascia
+ * una funzione che sembra funzionare.
+ */
+describe("revokeOtherSessions", () => {
+  it("chiude le altre sessioni e lascia in piedi quella da cui si chiama", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const portatile = await harness.service.login({ email: EMAIL, password: PASSWORD });
+    const tablet = await harness.service.login({ email: EMAIL, password: PASSWORD });
+
+    await harness.service.revokeOtherSessions(telefono.user.id, famigliaDi(harness, telefono), {
+      currentPassword: PASSWORD,
+    });
+
+    for (const caduta of [portatile, tablet]) {
+      await expect(harness.service.refresh(caduta.tokens.refreshToken)).rejects.toMatchObject({
+        code: "TOKEN_REUSED",
+      });
+    }
+    // E' l'unica differenza che conta rispetto a `changePassword`, che invece
+    // butta fuori anche chi chiama e gli restituisce dei token nuovi. Se questa
+    // riga fallisse, la risposta — che non contiene nessuna credenziale — non
+    // avrebbe modo di rimettere dentro nessuno.
+    await expect(harness.service.refresh(telefono.tokens.refreshToken)).resolves.toBeDefined();
+  });
+
+  it("dice quante ne ha chiuse, perche' e' quello che l'utente leggera'", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    await harness.service.login({ email: EMAIL, password: PASSWORD });
+    await harness.service.login({ email: EMAIL, password: PASSWORD });
+
+    const esito = await harness.service.revokeOtherSessions(
+      telefono.user.id,
+      famigliaDi(harness, telefono),
+      { currentPassword: PASSWORD },
+    );
+
+    // Due, non tre: il conto e' di cio' che e' caduto, e chi chiede non e'
+    // caduto. Un tre qui vorrebbe dire che la schermata annuncia di aver
+    // scollegato un dispositivo che sta ancora usando.
+    expect(esito).toEqual({ revoked: 2 });
+  });
+
+  it("risponde zero quando non c'era nessun altro, e non e' un errore", async () => {
+    const harness = build();
+    const sola = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+
+    const esito = await harness.service.revokeOtherSessions(
+      sola.user.id,
+      famigliaDi(harness, sola),
+      { currentPassword: PASSWORD },
+    );
+
+    // Zero e' la risposta piu' utile delle tre: dice che il telefono che si sta
+    // cercando non era collegato. Un CONFLICT al suo posto trasformerebbe
+    // un'informazione in un fallimento.
+    expect(esito).toEqual({ revoked: 0 });
+    await expect(harness.service.refresh(sola.tokens.refreshToken)).resolves.toBeDefined();
+  });
+
+  it("non conta le sessioni che erano gia' chiuse", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const perduto = await harness.service.login({ email: EMAIL, password: PASSWORD });
+    await harness.service.logout(perduto.tokens.refreshToken);
+
+    const esito = await harness.service.revokeOtherSessions(
+      telefono.user.id,
+      famigliaDi(harness, telefono),
+      { currentPassword: PASSWORD },
+    );
+
+    // Senza `revokedAt: null` nella clausola, il conto includerebbe ogni
+    // sessione mai aperta da questo utente: dopo un mese di uso, un numero a
+    // due cifre che non corrisponde a niente di reale.
+    expect(esito).toEqual({ revoked: 0 });
+  });
+
+  it("risparmia la famiglia, non il solo token che il chiamante ha in mano", async () => {
+    const harness = build();
+    const primo = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const famiglia = famigliaDi(harness, primo);
+    // Una rotazione: adesso nella famiglia c'e' un token revocato e uno vivo, e
+    // quello vivo non e' quello con cui la sessione era nata.
+    const ruotato = await harness.service.refresh(primo.tokens.refreshToken);
+
+    await harness.service.revokeOtherSessions(primo.user.id, famiglia, {
+      currentPassword: PASSWORD,
+    });
+
+    // Escludere il token e non la famiglia avrebbe scollegato proprio il
+    // dispositivo che ha premuto il pulsante, e per giunta solo se aveva
+    // ruotato di recente: un guasto che si presenta a giorni alterni.
+    await expect(harness.service.refresh(ruotato.tokens.refreshToken)).resolves.toBeDefined();
+  });
+
+  it("rifiuta chi non sa la password, e non scollega niente", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const altrove = await harness.service.login({ email: EMAIL, password: PASSWORD });
+
+    await expect(
+      harness.service.revokeOtherSessions(telefono.user.id, famigliaDi(harness, telefono), {
+        currentPassword: "non-e-questa",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
+
+    // La verifica prima della revoca, e non dopo. Nell'ordine opposto chi
+    // sbaglia a digitare riceverebbe un errore avendo pero' gia' scollegato
+    // tutto, e nessuna schermata gli direbbe mai che e' successo.
+    await expect(harness.service.refresh(altrove.tokens.refreshToken)).resolves.toBeDefined();
+  });
+
+  it("non cambia la password: e' l'unica ragione per cui esiste", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+
+    await harness.service.revokeOtherSessions(telefono.user.id, famigliaDi(harness, telefono), {
+      currentPassword: PASSWORD,
+    });
+
+    // Se la password cambiasse — o si riscrivesse identica con un hash nuovo —
+    // questa rotta sarebbe `changePassword` con un nome diverso, e chi la usa
+    // per non toccare la propria password si troverebbe fuori da ogni altro
+    // posto in cui l'aveva salvata.
+    await expect(harness.service.login({ email: EMAIL, password: PASSWORD })).resolves.toBeDefined();
+  });
+
+  it("non tocca le sessioni di un altro utente", async () => {
+    const harness = build();
+    const mio = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const altro = await harness.service.signup({
+      email: "altro@esempio.it",
+      password: PASSWORD,
+    });
+
+    const esito = await harness.service.revokeOtherSessions(
+      mio.user.id,
+      famigliaDi(harness, mio),
+      { currentPassword: PASSWORD },
+    );
+
+    // Senza `userId` nella clausola, «tutti gli altri dispositivi» sarebbe
+    // tutti i dispositivi di tutti. Il conto lo dice prima del refresh: uno
+    // zero qui e' la prova che la query non ha nemmeno visto l'altro utente.
+    expect(esito).toEqual({ revoked: 0 });
+    await expect(harness.service.refresh(altro.tokens.refreshToken)).resolves.toBeDefined();
+  });
+
+  it("e' UNAUTHORIZED se l'utente non esiste piu'", async () => {
+    const harness = build();
+
+    await expect(
+      harness.service.revokeOtherSessions("utente-sparito", "fam-qualunque", {
+        currentPassword: PASSWORD,
+      }),
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("verifica la password contro l'hash vero, non contro un ramo saltato", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const prima = harness.hasher.verifyCalls;
+
+    await harness.service.revokeOtherSessions(telefono.user.id, famigliaDi(harness, telefono), {
+      currentPassword: PASSWORD,
+    });
+
+    expect(harness.hasher.verifyCalls).toBe(prima + 1);
+  });
+
+  it("la revoca porta l'istante del Clock iniettato", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    await harness.service.login({ email: EMAIL, password: PASSWORD });
+    harness.clock.advanceSeconds(3600);
+
+    await harness.service.revokeOtherSessions(telefono.user.id, famigliaDi(harness, telefono), {
+      currentPassword: PASSWORD,
     });
 
     const revocati = harness.repo.allTokens().filter((t) => t.revokedAt !== null);

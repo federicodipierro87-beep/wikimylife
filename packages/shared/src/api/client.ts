@@ -28,12 +28,15 @@ import {
   healthResponseSchema,
   logoutResponseSchema,
   meResponseSchema,
+  revokeOtherSessionsResponseSchema,
   type AuthSession,
   type ChangePasswordRequest,
   type HealthResponse,
   type LoginRequest,
   type MeResponse,
   type PublicUser,
+  type RevokeOtherSessionsRequest,
+  type RevokeOtherSessionsResponse,
   type SignupRequest,
 } from "./schemas.js";
 
@@ -127,10 +130,9 @@ export interface ApiClient {
   /**
    * Cambia la password e scollega ogni altro dispositivo.
    *
-   * E' anche l'unico «esci da tutti» che ci sia: la revoca normale e' per
-   * sessione, questa e' per utente. La sessione da cui la si chiama sopravvive
-   * — i token nuovi tornano nella risposta e questo metodo li salva — quindi
-   * chi la usa non deve rifare login qui, ma deve rifarlo ovunque altro.
+   * La sessione da cui la si chiama sopravvive — i token nuovi tornano nella
+   * risposta e questo metodo li salva — quindi chi la usa non deve rifare login
+   * qui, ma deve rifarlo ovunque altro.
    *
    * Fallisce con `INVALID_CREDENTIALS` se `currentPassword` non e' quella
    * giusta, e con `CONFLICT` se la nuova coincide con la vecchia. Nessuno dei
@@ -138,6 +140,23 @@ export interface ApiClient {
    * credenziale con cui si sta chiamando.
    */
   changePassword(input: ChangePasswordRequest): Promise<AuthSession>;
+
+  /**
+   * Scollega ogni altro dispositivo, e lascia la password dov'e'.
+   *
+   * E' la meta' del cambio password che serve quando la password non e' il
+   * problema. Restituisce quante sessioni sono cadute — zero e' una risposta
+   * legittima e va mostrata come tale.
+   *
+   * Al contrario di `changePassword` non consegna token nuovi, perche' non
+   * revoca i propri: la sessione da cui si chiama attraversa la chiamata senza
+   * accorgersene. E' anche il motivo per cui una risposta persa per strada non
+   * fa danno — qui non c'e' nessuna credenziale che viaggi una volta sola.
+   *
+   * Fallisce con `INVALID_CREDENTIALS` se la password non e' quella giusta, e
+   * in quel caso non ha revocato niente.
+   */
+  revokeOtherSessions(input: RevokeOtherSessionsRequest): Promise<RevokeOtherSessionsResponse>;
   getAccessToken(): string | null;
   restoreSession(): Promise<PublicUser | null>;
 
@@ -313,8 +332,9 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
        * Un 401 che parla del corpo, non della sessione.
        *
        * Su una rotta autenticata che accetta a sua volta una password —
-       * `/api/auth/password` — «credenziali non valide» significa «hai
-       * sbagliato a digitare», e il token con cui hai chiesto e' perfettamente
+       * `/api/auth/password`, `/api/auth/sessions/revoke` — «credenziali non
+       * valide» significa «hai sbagliato a digitare», e il token con cui hai
+       * chiesto e' perfettamente
        * vivo. Trattarlo come gli altri 401 farebbe due danni in fila: una
        * rotazione inutile, e poi, al secondo rifiuto identico, la sessione
        * svuotata. Cioe' chi sbaglia la password attuale verrebbe buttato fuori
@@ -487,6 +507,29 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         true,
       );
       return persist(session);
+    },
+
+    revokeOtherSessions(
+      input: RevokeOtherSessionsRequest,
+    ): Promise<RevokeOtherSessionsResponse> {
+      return send(
+        {
+          method: "POST",
+          path: "/api/auth/sessions/revoke",
+          body: input,
+          schema: revokeOtherSessionsResponseSchema,
+          auth: true,
+        },
+        // Con rotazione, e senza il timore di revocare due volte: si ripete
+        // solo dopo un 401 della sessione, e un 401 della sessione arriva da
+        // `requireAuth`, cioe' prima che il gestore esista. La prima chiamata
+        // non ha revocato niente, quindi il numero che torna dalla seconda e'
+        // il numero vero e non un residuo.
+        //
+        // La rotazione resta dentro la stessa famiglia, che e' proprio quella
+        // risparmiata: il token appena ruotato e' ancora buono dopo la revoca.
+        true,
+      );
     },
 
     getAccessToken(): string | null {

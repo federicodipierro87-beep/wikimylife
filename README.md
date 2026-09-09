@@ -623,7 +623,7 @@ pubblicità travestita da allarme, `ESEGUITA` un invito a fidarsi.
 
 **La schermata dell'account si chiama «Il tuo account» e non «Impostazioni»**, perché
 non ci sono impostazioni: la lingua viene dal dispositivo, l'ordinamento lo
-decide il server, i provider stanno nell'API. Contiene le tre cose che
+decide il server, i provider stanno nell'API. Nasce con le tre cose che
 esistevano già e che nessuno poteva premere — con quale account si sta
 parlando, il cambio password, l'uscita. Le ultime due erano codice raggiungibile
 solo da un terminale: `POST /api/auth/password` si chiamava con `curl`, e
@@ -651,6 +651,27 @@ non dice cosa correggere. Dopo un cambio riuscito i campi si svuotano, perché
 stamperebbe «password sbagliata» sotto «password cambiata»; dopo un rifiuto
 invece restano, perché il campo sbagliato è uno solo e ridigitare due volte una
 password nuova che era giusta sono due occasioni in più di sbagliarla.
+
+**Fra il cambio password e l'uscita c'è «Scollega gli altri dispositivi»**, che è
+arrivata dopo perché prima la rotta non esisteva. Le tre sezioni stanno in
+quest'ordine per quanto tolgono: la prima cambia una credenziale e chiude ogni
+sessione, compresa quella su cui si sta premendo; la seconda chiude tutto tranne
+quella; la terza chiude solo quella. È l'unica cosa che le distingue davvero —
+sotto ognuna c'è una riga che dice cosa lascia in piedi, perché il pulsante da
+premere si somiglia in tutti e tre i casi, e chi arriva qui di solito ha in testa
+un problema («ho perso il telefono», «la password è in giro») e non un verbo. La
+sezione di mezzo tiene il proprio stato per sé invece di condividerlo con quella
+sopra: un successo del cambio password non deve accendere una frase sotto un
+riquadro che non ha fatto niente, e un messaggio verde nel posto sbagliato, qui,
+si legge come «l'ho fatto» su un gesto che nessuno ha compiuto.
+
+Il suo risultato è un numero e non un «fatto», e nemmeno un numero stampato
+crudo: «non c'era nessun altro dispositivo collegato», «un altro dispositivo è
+stato scollegato» e «tre altri dispositivi sono stati scollegati» sono tre frasi
+perché sono tre notizie. Lo zero è quella che conta di più ed è quella che un
+«fatto» distruggerebbe: chi ha appena perso un telefono e legge «fatto» crede di
+averlo scollegato, mentre la verità è che quel telefono non era collegato — il
+che vuol dire che il problema, se c'è, è da un'altra parte.
 
 **Il cestino è una schermata e non un quarto chip.** I filtri dell'elenco sono
 gli ambiti — personale, lavoro, clienti — e sono tutti dello stesso tipo:
@@ -913,6 +934,58 @@ di cui in quell'istante si sappia qualcosa — chi la usa ha appena dimostrato d
 conoscere la password. E `currentPassword` è obbligatoria anche se la rotta sta
 dietro `requireAuth`: il token dice «questa è una sessione aperta», non «di là
 dallo schermo c'è il proprietario».
+
+C'è però un caso in cui cambiare password è la risposta sbagliata a un problema
+vero, ed è il telefono perso da chi la password la tiene in un gestore: quella
+credenziale sta al sicuro dov'è, e cambiarla vuol dire aggiornarla ovunque per un
+motivo che non la riguarda — che è poi la ragione per cui, dovendo scegliere fra
+il fastidio e il rischio, poi non la cambia nessuno. Serve l'altro gesto:
+
+```powershell
+# Di nuovo due login, due famiglie, con la password nuova di prima.
+# Poi, con l'access token del primo:
+curl.exe -X POST http://localhost:3000/api/auth/sessions/revoke `
+  -H "content-type: application/json" `
+  -H "authorization: Bearer <accessToken del PRIMO login>" `
+  -d "{\"currentPassword\":\"una-password-piu-lunga\"}"
+#   → 200 {"revoked":1} — quante ne sono cadute, non {"ok":true}
+
+# Il SECONDO dispositivo è fuori, refresh compreso:
+curl.exe -X POST http://localhost:3000/api/auth/refresh `
+  -H "content-type: application/json" -d "{\"refreshToken\":\"<refreshToken del SECONDO login>\"}"
+#   → 401 TOKEN_REUSED
+
+# Il PRIMO, quello da cui è partita la richiesta, non è stato toccato:
+curl.exe http://localhost:3000/api/auth/me -H "authorization: Bearer <quello di prima>"
+#   → 200, e nessun token nuovo da mettere via: non ce n'era bisogno
+```
+
+Le differenze dal cambio password sono tre, e nessuna è di comodo. La prima è che
+la sessione chiamante viene **risparmiata** invece di essere revocata e riemessa.
+I token nuovi del cambio password esistono solo dentro quella risposta HTTP: se
+la risposta si perde per strada, chi stava chiudendo fuori gli altri resta fuori
+lui, e non ha più niente in mano per rientrare se non un secondo login. Qui non
+viaggia nessuna credenziale, quindi riprovare è gratis. Quale famiglia
+risparmiare non lo dice il corpo della richiesta — sarebbe il chiamante a
+dichiarare quale sessione salvare, cioè esattamente la cosa che non deve poter
+scegliere: lo dice il `fid` dentro l'access token firmato, di cui `requireAuth`
+ha appena verificato che la famiglia sia viva, e che da questa versione finisce
+in `req.auth` accanto allo userId.
+
+La seconda è che la risposta è un numero. Zero, uno e nove sono tre notizie
+diverse, e la più utile è proprio lo zero: vuol dire «il telefono che stai
+cercando non era collegato», mentre un «fatto» scritto sopra la stessa situazione
+fa credere di averlo appena scollegato. Il conto sono i refresh token vivi
+revocati, che è il numero di dispositivi perché una famiglia viva ne ha
+esattamente uno — la rotazione è una transazione che ne revoca uno e ne crea uno,
+e non c'è nessun percorso che ne lasci due.
+
+La terza è che `currentPassword` qui è obbligatoria per un motivo **in più**
+rispetto al cambio password, e il motivo nasce dalla prima differenza. Il gesto
+risparmia la sessione da cui parte: se non chiedesse niente, chi ha in mano il
+telefono rubato potrebbe premerlo e restare l'unico collegato, buttando fuori il
+proprietario da tutto il resto. Il campo che sembra un fastidio è l'unica cosa
+che tiene l'arma dalla parte giusta.
 
 ### Un vocale che diventa una scheda, a mano
 
@@ -1221,6 +1294,20 @@ abbastanza» — che il doppio tocco non mandi due cambi di fila, e che «Esci»
 chiami davvero `logout`, che per tutta la vita di `session.tsx` prima di questa
 schermata non lo chiamava nessuno.
 
+Della sezione di mezzo, che il numero diventi tre frasi diverse e non tre numeri.
+Zero, uno e molti hanno una forma grammaticale ciascuno, e lo zero soprattutto
+deve leggersi «non c'era nessun altro dispositivo collegato» e non «zero
+dispositivi scollegati», che è la stessa informazione travestita da successo: il
+caso esiste perché è l'unico posto della schermata dove un refuso non somiglia a
+un difetto. Accanto, che la password parta nel corpo e non resti nel campo dopo
+l'invio, che un rifiuto del server diventi un messaggio d'errore e non un
+conteggio, e che i due moduli non si passino gli esiti — un cambio password
+riuscito non deve stampare niente sotto la sezione che non ha fatto nulla, che è
+esattamente ciò che succederebbe con uno stato solo. E le tre sezioni insieme:
+che ognuna dica cosa lascia in piedi, e che i tre pulsanti abbiano tre nomi
+diversi, perché sono tre gesti irreversibili in tre modi diversi e distinguerli è
+tutto il lavoro di questa schermata.
+
 Della sezione «In lavorazione», quando smette di chiedere. Il polling è il caso
 esemplare del guasto senza sintomo: se resta acceso quando non doveva, la
 schermata è identica e corretta, la prova manuale passa, e l'unico segno è una
@@ -1357,6 +1444,33 @@ schema fisico contro il catalogo di Postgres, esegue il seed vero e ricontrolla
 le invarianti, e prova autenticazione e ingestione end-to-end su HTTP reale —
 l'app gira su una porta effimera e ci si parla con `fetch`, che è il motivo per
 cui `supertest` non è fra le dipendenze.
+
+Dello scollegamento degli altri dispositivi si prova ciò che il repository in
+memoria non può dire. La `where` è fatta di tre pezzi — l'utente, la famiglia
+*diversa* da quella che chiama, il token non ancora revocato — e ognuno dei tre,
+tolto, produce un danno che in memoria si riprodurrebbe soltanto perché il finto
+è scritto uguale. Senza `userId` cadono le sessioni di tutti; senza il `not` cade
+anche la propria, cioè il contrario del gesto; senza `revokedAt: null` il conto
+include sessioni chiuse la settimana scorsa, e la risposta mente su un numero che
+la schermata stampa. I casi guardano quindi da Postgres: che access e refresh
+token di chi chiama funzionino ancora dopo la chiamata, e che continuino a
+funzionare anche se quella famiglia ha ruotato nel frattempo — è la famiglia a
+essere risparmiata, non il singolo token che si aveva in mano; che le righe già
+revocate mantengano il `revokedAt` che avevano, letto prima e riletto dopo; che
+le righe revocate restino invece di sparire, perché sono loro a far scattare la
+reuse detection; e che l'utente accanto non perda niente. Accanto, i due rifiuti
+che devono lasciare tutto in piedi — password sbagliata e access token assente —
+e i due corpi malfatti, di cui il secondo esiste solo per lo `.strict()` dello
+schema.
+
+Le mutazioni provate su questo blocco sono ventitré e cadono tutte: i tre pezzi
+della `where`, il `not` invertito, una `deleteMany` al posto della `updateMany`,
+la famiglia scambiata con lo userId nel servizio, `requireAuth` che dimentica di
+mettere il `fid` in `req.auth`, ciascuno dei due middleware tolto dalla rotta, lo
+`.strict()` dello schema, e sette sulla schermata. A tenerle in piedi
+concorrono file di tre project diversi, il che è anche il modo più economico di
+dire che questo gesto attraversa tutta l'applicazione: un middleware, un
+servizio, una riga di SQL e tre frasi in italiano.
 
 L'end-to-end delle registrazioni carica un multipart vero e poi esegue
 `ingestionService.processNext()` in-process, sulle **stesse istanze** che servono
@@ -1888,7 +2002,8 @@ fallisce.
 
 ### Il limite dei tentativi
 
-`POST /api/auth/signup`, `/login`, `/refresh` e `/password` passano da
+`POST /api/auth/signup`, `/login`, `/refresh`, `/password` e `/sessions/revoke`
+passano da
 `apps/api/src/http/middleware/rateLimit.ts`: finestra fissa, **dieci tentativi al
 minuto per IP e per rotta** di default (`AUTH_RATE_LIMIT_MAX`,
 `AUTH_RATE_LIMIT_WINDOW_SEC`). Oltre il limite è un `429` con
@@ -1913,13 +2028,14 @@ Quattro decisioni, e il perché:
   servizio, un'altra variabile e un altro modo di rompersi, per proteggere
   l'account di una persona. Postgres c'è già, e il conteggio ci sta in una riga.
 
-`/password` è l'unica rotta limitata che sta anche dietro `requireAuth`, e le due
-cose non si contraddicono: è l'unico posto in cui chi ha rubato un access token
-può provare a indovinare la password online, ed è l'unica rotta che paga due
-argon2 per richiesta — una verifica e un hash — quindi martellarla costa alla CPU
-dell'API molto più che a chi la martella. Le finestre non si mescolano, perché la
-chiave contiene la rotta: un cambio password non consuma i tentativi di `/login`,
-e nessuno dei due può esaurire l'altro.
+`/password` e `/sessions/revoke` sono le due rotte limitate che stanno anche
+dietro `requireAuth`, e le due cose non si contraddicono: sono i due posti in cui
+chi ha rubato un access token può provare a indovinare la password online, e sono
+le due che pagano un argon2 per tentativo — `/password` ne paga due, una verifica
+e un hash — quindi martellarle costa alla CPU dell'API molto più che a chi le
+martella. Le finestre non si mescolano, perché la chiave contiene la rotta: un
+cambio password non consuma i tentativi di `/login`, «scollega gli altri» non
+consuma quelli del cambio password, e nessuno dei tre può esaurire gli altri.
 
 `/logout` e `/me` non sono limitati. Il primo non regala niente a chi lo martella;
 il secondo sta già dietro `requireAuth`, e limitarlo significherebbe rompere
@@ -2193,15 +2309,20 @@ Non installate, e il perché:
   finestra fissa resta però una finestra fissa, e chi prova dieci password al
   minuto per un mese non incontra mai il muro. Fermarlo vorrebbe dire contare per
   account e su giorni, cioè un'altra cosa da questa.
-- **"Esci da tutti" esiste, ma solo attaccato al cambio password.** Chi sospetta
-  che la password sia in giro ha adesso il gesto che serve: `POST
-  /api/auth/password` riscrive la password e chiude ogni sessione dell'utente
-  nella stessa transazione, e le due cose stanno insieme perché separarle
-  ammetterebbe il caso peggiore — password cambiata, sessioni no, e la persona
-  che crede di aver cacciato l'intruso. Quello che manca è lo stesso gesto senza
-  la password: "scollega tutti i dispositivi" quando la password va bene ed è il
-  telefono a essere sparito. È la stessa riga di repository con un input diverso,
-  e non c'è.
+- **Non esiste l'elenco delle sessioni aperte.** I due gesti che chiudono le
+  sessioni ci sono entrambi: `POST /api/auth/password` cambia la password e
+  chiude tutto nella stessa transazione, `POST /api/auth/sessions/revoke` chiude
+  tutto tranne il dispositivo da cui parte e risponde con quante ne sono cadute.
+  Il secondo però è cieco: dice un numero e non dice mai *quali*. Chi si vede
+  rispondere "tre" e ne riconosce due non ha modo di chiudere solo la terza, e
+  chi si vede rispondere "zero" deve fidarsi che voglia dire quello che sembra.
+  Per fare meglio bisognerebbe scrivere accanto a ogni famiglia quando è nata,
+  quando è stata usata l'ultima volta e da dove è arrivata — cioè tenere un
+  registro di dove e quando una persona si collega, che è esattamente il genere
+  di dato che un archivio come questo farebbe bene a pensarci due volte prima di
+  possedere. Il compromesso che sembra onesto — la data di creazione e nient'altro,
+  che basta a distinguere "il telefono di ieri" da "quello di due anni fa" — non è
+  stato scritto, e finché non lo è questo resta un buco e non una scelta.
 - **Non si recupera una password dimenticata.** Non c'è rotta, non c'è mail, non
   c'è nulla: chi dimentica la password perde l'archivio. La schermata
   dell'account fa quel che può — chiede la nuova due volte e dice che non c'è

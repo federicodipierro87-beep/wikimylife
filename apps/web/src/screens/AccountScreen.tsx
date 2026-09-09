@@ -25,9 +25,17 @@ import { messaggioDi, useSession } from "../session";
  * E `logout` stava messo anche peggio: era in `session.tsx` da sempre, con il
  * suo bel commento sul perche' fosse un contesto e non uno stato, e non lo
  * chiamava nessuno. Dall'interfaccia non si poteva uscire — si poteva solo
- * svuotare lo storage del browser. Le due cose stanno nella stessa schermata
- * perche' sono la stessa domanda vista da due distanze: «questo dispositivo» e
- * «tutti gli altri».
+ * svuotare lo storage del browser.
+ *
+ * ## Perche' tre sezioni e non due
+ *
+ * Perche' i modi di perdere il controllo di un account sono due, e finora
+ * avevano una riparazione sola. «Qualcuno sa la mia password» si ripara
+ * cambiandola. «Qualcuno ha il mio telefono» no: la password sta al sicuro nel
+ * gestore, e cambiarla vuol dire riscriverla ovunque per un guasto che non la
+ * riguarda. Le tre sezioni sono in ordine di quanto tolgono — la password e
+ * tutti gli altri, tutti gli altri, solo questo — e ognuna dice in una riga
+ * cosa lascia in piedi, perche' e' l'unica differenza che conta fra loro.
  */
 
 /**
@@ -42,6 +50,19 @@ type Esito =
   | { readonly kind: "niente" }
   | { readonly kind: "errore"; readonly messaggio: string }
   | { readonly kind: "fatto" };
+
+/**
+ * Lo stesso, ma il successo porta un numero.
+ *
+ * Il conto sta dentro il ramo «fatto» e non accanto: fuori esisterebbe anche
+ * prima che qualcuno prema, e allora andrebbe uno zero da qualche parte —
+ * indistinguibile dallo zero che vuol dire «non c'era nessun altro collegato»,
+ * che e' invece l'informazione per cui il numero c'e'.
+ */
+type EsitoRevoca =
+  | { readonly kind: "niente" }
+  | { readonly kind: "errore"; readonly messaggio: string }
+  | { readonly kind: "fatto"; readonly quante: number };
 
 export function AccountScreen(): React.JSX.Element {
   const apiClient = useApi();
@@ -208,6 +229,8 @@ export function AccountScreen(): React.JSX.Element {
         </form>
       </section>
 
+      <ScollegaAltri />
+
       <section className="sezione">
         <h2>Esci</h2>
         <p className="muto">Chiude solo questo dispositivo. Gli altri restano collegati.</p>
@@ -226,5 +249,99 @@ export function AccountScreen(): React.JSX.Element {
         </button>
       </section>
     </main>
+  );
+}
+
+/**
+ * La sezione di mezzo, con il proprio stato invece che con quello della
+ * schermata.
+ *
+ * Le due sezioni chiedono la stessa password e hanno ciascuna il proprio esito.
+ * Tenendoli insieme, un «password sbagliata» digitato qui comparirebbe sotto il
+ * modulo di sopra, dove nessuno lo ha chiesto; e un «password cambiata»
+ * resterebbe acceso mentre si scrive qui, dicendo che e' andata bene una cosa
+ * che non e' ancora partita. Sono due conversazioni diverse con lo stesso
+ * server, e non devono avere una casella di testo in comune.
+ */
+function ScollegaAltri(): React.JSX.Element {
+  const apiClient = useApi();
+  const [password, setPassword] = useState("");
+  const [attesa, setAttesa] = useState(false);
+  const [esito, setEsito] = useState<EsitoRevoca>({ kind: "niente" });
+
+  async function invia(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    setAttesa(true);
+    setEsito({ kind: "niente" });
+    try {
+      const { revoked } = await apiClient.revokeOtherSessions({ currentPassword: password });
+      // Come nel cambio password: il campo si svuota perche' quello che
+      // contiene e' un segreto che non serve piu' a questa schermata, e perche'
+      // un secondo invio involontario partirebbe da solo.
+      setPassword("");
+      setEsito({ kind: "fatto", quante: revoked });
+    } catch (error: unknown) {
+      setEsito({ kind: "errore", messaggio: messaggioDi(error) });
+    } finally {
+      setAttesa(false);
+    }
+  }
+
+  return (
+    <section className="sezione">
+      <h2>Scollega gli altri dispositivi</h2>
+      <p className="muto">
+        Per quando un telefono non e&apos; piu&apos; tuo e la password invece va
+        bene. Questo dispositivo resta collegato; gli altri dovranno rientrare
+        con la stessa password di adesso, che non cambia.
+      </p>
+
+      <form
+        onSubmit={(e) => {
+          void invia(e);
+        }}
+      >
+        <label className="campo">
+          <span>La tua password</span>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => {
+              setPassword(e.target.value);
+              setEsito((prima) => (prima.kind === "niente" ? prima : { kind: "niente" }));
+            }}
+            // Chiesta anche qui, e qui e' quella che conta di piu': senza,
+            // basterebbe avere in mano il telefono per premere il pulsante e
+            // restare l'unico collegato.
+            autoComplete="current-password"
+            required
+          />
+        </label>
+
+        {esito.kind === "errore" && (
+          <p className="avviso avviso--errore" role="alert">
+            {esito.messaggio}
+          </p>
+        )}
+
+        {esito.kind === "fatto" && (
+          // Il numero, e non un «fatto» che vale per tutti i casi. Zero e' la
+          // risposta piu' importante delle tre: dice che il dispositivo che si
+          // stava cercando non era collegato, e chi legge «fatto» al suo posto
+          // smetterebbe di cercarlo credendo di averlo chiuso.
+          <p className="avviso avviso--fatto" role="status">
+            {esito.quante === 0
+              ? "Non c'era nessun altro dispositivo collegato."
+              : esito.quante === 1
+                ? "Un altro dispositivo e' stato scollegato."
+                : `${String(esito.quante)} altri dispositivi sono stati scollegati.`}
+          </p>
+        )}
+
+        <button type="submit" className="bottone" disabled={attesa}>
+          {attesa ? "Un attimo…" : "Scollega gli altri"}
+        </button>
+      </form>
+    </section>
   );
 }
