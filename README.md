@@ -1303,6 +1303,27 @@ quella riga nominava. La chiave esterna sta sul lato sbagliato per potersene
 rassicurare a mente, e in memoria «la scheda sopravvive» sarebbe vero solo
 perché il finto repository l'ha lasciata stare. Lì è Postgres a dirlo.
 
+**La scopa ha un file suo, e nasce da un buco che era scritto qui sotto.**
+`storageSweep.test.ts` prova trenta casi in memoria: le tre regole, le pagine, i
+blocchi, l'interruzione a metà. Tutti veri, e tutti ciechi sulla stessa cosa —
+in quei test le chiavi le scrive il test, quindi il repository finto risponde
+«questa la conosco» perché gliel'ha messa dentro chi lo interroga. La domanda
+che conta non gliela fa nessuno, ed è se `findExistingAudioKeys` riconosca le
+chiavi che `recordings.service.ts` ha davvero scritto. In mezzo ci sono un `IN
+(...)` su `Recording.audioUrl`, una colonna di Postgres e la stringa
+`${userId}/${randomUUID()}.${est}` costruita al caricamento: un prefisso di
+troppo, una normalizzazione, uno `stored.url` salvato al posto di `stored.key`,
+e la risposta diventa l'insieme vuoto. Non un errore — l'insieme vuoto, che per
+la regola 1 significa «nessuna riga lo nomina», cioè orfano, cioè da cancellare:
+ogni audio vivo del sistema, tutto insieme. Il file carica audio dall'HTTP come
+farebbe l'app, non costruisce nessuna chiave a mano, e poi passa la scopa con
+`cancella` acceso. Oltre a questo prova due cose che solo Postgres può dire: che
+`findExistingAudioKeys` *non* filtri per utente — è l'unica query del progetto a
+non farlo, sembra una dimenticanza, e diventarlo cancellerebbe tutti gli archivi
+tranne uno — e la corsa che la soglia esiste per non perdere, cioè l'istante fra
+il `put` e la riga in cui l'audio di qualcuno è indistinguibile da spazzatura, con
+la data dell'oggetto scritta dal caricamento vero e non scelta dal test.
+
 L'end-to-end della ricerca costruisce le schede facendole passare per la pipeline
 vera invece di scriverle con `prisma.procedure.create`: è l'unico modo perché
 `searchText` e l'embedding siano davvero popolati come in produzione. Prova le
@@ -2186,14 +2207,18 @@ Non installate, e il perché:
   ha deciso per me». Ma va detto per quello che è: il costo dello storage non
   scende finché qualcuno non lo chiede, e chi guarda solo la fattura non nota la
   differenza fra oggi e quando la scopa era spenta.
-- **Sulla scopa non c'è nessun test d'integrazione.** Le tre regole hanno una
-  suite unitaria fitta e `toccaCancellare` copre la riga che decide se toccare i
-  file, ma nulla prova la scopa contro un Postgres e uno storage veri insieme:
-  il caso in cui `findExistingAudioKeys` non riconoscesse le chiavi che
-  `recordings.service.ts` ha scritto — un prefisso, una normalizzazione — darebbe
-  per orfano tutto ciò che è vivo, e nessuna delle due suite se ne accorgerebbe.
-  Con il default a `elenca` sarebbe una pagina di registro sbagliata; con
-  `cancella` sarebbe il bucket.
+- **La scopa ha un Postgres vero sotto, ma non uno storage vero.** Da
+  `sweep.e2e.test.ts` la domanda che conta — se `findExistingAudioKeys` riconosca
+  le chiavi che il caricamento ha davvero scritto — passa per un `IN (...)` su una
+  colonna di Postgres e per chiavi che nessun test costruisce a mano, e un
+  prefisso di troppo o uno `stored.url` al posto di `stored.key` fanno cadere il
+  file. Dall'altra parte però c'è ancora la memoria: `FakeStorageProvider`
+  impagina davvero e conta i byte, ma non è S3, e `docker-compose.yml` un bucket
+  non ce l'ha. Restano quindi fuori le cose che solo un servizio vero sa fare
+  male — che `list` restituisca le chiavi con un prefisso che qui non c'è, che il
+  bookmark di pagina scada, che una `delete` risponda 204 su un oggetto che
+  resta. Sono proprio le differenze che, sulla strada del `cancella`, decidono
+  fra una passata a vuoto e una passata di troppo.
 - **Il gesto che toglie tutte e due le cose sta in un posto solo.** È nella
   sezione «Da cosa nasce» del dettaglio, dentro il riquadro del vocale, ed è
   l'unico punto dell'app in cui la voce e la scheda che ne è nata sono sotto gli
