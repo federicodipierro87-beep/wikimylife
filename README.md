@@ -1318,18 +1318,69 @@ spegne *da solo* nel momento in cui l'ultima elaborazione finisce. Accanto, che
 un errore lì non produca un avviso rosso in cima a una schermata che funziona, e
 che eliminare chieda il secondo tocco.
 
-Del dettaglio, solo la parte che butta via una voce. È l'unico gesto
-irreversibile dell'applicazione, e da lì partono due chiamate quasi identiche che
-fanno due cose molto diverse: la differenza fra «solo il vocale» e «il vocale e
-la scheda» è un booleano, invisibile sullo schermo — in tutti e due i casi la
-pagina si ricarica e il vocale sparisce — e il test è l'unico posto in cui si
-vede. I casi guardano che il primo tocco apra la domanda invece di eseguire, che
-ciascuno dei due pulsanti mandi il proprio valore, che con tre vocali sotto la
-stessa scheda si cancelli quello su cui si è premuto e non il primo della lista
-(ogni riquadro ha il proprio stato: se fosse uno solo, l'errore non si vedrebbe
-in prova a mano, perché un vocale sparisce comunque), e che dopo un `409` la
-scheda resti intera — nessuna sparizione ottimistica, o l'utente crederebbe di
-aver cancellato ciò che è ancora lì.
+Del dettaglio, quattro punti su cinquecento righe. È la schermata più lunga
+dell'app e quasi tutto quello che contiene è un campo stampato accanto al suo
+titolo: se sparisse si vedrebbe aprendo la pagina, e provarlo sarebbe scrivere
+due volte lo stesso JSX. I casi stanno dove la schermata *decide* qualcosa e
+dove una decisione sbagliata produce una pagina che sembra a posto.
+
+Il primo è il gesto che butta via una voce, l'unico irreversibile
+dell'applicazione: da lì partono due chiamate quasi identiche che fanno due cose
+molto diverse, e la differenza fra «solo il vocale» e «il vocale e la scheda» è
+un booleano invisibile sullo schermo — in tutti e due i casi la pagina si
+ricarica e il vocale sparisce. Si guarda che il primo tocco apra la domanda
+invece di eseguire, che ciascuno dei due pulsanti mandi il proprio valore, che
+con tre vocali sotto la stessa scheda si cancelli quello su cui si è premuto e
+non il primo della lista (ogni riquadro ha il proprio stato: se fosse uno solo,
+l'errore non si vedrebbe in prova a mano, perché un vocale sparisce comunque), e
+che dopo un `409` la scheda resti intera — nessuna sparizione ottimistica, o
+l'utente crederebbe di aver cancellato ciò che è ancora lì.
+
+Il secondo sono i tre pulsanti della §8. Sono tre rettangoli affiancati con tre
+frasi corte, e mandano tre valori di un enum: dopo ognuno la pagina si ricarica e
+torna uguale a prima, tranne un contatore e — per `CAMBIATA` — uno stato che
+riporta la scheda in `DA_RIVEDERE`. Un pulsante che manda l'esito del vicino
+produce quindi una schermata perfettamente funzionante che archivia il contrario
+di quello che è successo, e se ne accorge solo chi rilegge la scheda mesi dopo.
+Si guarda che il primo tocco apra la nota senza registrare niente — sono
+bersagli grandi, pensati per essere premuti in piedi davanti a uno sportello,
+cioè esattamente la situazione in cui si tocca quello sbagliato — che ognuno dei
+tre mandi il proprio, che ripremerlo richiuda invece di registrare due volte, e
+che la domanda sotto cambi con l'esito: «vuoi aggiungere qualcosa?» sotto «non ha
+funzionato» è una domanda generica fatta all'unica persona che sa la risposta
+specifica, nell'unico istante in cui ce l'ha in mente. Accanto, la nota vuota:
+lo schema del server la accetta anche vuota, quindi una stringa vuota non viene
+rifiutata — viene salvata, e la differenza fra «non ha lasciato una nota» e «ha
+lasciato una nota vuota» non produce nessun errore da nessuna parte. E il
+rifiuto, dove contano due cose insieme: che non ricarichi, e che non svuoti il
+campo. Chi ha appena scritto tre righe su cosa è andato storto le ha scritte una
+volta sola.
+
+Il terzo sono le porte verso altrove. Redazione e revisione da questa schermata
+in poi non hanno nessun altro ingresso, e il pulsante della redazione sta
+**fuori** dal ramo del bollino apposta: il flag dice cosa ha pensato
+l'estrazione, non cosa c'è nel testo, e una scheda corretta a mano dopo
+l'estrazione non ci ripassa mai. Annidarlo dentro quel ramo toglierebbe la §9
+esattamente alle schede su cui nessuno l'ha ancora fatta girare, e la pagina —
+guardata — sarebbe identica.
+
+Il quarto è ciò che porta fuori dall'app: `target="_blank"` con
+`rel="noreferrer noopener"` sui riferimenti di tipo URL, che sono la stringa
+meno fidata che questa schermata stampi — le ha scritte un modello ascoltando un
+audio — e l'unica che diventa cliccabile. Senza `noopener` la pagina che si apre
+può riscrivere `window.opener.location`, cioè cambiare sotto i piedi la scheda a
+cui si torna indietro; senza `noreferrer` si consegna a un sito qualunque
+l'indirizzo da cui si è partiti. Nessuna delle due cose ha un sintomo: il link
+funziona. Accanto, che un riferimento di un altro tipo resti testo, perché un
+`href` è l'unico posto di questa pagina in cui una stringa smette di esserlo.
+
+Dell'ordine delle sezioni e delle formattazioni non si prova qui quasi niente:
+sono funzioni pure in `format.ts` e hanno già il loro file. Resta un caso solo,
+ed è l'unica cosa che una funzione pura non può dimostrare — che sia questa
+schermata a chiamare `sezioniDi` invece di aver ricopiato l'ordine nel JSX. Un
+JSX che elencasse le cinque sezioni a mano, che è come si scrive di solito,
+passerebbe tutti i casi di `format.test.ts` mostrando i passi per primi.
+Ventitré mutazioni provate su questo file, ventitré cadute.
 
 Dell'elenco, il filtro di ambito e la paginazione. Né l'uno né l'altra si
 rompono in modo visibile: una schermata che sbaglia a paginare mostra una lista,
@@ -2391,15 +2442,31 @@ Non installate, e il perché:
   scheda condivisa non deve dire.
 - **Di schermate ne sono provate sette, e non è la stessa cosa di sette
   schermate provate.** Redazione, ingresso, registrazioni in sospeso, elenco,
-  ricerca, player dell'audio e la parte del dettaglio che cancella un vocale
-  hanno i loro casi, scelti perché lì una regressione non ha sintomi. Non li ha
-  il resto: del dettaglio — i badge, l'ordine delle sezioni, i tre pulsanti
-  dell'esito — non c'è niente, e dell'elenco e della ricerca si prova cosa
-  chiedono al server e quali pulsanti sono spenti, non che le schede si vedano
-  per intero. La più scoperta resta quella che nessun `jsdom` potrebbe coprire:
-  che il pulsante di registrazione sia davvero collegato al microfono non lo
-  dice nessun test, perché `MediaRecorder` in un ambiente finto è un oggetto che
-  finge. Lo dice solo premerlo su un telefono vero.
+  ricerca, player dell'audio e dettaglio hanno i loro casi, scelti perché lì una
+  regressione non ha sintomi. Il resto no. Del dettaglio sono provati quattro
+  punti su cinquecento righe — la voce che si butta, i tre esiti, le due porte
+  verso altrove, i riferimenti che escono dall'app — e tutto ciò che sta in
+  mezzo non ha nessun caso: i campi stampati, il sommario in cima, il blocco
+  della trascrizione, i badge, il player dentro il riquadro del vocale. È una
+  scelta, non una dimenticanza — quella roba, se sparisce, si vede aprendo la
+  pagina — ma va detta per quello che è, perché «il dettaglio è provato» e «il
+  dettaglio funziona» restano due frasi diverse. Dell'elenco e della ricerca si
+  prova cosa chiedono al server e quali pulsanti sono spenti, non che le schede
+  si vedano per intero. La più scoperta resta quella che nessun `jsdom` potrebbe
+  coprire: che il pulsante di registrazione sia davvero collegato al microfono
+  non lo dice nessun test, perché `MediaRecorder` in un ambiente finto è un
+  oggetto che finge. Lo dice solo premerlo su un telefono vero.
+- **Fra la schermata e il server non passa mai un byte.** I casi web premono i
+  pulsanti davanti a un `ApiClient` finto, quelli di integrazione parlano HTTP
+  vero senza nessuna schermata sopra, e le due metà si toccano solo attraverso
+  un tipo TypeScript. Basta a garantire che «È cambiata» mandi `CAMBIATA` e che
+  un `CAMBIATA` ricevuto riporti la scheda in `DA_RIVEDERE`; non basta a
+  garantire che quel `POST` parta davvero da quel browser. Tutto ciò che sta
+  fuori dai tipi resta scoperto — un `fetch` che non allega l'header, una CORS
+  che rifiuta, una risposta che il client vero decodifica diversamente dal
+  finto — e sono guasti che rompono l'applicazione intera lasciando verdi
+  entrambe le suite. Chiuderlo vorrebbe dire un browser pilotato, cioè una
+  terza infrastruttura di test; per ora il ponte è la compilazione.
 - **I minuti che restano sono una stima, non una misura.** L'avviso sopra il
   pulsante di registrazione moltiplica lo spazio libero per una costante di byte
   al secondo decisa a tavolino, perché `MediaRecorder` non dichiara il bitrate
