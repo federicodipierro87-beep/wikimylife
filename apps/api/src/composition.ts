@@ -285,6 +285,14 @@ export function compose(config: AppConfig, overrides?: {
     repo: procedureRepo,
     embeddings: providers.embedding,
     clock,
+    storage: providers.storage,
+    // Come per le registrazioni: la riga non c'e' piu' e l'utente ha gia' avuto
+    // il suo 204. Qui pero' la chiave viene da una scheda che nel frattempo e'
+    // stata cancellata, quindi non esiste piu' nessuna query che possa
+    // ritrovarla: questa riga di registro e' l'unica traccia.
+    onOrphanedAudio: ({ key, error }) => {
+      logger.error("audio non cancellato dopo la scheda", { key, error });
+    },
     redaction: providers.redaction,
     // Stessa scelta di `onSemanticUnavailable`, con una posta piu' alta: la
     // ricerca che degrada restituisce risultati peggiori, la redazione che

@@ -17,6 +17,7 @@ import {
   type RedactionProposal,
   type RedactionProvider,
   type RedactionReport,
+  type StorageProvider,
   type UpdateProcedureBody,
 } from "@wikimylife/shared";
 import { AppError } from "../errors/AppError.js";
@@ -159,6 +160,7 @@ export interface ProceduresService {
   find(userId: string, id: string): Promise<ProcedureDetail>;
   update(userId: string, id: string, patch: UpdateProcedureBody): Promise<ProcedureDetail>;
   archive(userId: string, id: string): Promise<ProcedureDetail>;
+  deleteForever(userId: string, id: string): Promise<void>;
   addExecution(userId: string, id: string, body: CreateExecutionBody): Promise<ProcedureDetail>;
   proposeRedaction(userId: string, id: string): Promise<RedactionReport>;
   applyRedaction(userId: string, id: string, body: ApplyRedactionBody): Promise<ProcedureDetail>;
@@ -168,6 +170,27 @@ export interface ProceduresServiceDeps {
   readonly repo: ProcedureRepository;
   readonly embeddings: EmbeddingProvider;
   readonly clock: Clock;
+  /**
+   * Serve a un metodo solo, e nemmeno per leggere: `deleteForever`.
+   *
+   * Una scheda che sparisce per davvero si porta via i vocali da cui e' nata, e
+   * i vocali sono meta' riga e meta' oggetto in un bucket. La riga la toglie il
+   * repository dentro la transazione; l'oggetto no, perche' non e' nel database
+   * e nessuna transazione lo puo' annullare. Resta questa dipendenza, che e' il
+   * prezzo di non lasciare in giro la voce di chi ha chiesto di cancellarla.
+   */
+  readonly storage: StorageProvider;
+  /**
+   * Un oggetto rimasto nel bucket dopo che la riga e' sparita.
+   *
+   * Stesso patto di `recordings.service`: l'utente ha gia' avuto il suo 204 e
+   * per lui e' finita, quindi un errore qui non risale. Ma il nome della chiave
+   * dopo la transazione non esiste piu' da nessuna parte, e questo e' l'ultimo
+   * momento in cui si puo' scrivere da qualche parte.
+   */
+  readonly onOrphanedAudio?:
+    | ((info: { key: string; error: unknown }) => void)
+    | undefined;
   /**
    * La meta' assistita della §9, se questa installazione ce l'ha.
    *
@@ -352,6 +375,50 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
         throw AppError.notFound("Scheda non trovata");
       }
       return toProcedureDetail(archived, clock.now());
+    },
+
+    /**
+     * L'unica operazione del progetto che non si annulla.
+     *
+     * Il 409 su una scheda viva non e' una formalita': e' l'intera protezione.
+     * `archive` e' reversibile con una `PATCH`, quindi puo' permettersi di
+     * essere idempotente e generoso; questa non lo e', quindi pretende che la
+     * scheda sia gia' stata messa da parte una volta, con un gesto separato, in
+     * un altro momento. Due errori distinti a distanza di tempo sono molto meno
+     * probabili di uno.
+     *
+     * Non restituisce niente. La scheda cancellata non c'e' piu' e mandarne
+     * indietro l'ultimo stato sarebbe un oggetto che descrive una cosa
+     * inesistente: il client che lo ricevesse avrebbe in mano di che disegnare
+     * una schermata di dettaglio che al primo `GET` risponde 404.
+     */
+    async deleteForever(userId: string, id: string): Promise<void> {
+      const esito = await repo.deleteForUser(userId, id);
+
+      if (esito.kind === "ASSENTE") {
+        throw AppError.notFound("Scheda non trovata");
+      }
+      if (esito.kind === "NON_ARCHIVIATA") {
+        // Come per `addExecution`: la scheda si vede, e' dell'utente e l'id e'
+        // giusto. E il messaggio dice il passo che manca, perche' chi lo legge
+        // e' quasi sempre un client che ha saltato l'archiviazione, non una
+        // persona che ha sbagliato id.
+        throw AppError.conflict(
+          "La scheda non e' nel cestino: archiviala prima di cancellarla per sempre",
+        );
+      }
+
+      // In fila e non in parallelo: sono al massimo una manciata di oggetti —
+      // i vocali di una scheda sola — e un `Promise.all` qui comprerebbe
+      // millisecondi al prezzo di una raffica di richieste allo storage nel
+      // momento in cui una di esse sta gia' fallendo.
+      for (const key of esito.audioUrls) {
+        try {
+          await deps.storage.delete(key);
+        } catch (error: unknown) {
+          deps.onOrphanedAudio?.({ key, error });
+        }
+      }
     },
 
     async addExecution(

@@ -127,6 +127,22 @@ export function ListScreen(): React.JSX.Element {
           />
         </>
       )}
+
+      {/* In fondo, e in fondo davvero: sotto la paginazione e fuori dal ramo
+          che dipende da quante schede ci sono. Il cestino esiste anche quando
+          l'elenco e' vuoto — anzi, e' l'unico caso in cui potrebbe esserci
+          dentro tutto quello che si sta cercando. */}
+      <footer className="pie">
+        <button
+          type="button"
+          className="bottone bottone--piatto"
+          onClick={() => {
+            navigate({ name: "cestino" });
+          }}
+        >
+          Cestino
+        </button>
+      </footer>
     </main>
   );
 }

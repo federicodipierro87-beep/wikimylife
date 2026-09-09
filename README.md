@@ -223,6 +223,7 @@ GET    /api/procedures                 lista, filtri scope / status / tag, pagin
 GET    /api/procedures/:id             scheda completa con tutte le relazioni
 PATCH  /api/procedures/:id             modifica manuale
 DELETE /api/procedures/:id             soft delete → ARCHIVIATA
+     ?definitivo=1                     cancellazione vera, solo dal cestino
 POST   /api/procedures/:id/executions  registra un'esecuzione (§8)
 GET    /api/search?q=                  ricerca ibrida (§7), paginata con offset
 ```
@@ -232,6 +233,29 @@ scheda in `ARCHIVIATA` e risponde `200` con la scheda archiviata, non `204`: c'�
 ancora tutto da vedere, e la si recupera con una `PATCH` sullo stato. La lista
 esclude le archiviate finché non le si chiede esplicitamente con
 `?status=ARCHIVIATA`.
+
+**`?definitivo=1` è il secondo giro, e vale solo dal cestino.** Su una scheda che
+non è `ARCHIVIATA` è un `409` che dice qual è il passo mancante, e non è una
+formalità: è ciò che rende impossibile perdere una procedura in uso con una sola
+chiamata sbagliata, e ciò che permette all'interfaccia di chiedere «sicuro?» in un
+momento diverso da quello in cui si è premuto «elimina». Riuscendo risponde `204`
+e non è idempotente — la seconda volta è un `404`, perché dire «fatto» a chi
+cancella una scheda che non esiste più nasconderebbe l'unico caso in cui quel
+`404` conta: due schermate aperte sulla stessa scheda.
+
+Si porta via anche le registrazioni da cui la scheda è nata, e i loro byte nel
+bucket. Il testo dei campi è un rifacimento delle frasi dette; la trascrizione e
+l'audio *sono* le frasi dette, e toglierne uno solo sarebbe una cancellazione per
+finta. C'è anche una ragione meno nobile: `Recording.procedureId` è
+`ON DELETE SET NULL`, quindi un vocale lasciato indietro resterebbe `ESTRATTO`
+con la scheda azzerata — e `listPending` filtra proprio gli `ESTRATTO`. Nessuna
+schermata lo mostrerebbe più e nessun gesto potrebbe più toglierlo.
+
+I *sospetti duplicati* invece non si toccano: sono un altro racconto, che a
+quella scheda somigliava soltanto. Restano, ma tornano a `BOZZA_AUDIO` con
+`duplicateOfId` e `nextAttemptAt` azzerati, perché lasciarli `DUPLICATO_SOSPETTO`
+con il legame sciolto dal `SET NULL` produrrebbe un avviso che non ha più niente
+da nominare e un pulsante «tienilo comunque» che punta a una scheda che non c'è.
 
 **Gli array si sostituiscono in blocco.** Una `PATCH` con `steps` cancella i
 passi e li riscrive, rinumerati `1..n` — il client manda lo stato finale, non un
@@ -452,14 +476,14 @@ non lo distingue, proprio sulla differenza che qui cambia una decisione.
 
 ## L'app
 
-Sette schermate, un router a `hashchange` di trenta righe, nessuna libreria di
+Nove schermate, un router a `hashchange` di trenta righe, nessuna libreria di
 componenti e nessun framework CSS. Il bundle sta in **72 kB compressi**, foglio
 di stile compreso.
 
 ```
 apps/web/src/
   recording/   MediaRecorder, GPS, coda IndexedDB, svuotamento, disco pieno, contesto React
-  screens/     login, registrazione, lista, ricerca, scheda, revisione, redazione, account
+  screens/     login, registrazione, lista, ricerca, scheda, revisione, redazione, cestino, account
   format.ts    le regole di presentazione, pure e testate
   routes.ts    rotta ⇄ hash, puro e testato
   router.ts    le tre righe che toccano location e history
@@ -597,7 +621,7 @@ una lettura e non una garanzia. Con la passata caduta lo dice, con un avviso
 sopra. È l'unico dei tre casi che merita un avviso: `NON_CONFIGURATA` sarebbe
 pubblicità travestita da allarme, `ESEGUITA` un invito a fidarsi.
 
-**La settima schermata si chiama «Il tuo account» e non «Impostazioni»**, perché
+**La schermata dell'account si chiama «Il tuo account» e non «Impostazioni»**, perché
 non ci sono impostazioni: la lingua viene dal dispositivo, l'ordinamento lo
 decide il server, i provider stanno nell'API. Contiene le tre cose che
 esistevano già e che nessuno poteva premere — con quale account si sta
@@ -627,6 +651,32 @@ non dice cosa correggere. Dopo un cambio riuscito i campi si svuotano, perché
 stamperebbe «password sbagliata» sotto «password cambiata»; dopo un rifiuto
 invece restano, perché il campo sbagliato è uno solo e ridigitare due volte una
 password nuova che era giusta sono due occasioni in più di sbagliarla.
+
+**Il cestino è una schermata e non un quarto chip.** I filtri dell'elenco sono
+gli ambiti — personale, lavoro, clienti — e sono tutti dello stesso tipo:
+mostrano un sottoinsieme delle stesse schede, con le stesse azioni. Il cestino
+no. Contiene cose che non sono più in uso e offre due gesti che altrove non
+esistono, di cui uno non si annulla. Come quarto chip avrebbe voluto dire che
+«Clienti» e «Cestino» si premono per sbaglio l'uno al posto dell'altro, e che da
+un tocco distratto si arriva a un pulsante rosso. Ci si va dal fondo dell'elenco
+e non dalla testata: al contrario dei vocali in sospeso — che stanno in cima
+proprio perché nessuno li andrebbe a cercare — qui ci si va quando si è già
+deciso, e allora si scorre. In testata c'è posto per due pulsanti, e sono
+occupati da cose che si premono ogni giorno. Il pulsante però sta **fuori** dal
+ramo che disegna le schede: il cestino esiste anche quando l'elenco è vuoto, ed
+è anzi l'unico caso in cui potrebbe contenere tutto quello che si sta cercando.
+
+**Il secondo tocco non è una cerimonia.** È la distanza fra buttare via una
+procedura e sfiorare lo schermo, e qui sotto non c'è nessun altro cestino da cui
+ripescare. Se il server rifiuta — un `409`, perché nel frattempo la scheda è
+stata ripristinata da un'altra schermata aperta — la conferma si richiude invece
+di restare lì pronta per un secondo tentativo che non è più quello che chi ha
+premuto aveva in mente. L'avvertenza su cosa comporta cancellare sta **sopra**
+l'elenco e non dentro la conferma: parla a chi guarda i pulsanti, non a chi ne ha
+già premuto uno. E la voce non riusa `ProcedureCard`, che è un `<button>` che
+apre la scheda: qui ogni riga ne ha già tre dentro, e un pulsante dentro un
+pulsante non è HTML valido — il browser lo risolve a modo suo, di solito
+sganciando il tocco da entrambi.
 
 ### Il service worker fa una cosa sola
 
@@ -1208,12 +1258,33 @@ sull'ultima (accesi chiederebbero rispettivamente un offset negativo, che il
 server rifiuta, e una pagina vuota), che la barra resti però disegnata
 sull'ultima pagina, o da lì si tornerebbe indietro solo ricaricando, e che
 sparisca del tutto quando l'archivio sta in una pagina sola. Nello stesso file,
-un caso che non parla di liste: che il pulsante «Account» nella testata porti
-davvero all'account. È l'unica porta che esiste — la barra bassa ha tre voci e
-nessuna è quella — e di là ci sono il cambio password e l'uscita: se sparisse in
-una riscrittura della testata, o navigasse altrove, la schermata tornerebbe
-irraggiungibile, che è lo stato esatto in cui la rotta del cambio password è
-rimasta per un commit intero.
+due casi che non parlano di liste: che il pulsante «Account» nella testata porti
+davvero all'account, e che quello «Cestino» in fondo porti davvero al cestino.
+Sono le uniche due porte che esistono — la barra bassa ha tre voci e nessuna è
+una di queste — e di là ci sono il cambio password, l'uscita e la cancellazione
+definitiva: se una sparisse in una riscrittura, o navigasse altrove, quella
+schermata tornerebbe irraggiungibile, che è lo stato esatto in cui la rotta del
+cambio password è rimasta per un commit intero. Del pulsante del cestino c'è un
+caso in più: che ci sia anche quando l'elenco è vuoto. Dentro il ramo che disegna
+le schede — dove sta la paginazione, e dove sarebbe finito senza pensarci —
+sparirebbe proprio a chi ha archiviato tutto e sta cercando dove sia finito
+l'archivio, e «Qui non c'è ancora niente» diventerebbe l'ultima parola dell'app.
+
+Del cestino, la conferma. È l'unica schermata da cui si perde qualcosa, e un
+`deleteProcedureForever` partito per sbaglio non si vede, non dà errore e non si
+annulla: il server ha una sola difesa — la scheda dev'essere già `ARCHIVIATA` — e
+qui lo sono tutte. Quindi i casi contano le chiamate partite e non solo il testo
+rimasto, perché un caso che guardasse soltanto la riga sparita passerebbe
+identico contro una schermata che cancella al primo tocco. Che il primo tocco non
+mandi niente al server; che il secondo cancelli *quella* riga, e che di pulsanti
+rossi accesi ce ne sia uno solo — la conferma sta nella voce e non nella
+schermata, o il tocco successivo cadrebbe su quella che capita per prima nel DOM;
+che «Annulla» richiuda senza aver chiesto niente; e che dopo un `409` il rosso si
+spenga, perché quel `409` significa che qualcuno ha ripescato la scheda da
+un'altra schermata, e lasciarlo acceso inviterebbe a insistere su una cosa che
+nel frattempo è diventata un'altra. Accanto, che «Ripristina» rimetta la scheda a
+`DA_RIVEDERE` e non a `COMPLETA`: lo stato che aveva prima non è scritto da
+nessuna parte, e «completa» è la sola delle due bugie che non si nota.
 
 Della ricerca, quante volte parte. Ogni ricerca calcola un embedding, cioè una
 chiamata a pagamento verso OpenAI, e i 300 ms di silenzio fra l'ultimo tasto e
@@ -1302,6 +1373,34 @@ disegno: che una `DELETE` su `Recording` non si porti via la `Procedure` che
 quella riga nominava. La chiave esterna sta sul lato sbagliato per potersene
 rassicurare a mente, e in memoria «la scheda sopravvive» sarebbe vero solo
 perché il finto repository l'ha lasciata stare. Lì è Postgres a dirlo.
+
+**La cancellazione definitiva è quasi tutta schema, e lo schema in memoria non
+c'è.** `procedures.service.test.ts` prova già le tre risposte — `204`, `409`,
+`404` — con un repository che vive in una `Map`. Quello che non può provare è
+l'unica cosa che qui fa danno: che cosa resta nel database dopo. I figli
+spariscono per un `onDelete: Cascade` che nessuna funzione TypeScript nomina;
+`Recording.procedureId` e `Recording.duplicateOfId` invece sono `SET NULL`, cioè
+la riga resta e resta con un buco. È quel buco l'oggetto dei casi: un vocale a
+cui è stato azzerato `procedureId` non è un vocale libero, è un `ESTRATTO` che
+`listPending` filtra via e che si apriva solo dalla scheda che non c'è più —
+contiene la trascrizione, cioè le frasi dette, e nessun gesto dell'applicazione
+può più raggiungerlo. Si prova quindi che i vocali della scheda spariscano con
+lei e i loro byte dal bucket; che quelli di *un'altra* scheda restino, audio
+compreso, perché un `procedureId` dimenticato nella `where` li porterebbe via
+tutti; e che il sospetto duplicato torni a `BOZZA_AUDIO` invece di restare
+appeso al nulla. Accanto, le due risposte che non cancellano — il `409` su una
+scheda viva, verificando che non sia stata sfiorata, e il `404` della seconda
+passata — e i due casi della query: `?definitivo=0` archivia come sempre,
+`?definitivo=vero` è un `400`.
+
+Un difetto di questi casi è scritto qui perché le mutazioni lo hanno trovato e
+non c'era modo di chiuderlo. I controlli sullo stato sono due — quello letto
+prima e quello dentro la `where` della `deleteMany` — e si coprono a vicenda:
+tolto uno solo, tutti i casi passano lo stesso. Tolti tutti e due insieme, il
+`409` cade. Il secondo esiste per la corsa che il primo non può vedere, cioè
+qualcuno che ripesca la scheda dal cestino fra la lettura e la cancellazione, e
+una corsa non si mette in scena in un test end-to-end su una connessione sola.
+Resta quindi una riga che nessun caso difende da sola, ed è voluta.
 
 **La scopa ha un file suo, e nasce da un buco che era scritto qui sotto.**
 `storageSweep.test.ts` prova trenta casi in memoria: le tre regole, le pagine, i
@@ -2078,7 +2177,7 @@ Non installate, e il perché:
 | `express-rate-limit` | quaranta righe, e la certezza su cosa viene contato |
 | `eslint` | il test di guardia copre le due regole che ci interessano |
 | `uuid` `nanoid` | `crypto.randomUUID()` |
-| `react-router` | `hashchange`, trenta righe per sette schermate |
+| `react-router` | `hashchange`, trenta righe per nove schermate |
 | `@tanstack/react-query` | `useAsync`, venti righe: carica e ricarica |
 | `vite-plugin-pwa` `workbox` | un service worker di sessanta righe |
 | `tailwind` e simili | un foglio di stile di 2 kB compressi |
@@ -2227,14 +2326,30 @@ Non installate, e il perché:
   solo il vocale, e va bene così: quella lista mostra per costruzione ciò che non
   è ancora diventato una scheda. Ma se un giorno cambiasse filtro, quel pulsante
   tornerebbe a promettere più di quello che fa.
-- **Archiviare non è cancellare, e per il testo non c'è altro.** Con
-  `?ancheLaScheda=1` la procedura va nel cestino, non via: le frasi che l'utente
-  ha detto restano nei campi che l'estrazione ha riempito, per sempre, finché
-  qualcuno non svuota il cestino — e svuotare il cestino non è una cosa che
-  questa applicazione sappia fare. Chi vuole che spariscano anche quelle oggi non
-  ha nessun gesto da premere. È il rovescio esatto della scelta scritta sopra: il
-  testo è recuperabile perché costa denaro rigenerarlo, e recuperabile vuol dire
-  che è ancora lì.
+- **«Per sempre» è vero per l'applicazione, non per il disco.** Dal cestino la
+  scheda sparisce davvero — i figli con lei per il `Cascade`, i vocali con la
+  loro trascrizione, i byte dell'audio dal bucket — ma è una `DELETE`, non una
+  cancellazione fisica: la riga resta nell'heap di Postgres finché non passa un
+  `VACUUM`, resta nel WAL, e resta in qualunque copia di sicurezza fatta prima.
+  E se lo storage non si lascia togliere l'oggetto — bucket irraggiungibile,
+  credenziali scadute — chi ha premuto riceve comunque il suo `204`: quell'audio
+  diventa un orfano, e l'unica cosa che può raccoglierlo è la scopa, che è un
+  comando che qualcuno deve lanciare. La promessa che il pulsante fa a chi la
+  legge è più forte di quella che il sistema mantiene, e la differenza si misura
+  in giorni.
+- **Il cestino si svuota una scheda per volta.** Non c'è nessun «svuota tutto»:
+  con quaranta archiviate sono ottanta tocchi, e il gesto lungo è proprio quello
+  che si vuole poter fare quando si smette di usare l'applicazione. La conferma a
+  due passi è pensata per la scheda singola, ed è la ragione per cui un pulsante
+  solo non basterebbe — ma è anche la ragione per cui non ce n'è ancora uno.
+- **Il sospetto duplicato torna in coda, e la coda spende.** Cancellata la scheda
+  a cui somigliava, quel vocale riparte da `BOZZA_AUDIO` con `nextAttemptAt`
+  azzerato: alla passata successiva il worker rifà la trascrizione e
+  l'estrazione, ripaga i token, e questa volta — non avendo più niente a cui
+  somigliare — produce una scheda. Quasi sempre è ciò che si vuole, perché quel
+  racconto nessuno ha mai deciso di buttarlo. Ma è l'unico punto
+  dell'applicazione in cui cancellare qualcosa ne fa nascere un'altra, e non c'è
+  nessuna schermata che lo dica prima.
 - **L'opzione dà per scontato che i vocali siano uno.** `Procedure.recordings` è
   uno a molti, ma oggi `persistProcedure` crea sempre una scheda nuova, quindi
   due registrazioni non condividono mai un `procedureId` e il caso non si può

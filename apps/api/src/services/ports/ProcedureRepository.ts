@@ -212,6 +212,24 @@ export interface AddExecutionData {
   readonly status?: CardStatus | undefined;
 }
 
+/**
+ * Come e' andata la cancellazione definitiva.
+ *
+ * Tre casi e non un booleano, perche' le due strade che non cancellano vogliono
+ * due risposte HTTP diverse e nessuna delle due e' un errore del server:
+ * `ASSENTE` e' un 404, `NON_ARCHIVIATA` e' un 409 che dice cosa fare prima.
+ * Distinguerle qui, dove si e' appena guardata la riga, evita al servizio di
+ * doverlo richiedere una seconda volta per capire quale delle due sia.
+ */
+export type DeleteProcedureOutcome =
+  | { readonly kind: "ASSENTE" }
+  | { readonly kind: "NON_ARCHIVIATA" }
+  | {
+      readonly kind: "CANCELLATA";
+      /** Gli oggetti da togliere dallo storage. Vuoto se la scheda era a mano. */
+      readonly audioUrls: readonly string[];
+    };
+
 // ---------------------------------------------------------------------------
 // Ricerca
 // ---------------------------------------------------------------------------
@@ -240,6 +258,22 @@ export interface ProcedureRepository {
 
   /** Soft delete: `status = ARCHIVIATA`. Idempotente. */
   archive(userId: string, id: string): Promise<ProcedureDetailRow | null>;
+
+  /**
+   * Cancellazione vera, e solo dal cestino.
+   *
+   * Non e' idempotente come `archive`, e non puo' esserlo: la seconda chiamata
+   * non trova piu' niente, e dire «fatto» a chi cancella una scheda che non
+   * esiste piu' nasconderebbe l'unico caso in cui quel 404 conta davvero — due
+   * schermate aperte, la stessa scheda, e uno dei due che crede di aver
+   * cancellato quella che ha davanti.
+   *
+   * Non risponde con la riga cancellata ma con le chiavi dell'audio che era
+   * appeso: sono l'unica cosa che dopo la transazione non esiste piu' da nessuna
+   * parte, e senza restituirle il chiamante non avrebbe modo di sapere quali
+   * oggetti togliere dal bucket.
+   */
+  deleteForUser(userId: string, id: string): Promise<DeleteProcedureOutcome>;
 
   addExecution(
     userId: string,

@@ -3,10 +3,11 @@ import type { ApiClient } from "@wikimylife/shared";
 /**
  * Un `ApiClient` che non sa fare niente, tranne quello che il caso gli insegna.
  *
- * Ventidue metodi, e ogni test ne usa due o tre. La tentazione e' un finto che
- * risponde a tutto con dei valori plausibili, ed e' la scelta che rende inutile
- * il test: una schermata che chiama una rotta sbagliata riceverebbe comunque
- * una risposta valida, e il caso passerebbe verificando la cosa sbagliata.
+ * Ventiquattro metodi, e ogni test ne usa due o tre. La tentazione e' un finto
+ * che risponde a tutto con dei valori plausibili, ed e' la scelta che rende
+ * inutile il test: una schermata che chiama una rotta sbagliata riceverebbe
+ * comunque una risposta valida, e il caso passerebbe verificando la cosa
+ * sbagliata.
  *
  * Qui il predefinito e' l'opposto: ogni metodo non insegnato lancia col proprio
  * nome dentro. Se una schermata chiama `getProcedure` dove doveva chiamare
@@ -50,6 +51,7 @@ export function creaClienteFinto(risposte: Partial<ApiClient> = {}): ApiClient {
     getProcedure: () => nonPrevista("getProcedure"),
     updateProcedure: () => nonPrevista("updateProcedure"),
     archiveProcedure: () => nonPrevista("archiveProcedure"),
+    deleteProcedureForever: () => nonPrevista("deleteProcedureForever"),
     recordExecution: () => nonPrevista("recordExecution"),
     proposeRedaction: () => nonPrevista("proposeRedaction"),
     applyRedaction: () => nonPrevista("applyRedaction"),

@@ -9,7 +9,10 @@ import {
 } from "@wikimylife/shared";
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { FakeEmbeddingProvider } from "../../apps/api/src/providers/fake/index.js";
+import {
+  FakeEmbeddingProvider,
+  FakeStorageProvider,
+} from "../../apps/api/src/providers/fake/index.js";
 import {
   createProceduresService,
   type ProceduresService,
@@ -52,6 +55,9 @@ function harness(extra?: Partial<ProceduresServiceDeps>): Harness {
       repo,
       embeddings: new FakeEmbeddingProvider({ model: "fake", dimensions: 1536 }),
       clock: new FixedClock(NOW),
+      // La redazione non tocca lo storage: sta qui perche' il servizio lo
+      // chiede, e lo chiede per l'unico metodo che questo file non prova.
+      storage: new FakeStorageProvider(),
       ...extra,
     }),
   };

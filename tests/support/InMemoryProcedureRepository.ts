@@ -1,6 +1,7 @@
 import { CardStatus, Scope, Visibility } from "@wikimylife/shared";
 import type {
   AddExecutionData,
+  DeleteProcedureOutcome,
   ListProceduresFilter,
   ProcedureDetailRow,
   ProcedurePage,
@@ -53,11 +54,21 @@ export interface SeedProcedure {
   readonly luogoDettaglio?: string | null;
   readonly clientLabel?: string | null;
   readonly recordings?: ProcedureDetailRow["recordings"];
+  /**
+   * Le chiavi degli oggetti appesi ai vocali di questa scheda.
+   *
+   * Non stanno in `recordings` perche' su `ProcedureDetailRow` non ci sono: la
+   * scheda non ha mai avuto bisogno di sapere dove sia l'audio. Le vede solo
+   * `deleteForUser`, che le legge dall'altra tabella, e qui esistono per poter
+   * provare che il servizio le passi allo storage.
+   */
+  readonly audioUrls?: readonly string[];
 }
 
 export class InMemoryProcedureRepository implements ProcedureRepository {
   readonly #rows = new Map<string, ProcedureDetailRow>();
   readonly #owners = new Map<string, string>();
+  readonly #audio = new Map<string, readonly string[]>();
 
   /** Liste che i due canali restituiranno, programmate dal test. */
   fullTextResult: readonly ScoredProcedureId[] = [];
@@ -106,7 +117,13 @@ export class InMemoryProcedureRepository implements ProcedureRepository {
     };
     this.#rows.set(id, row);
     this.#owners.set(id, input.userId);
+    this.#audio.set(id, input.audioUrls ?? []);
     return row;
+  }
+
+  /** `true` se la riga c'e' ancora: serve a distinguere l'archiviata dalla nulla. */
+  esiste(id: string): boolean {
+    return this.#rows.has(id);
   }
 
   snapshot(id: string): ProcedureDetailRow {
@@ -218,6 +235,21 @@ export class InMemoryProcedureRepository implements ProcedureRepository {
     const archiviata = { ...row, status: CardStatus.ARCHIVIATA };
     this.#rows.set(id, archiviata);
     return archiviata;
+  }
+
+  async deleteForUser(userId: string, id: string): Promise<DeleteProcedureOutcome> {
+    const row = this.#own(userId, id);
+    if (row === null) {
+      return { kind: "ASSENTE" };
+    }
+    if (row.status !== CardStatus.ARCHIVIATA) {
+      return { kind: "NON_ARCHIVIATA" };
+    }
+    const audioUrls = this.#audio.get(id) ?? [];
+    this.#rows.delete(id);
+    this.#owners.delete(id);
+    this.#audio.delete(id);
+    return { kind: "CANCELLATA", audioUrls };
   }
 
   async addExecution(

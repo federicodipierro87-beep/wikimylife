@@ -1,6 +1,7 @@
 import {
   applyRedactionBodySchema,
   createExecutionBodySchema,
+  deleteProcedureQuerySchema,
   listProceduresQuerySchema,
   updateProcedureBodySchema,
 } from "@wikimylife/shared";
@@ -19,11 +20,18 @@ import type { ProceduresService } from "../services/procedures.service.js";
  *
  * ## Perche' `DELETE` risponde 200 e non 204
  *
- * Non cancella: archivia (`status = ARCHIVIATA`). Un 204 direbbe «non c'e' piu'
- * niente da vedere», che qui e' falso — la scheda esiste, e' leggibile con
- * `?status=ARCHIVIATA` e si puo' riportare indietro con una `PATCH`.
- * Restituendo la scheda aggiornata il client ha subito lo stato vero, senza una
- * seconda chiamata per scoprire che il "cancellato" e' reversibile.
+ * Nel caso normale non cancella: archivia (`status = ARCHIVIATA`). Un 204
+ * direbbe «non c'e' piu' niente da vedere», che li' e' falso — la scheda esiste,
+ * e' leggibile con `?status=ARCHIVIATA` e si puo' riportare indietro con una
+ * `PATCH`. Restituendo la scheda aggiornata il client ha subito lo stato vero,
+ * senza una seconda chiamata per scoprire che il "cancellato" e' reversibile.
+ *
+ * Con `?definitivo=1` la stessa rotta cancella per davvero, e allora il 204 e'
+ * la risposta giusta per la stessa ragione per cui prima era sbagliata: non
+ * c'e' piu' niente da mandare indietro. Due rotte separate avrebbero significato
+ * due percorsi da proteggere allo stesso modo e un `/:id/definitivo` che
+ * qualsiasi lettore scambierebbe per una sotto-risorsa. E' un'opzione della
+ * cancellazione, non un'altra cosa che si cancella.
  *
  * ## Perche' `POST /:id/executions` risponde 200 e non 201
  *
@@ -76,6 +84,14 @@ export function createProceduresRouter(deps: {
 
   router.delete("/:id", async (req, res) => {
     const { userId } = authContext(req);
+    const { definitivo } = parseQuery(deleteProcedureQuerySchema, req.query);
+
+    if (definitivo) {
+      await deps.proceduresService.deleteForever(userId, req.params.id);
+      res.status(204).end();
+      return;
+    }
+
     const scheda = await deps.proceduresService.archive(userId, req.params.id);
     res.status(200).json(scheda);
   });

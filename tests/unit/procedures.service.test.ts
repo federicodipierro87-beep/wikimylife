@@ -8,7 +8,10 @@ import {
   type ListProceduresQuery,
 } from "@wikimylife/shared";
 import { beforeEach, describe, expect, it } from "vitest";
-import { FakeEmbeddingProvider } from "../../apps/api/src/providers/fake/index.js";
+import {
+  FakeEmbeddingProvider,
+  FakeStorageProvider,
+} from "../../apps/api/src/providers/fake/index.js";
 import {
   createProceduresService,
   verificaVisibilita,
@@ -35,21 +38,32 @@ const LISTA: ListProceduresQuery = { limit: 20, offset: 0 };
 interface Harness {
   readonly repo: InMemoryProcedureRepository;
   readonly clock: FixedClock;
+  readonly blob: FakeStorageProvider;
   readonly service: ProceduresService;
 }
 
 function harness(): Harness {
   const repo = new InMemoryProcedureRepository();
   const clock = new FixedClock(NOW);
+  const blob = new FakeStorageProvider();
   return {
     repo,
     clock,
+    blob,
     service: createProceduresService({
       repo,
       embeddings: new FakeEmbeddingProvider({ model: "fake", dimensions: 1536 }),
       clock,
+      storage: blob,
     }),
   };
+}
+
+/** Un bucket che non lascia cancellare niente. */
+class StorageSenzaCancellazione extends FakeStorageProvider {
+  override delete(): Promise<void> {
+    return Promise.reject(new Error("bucket irraggiungibile"));
+  }
 }
 
 let h: Harness;
@@ -409,6 +423,118 @@ describe("archive", () => {
     await expect(
       h.service.update(USER, row.id, { status: CardStatus.DA_RIVEDERE }),
     ).resolves.toMatchObject({ status: CardStatus.DA_RIVEDERE });
+  });
+});
+
+/**
+ * L'unico gesto che non si annulla.
+ *
+ * I casi che contano non sono la cancellazione riuscita — quella e' una riga —
+ * ma i tre modi in cui deve rifiutarsi di farla: su una scheda viva, su una
+ * scheda di un altro, e una seconda volta sulla stessa. E poi l'audio, che sta
+ * fuori dal database e quindi fuori dalla transazione: se il servizio si
+ * dimenticasse di passarlo allo storage, ogni test qui sopra resterebbe verde e
+ * la voce dell'utente resterebbe nel bucket.
+ */
+describe("deleteForever", () => {
+  it("cancella la scheda che era gia' nel cestino, e i suoi oggetti", async () => {
+    const row = h.repo.seed({
+      userId: USER,
+      status: CardStatus.ARCHIVIATA,
+      audioUrls: ["user-1/aaa.webm", "user-1/bbb.webm"],
+    });
+    await h.blob.put({ key: "user-1/aaa.webm", data: new Uint8Array([1]), mimeType: "audio/webm" });
+    await h.blob.put({ key: "user-1/bbb.webm", data: new Uint8Array([2]), mimeType: "audio/webm" });
+    // Di un'altra scheda: se il servizio cancellasse tutto invece di cio' che il
+    // repository gli ha nominato, la differenza si vedrebbe solo qui.
+    await h.blob.put({ key: "user-1/ccc.webm", data: new Uint8Array([3]), mimeType: "audio/webm" });
+
+    await expect(h.service.deleteForever(USER, row.id)).resolves.toBeUndefined();
+
+    expect(h.repo.esiste(row.id)).toBe(false);
+    expect([...h.blob.keys]).toEqual(["user-1/ccc.webm"]);
+  });
+
+  it("rifiuta con 409 una scheda che non e' nel cestino, e non la tocca", async () => {
+    const row = h.repo.seed({ userId: USER, status: CardStatus.COMPLETA });
+
+    await expect(h.service.deleteForever(USER, row.id)).rejects.toMatchObject({ status: 409 });
+    expect(h.repo.esiste(row.id)).toBe(true);
+    expect(h.repo.snapshot(row.id).status).toBe(CardStatus.COMPLETA);
+  });
+
+  it("rifiuta con 409 anche una scheda DA_RIVEDERE, che e' lo stato piu' vicino", async () => {
+    // `DA_RIVEDERE` e' cio' che diventa una scheda ripescata dal cestino: e' il
+    // caso in cui due schermate aperte fanno cancellare a una quello che l'altra
+    // ha appena rimesso a posto.
+    const row = h.repo.seed({ userId: USER, status: CardStatus.DA_RIVEDERE });
+
+    await expect(h.service.deleteForever(USER, row.id)).rejects.toMatchObject({ status: 409 });
+    expect(h.repo.esiste(row.id)).toBe(true);
+  });
+
+  it("non e' idempotente: la seconda volta e' un 404", async () => {
+    const row = h.repo.seed({ userId: USER, status: CardStatus.ARCHIVIATA });
+
+    await h.service.deleteForever(USER, row.id);
+    await expect(h.service.deleteForever(USER, row.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("non lascia cancellare la scheda archiviata di un altro", async () => {
+    const row = h.repo.seed({ userId: ALTRO, status: CardStatus.ARCHIVIATA });
+
+    // 404 e non 403: un 403 confermerebbe che quell'id e' stato assegnato a
+    // qualcuno, ed e' proprio l'informazione che si nega ovunque.
+    await expect(h.service.deleteForever(USER, row.id)).rejects.toMatchObject({ status: 404 });
+    expect(h.repo.esiste(row.id)).toBe(true);
+  });
+
+  it("se il bucket rifiuta non fa fallire chi ha premuto, ma segnala la chiave", async () => {
+    const orfani: string[] = [];
+    const repo = new InMemoryProcedureRepository();
+    const service = createProceduresService({
+      repo,
+      embeddings: new FakeEmbeddingProvider({ model: "fake", dimensions: 1536 }),
+      clock: new FixedClock(NOW),
+      storage: new StorageSenzaCancellazione(),
+      onOrphanedAudio: ({ key }) => orfani.push(key),
+    });
+    const row = repo.seed({
+      userId: USER,
+      status: CardStatus.ARCHIVIATA,
+      audioUrls: ["user-1/rimasto.webm"],
+    });
+
+    // La riga non c'e' piu' e la transazione e' chiusa: rilanciare qui darebbe
+    // un 500 a chi ha gia' ottenuto cio' che aveva chiesto, e lo spingerebbe a
+    // ripetere una DELETE che ormai puo' solo rispondere 404.
+    await expect(service.deleteForever(USER, row.id)).resolves.toBeUndefined();
+    expect(repo.esiste(row.id)).toBe(false);
+    expect(orfani).toEqual(["user-1/rimasto.webm"]);
+  });
+
+  it("prova a togliere il secondo oggetto anche se il primo e' fallito", async () => {
+    const orfani: string[] = [];
+    const repo = new InMemoryProcedureRepository();
+    const service = createProceduresService({
+      repo,
+      embeddings: new FakeEmbeddingProvider({ model: "fake", dimensions: 1536 }),
+      clock: new FixedClock(NOW),
+      storage: new StorageSenzaCancellazione(),
+      onOrphanedAudio: ({ key }) => orfani.push(key),
+    });
+    const row = repo.seed({
+      userId: USER,
+      status: CardStatus.ARCHIVIATA,
+      audioUrls: ["user-1/primo.webm", "user-1/secondo.webm"],
+    });
+
+    await service.deleteForever(USER, row.id);
+
+    // Due e non uno: un `try` attorno all'intero ciclo invece che attorno alla
+    // singola cancellazione lascerebbe nel bucket ogni oggetto dopo il primo
+    // guasto, e la traccia direbbe che ne era rimasto uno solo.
+    expect(orfani).toEqual(["user-1/primo.webm", "user-1/secondo.webm"]);
   });
 });
 

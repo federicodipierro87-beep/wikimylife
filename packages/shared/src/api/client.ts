@@ -191,10 +191,25 @@ export interface ApiClient {
   updateProcedure(id: string, patch: UpdateProcedureBodyInput): Promise<ProcedureDetail>;
   /**
    * Soft delete: la scheda passa ad `ARCHIVIATA` e sparisce da liste e ricerca,
-   * ma resta leggibile per id. Cancellare davvero significherebbe buttare via
-   * anche le registrazioni collegate, che sono l'unico dato non riproducibile.
+   * ma resta leggibile per id. Si torna indietro con `updateProcedure`.
    */
   archiveProcedure(id: string): Promise<ProcedureDetail>;
+  /**
+   * Il secondo giro, quello che non si annulla.
+   *
+   * Vale solo su una scheda gia' `ARCHIVIATA`: su qualunque altra risponde 409.
+   * Non e' una precauzione simbolica — e' cio' che rende impossibile perdere una
+   * scheda viva con una sola chiamata sbagliata, e cio' che permette
+   * all'interfaccia di chiedere «sicuro?» in un momento diverso da quello in cui
+   * si e' premuto «elimina».
+   *
+   * Si porta via anche le registrazioni da cui la scheda e' nata, e i loro
+   * byte: il testo dei campi e' un rifacimento delle frasi dette, ma la
+   * trascrizione e l'audio sono le frasi dette. Cancellare il primo e lasciare
+   * gli altri sarebbe una cancellazione per finta, e per giunta lascerebbe quei
+   * vocali irraggiungibili — l'unica schermata che li mostra e' la scheda.
+   */
+  deleteProcedureForever(id: string): Promise<void>;
   /** §8: un esito `CAMBIATA` riporta la scheda in `DA_RIVEDERE`. */
   recordExecution(id: string, body: CreateExecutionBodyInput): Promise<ProcedureDetail>;
   /**
@@ -645,6 +660,23 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           method: "DELETE",
           path: `/api/procedures/${encodeURIComponent(id)}`,
           schema: procedureDetailSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    async deleteProcedureForever(id: string): Promise<void> {
+      // `definitivo=1` esplicito e sempre presente, al contrario di
+      // `ancheLaScheda`: li' l'omissione tiene la richiesta identica a quella di
+      // prima, qui non c'e' nessun «prima» da preservare, e una `DELETE` senza
+      // query nei registri del server sarebbe indistinguibile da
+      // un'archiviazione. Di questa chiamata deve restare traccia com'e'.
+      await execute(
+        {
+          method: "DELETE",
+          path: `/api/procedures/${encodeURIComponent(id)}${queryString({ definitivo: "1" })}`,
+          accept: "application/json",
           auth: true,
         },
         true,

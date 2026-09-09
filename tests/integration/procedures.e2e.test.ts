@@ -1,6 +1,7 @@
 import {
   CardStatus,
   Outcome,
+  RecordingStatus,
   Scope,
   Severity,
   Visibility,
@@ -8,6 +9,7 @@ import {
   errorBodySchema,
   procedureDetailSchema,
   procedureListSchema,
+  recordingStateSchema,
   redactionReportSchema,
   searchResultSchema,
   type ProcedureDetail,
@@ -16,6 +18,7 @@ import { buildExtractionContract } from "@wikimylife/shared/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   FakeExtractionProvider,
+  FakeStorageProvider,
   FakeTranscriptionProvider,
 } from "../../apps/api/src/providers/fake/index.js";
 import { disconnectTestPrisma, resetDatabase } from "./helpers/db.js";
@@ -44,18 +47,21 @@ const PASSWORD = "password-di-prova-lunga";
 let server: TestServer;
 let stt: FakeTranscriptionProvider;
 let llm: FakeExtractionProvider;
+let blob: FakeStorageProvider;
 
 beforeAll(async () => {
   server = await startTestServer();
-  const { transcription, extraction } = server.composition.providers;
+  const { transcription, extraction, storage } = server.composition.providers;
   if (
     !(transcription instanceof FakeTranscriptionProvider) ||
-    !(extraction instanceof FakeExtractionProvider)
+    !(extraction instanceof FakeExtractionProvider) ||
+    !(storage instanceof FakeStorageProvider)
   ) {
     throw new Error("I test end-to-end richiedono i provider finti.");
   }
   stt = transcription;
   llm = extraction;
+  blob = storage;
 });
 
 afterAll(async () => {
@@ -485,6 +491,217 @@ describe("DELETE /api/procedures/:id", () => {
 
     expect(res.status).toBe(404);
     expect((await leggi(altrui, sua.id)).status).not.toBe(CardStatus.ARCHIVIATA);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/procedures/:id?definitivo=1
+// ---------------------------------------------------------------------------
+
+/**
+ * Il secondo giro, quello che non si annulla.
+ *
+ * `procedures.service.test.ts` prova gia' le tre risposte — 204, 409, 404 — con
+ * un repository in memoria. Quello che non puo' provare e' l'unica cosa che qui
+ * fa danno: cosa resta nel database dopo. La cancellazione vera si appoggia a
+ * due comportamenti che stanno nello schema e non nel codice, e che in memoria
+ * non esistono affatto. I figli della scheda spariscono per `onDelete: Cascade`,
+ * cioe' per una riga di `schema.prisma` che nessuna funzione TypeScript nomina.
+ * I due `Recording.procedureId` e `Recording.duplicateOfId` invece sono
+ * `SET NULL`: la riga resta, e resta con un buco.
+ *
+ * E' quel buco il motivo di questa sezione. Un vocale a cui e' stato azzerato
+ * `procedureId` non e' un vocale libero — e' un `ESTRATTO` che nessuna
+ * schermata mostra piu', perche' `listPending` filtra proprio gli `ESTRATTO` e
+ * la scheda da cui lo si apriva non c'e'. Contiene la trascrizione, cioe' le
+ * frasi dette, e nessun gesto dell'app puo' piu' raggiungerlo. Cancellare una
+ * scheda «per sempre» e lasciarsi dietro quella riga sarebbe il contrario
+ * esatto di cio' che il pulsante promette.
+ */
+describe("DELETE /api/procedures/:id?definitivo=1", () => {
+  /** La scheda nel cestino, che e' l'unico posto da cui si cancella. */
+  async function creaEArchivia(token: string): Promise<ProcedureDetail> {
+    const creata = await creaScheda(token);
+    const res = await call(server, "DELETE", `/api/procedures/${creata.id}`, {
+      accessToken: token,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return creata;
+  }
+
+  async function cancella(token: string, id: string): Promise<{ status: number; body: unknown }> {
+    return call(server, "DELETE", `/api/procedures/${id}?definitivo=1`, { accessToken: token });
+  }
+
+  it("cancella la riga, e con lei tutto quello che le stava appeso", async () => {
+    const token = await signup();
+    const creata = await creaEArchivia(token);
+    // I passi ci sono per costruzione — l'estrazione ne produce sempre — ma
+    // contarli prima serve a distinguere «cancellati» da «non ce n'erano».
+    expect(await server.prisma.step.count({ where: { procedureId: creata.id } })).toBeGreaterThan(0);
+
+    const res = await cancella(token, creata.id);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(204);
+    expect(res.body).toBeNull();
+    expect(await server.prisma.procedure.count({ where: { id: creata.id } })).toBe(0);
+    // Nessun `deleteMany` sui figli sta nel repository: se il `Cascade` sparisse
+    // dallo schema, la `delete` fallirebbe con un errore di vincolo e questa
+    // riga non ci arriverebbe nemmeno.
+    expect(await server.prisma.step.count({ where: { procedureId: creata.id } })).toBe(0);
+  });
+
+  it("si porta via i vocali da cui la scheda e' nata, e i loro byte", async () => {
+    const token = await signup();
+    const creata = await creaEArchivia(token);
+
+    const vocale = await server.prisma.recording.findFirstOrThrow({
+      where: { procedureId: creata.id },
+      select: { id: true, audioUrl: true, transcript: true },
+    });
+    // La trascrizione non e' un rifacimento di cio' che e' stato detto: e' cio'
+    // che e' stato detto. E' la ragione per cui il vocale non puo' restare.
+    expect(vocale.transcript).not.toBeNull();
+    expect(blob.keys).toContain(vocale.audioUrl);
+
+    await cancella(token, creata.id);
+
+    // `SET NULL` lascerebbe qui una riga con `procedureId: null` e stato
+    // `ESTRATTO`: invisibile a `listPending`, che filtra proprio quello stato, e
+    // orfana della sola schermata che la mostrava.
+    expect(await server.prisma.recording.count({ where: { id: vocale.id } })).toBe(0);
+    expect(blob.keys).not.toContain(vocale.audioUrl);
+  });
+
+  it("non tocca i vocali di un'altra scheda, ne' il loro audio", async () => {
+    const token = await signup();
+    const daTenere = await creaScheda(token, { titolo: "Disdire la palestra" });
+    const daButtare = await creaEArchivia(token);
+
+    const salvo = await server.prisma.recording.findFirstOrThrow({
+      where: { procedureId: daTenere.id },
+      select: { id: true, audioUrl: true },
+    });
+
+    await cancella(token, daButtare.id);
+
+    // Un `deleteMany` con il `procedureId` dimenticato nella `where` — o con lo
+    // `userId` al posto suo — porterebbe via anche questo, e la scheda rimasta
+    // resterebbe li' senza piu' l'audio da cui e' nata.
+    expect(await server.prisma.recording.count({ where: { id: salvo.id } })).toBe(1);
+    expect(blob.keys).toContain(salvo.audioUrl);
+    expect(await server.prisma.procedure.count({ where: { id: daTenere.id } })).toBe(1);
+  });
+
+  it("rimette in coda il sospetto duplicato, invece di lasciarlo appeso al nulla", async () => {
+    const token = await signup();
+    const prima = await creaScheda(token);
+
+    // Stesso contratto, stesso vettore: l'ingestione lo riconosce come doppione
+    // e lo lascia in attesa di una decisione dell'utente.
+    llm.enqueue(buildExtractionContract());
+    const upload = await uploadRecording(server, {
+      accessToken: token,
+      metadata: {
+        recordedAt: "2026-03-02T09:30:00.000Z",
+        durationMs: 42_000,
+        mimeType: "audio/webm",
+        capturedOffline: false,
+        deviceLocale: "it-IT",
+      },
+    });
+    expect(upload.status, JSON.stringify(upload.body)).toBe(202);
+    const sospetto = recordingStateSchema.parse(upload.body).id;
+    expect((await server.composition.ingestionService.processNext())?.kind).toBe("DUPLICATO");
+
+    await call(server, "DELETE", `/api/procedures/${prima.id}`, { accessToken: token });
+    await cancella(token, prima.id);
+
+    const dopo = await server.prisma.recording.findUniqueOrThrow({
+      where: { id: sospetto },
+      select: { status: true, duplicateOfId: true, duplicateSimilarity: true },
+    });
+    // Non e' un vocale della scheda: e' un vocale che le somigliava. Cancellarlo
+    // insieme a lei butterebbe via un racconto che nessuno ha mai deciso di
+    // buttare. Ma lasciarlo `DUPLICATO_SOSPETTO` con `duplicateOfId` azzerato
+    // dal `SET NULL` sarebbe peggio: l'avviso a schermo non avrebbe piu' niente
+    // da nominare, e il pulsante «tienilo comunque» punterebbe a una scheda che
+    // non c'e'. Torna in coda, che e' dov'era prima di somigliare a qualcosa.
+    expect(dopo.status).toBe(RecordingStatus.BOZZA_AUDIO);
+    expect(dopo.duplicateOfId).toBeNull();
+    expect(dopo.duplicateSimilarity).toBeNull();
+  });
+
+  it("rifiuta con 409 una scheda che non e' nel cestino, e non la sfiora", async () => {
+    const token = await signup();
+    const viva = await creaScheda(token);
+
+    const res = await cancella(token, viva.id);
+
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("CONFLICT");
+    // I due passaggi non sono una cerimonia: sono cio' che rende impossibile
+    // perdere una scheda in uso con una sola chiamata sbagliata.
+    expect(await server.prisma.procedure.count({ where: { id: viva.id } })).toBe(1);
+    expect(await server.prisma.recording.count({ where: { procedureId: viva.id } })).toBe(1);
+  });
+
+  it("non e' idempotente: la seconda volta e' un 404", async () => {
+    const token = await signup();
+    const creata = await creaEArchivia(token);
+
+    expect((await cancella(token, creata.id)).status).toBe(204);
+    const secondo = await cancella(token, creata.id);
+
+    // Al contrario dell'archiviazione, che ripetuta risponde 200. Qui un «fatto»
+    // nasconderebbe l'unico caso in cui quel 404 conta: due schermate aperte
+    // sulla stessa scheda, e chi preme la seconda volta che crede di aver
+    // cancellato quella che ha davanti.
+    expect(secondo.status).toBe(404);
+    expect(errorCode(secondo.body)).toBe("NOT_FOUND");
+  });
+
+  it("non lascia cancellare la scheda archiviata di un altro", async () => {
+    const mio = await signup();
+    const altrui = await signup();
+    const sua = await creaEArchivia(altrui);
+
+    const res = await cancella(mio, sua.id);
+
+    // 404 e non 403: rispondere «non tuo» direbbe a chi tira a indovinare che
+    // quell'id esiste.
+    expect(res.status).toBe(404);
+    expect(await server.prisma.procedure.count({ where: { id: sua.id } })).toBe(1);
+  });
+
+  it("senza la query archivia, che e' cio' che questa rotta ha sempre fatto", async () => {
+    const token = await signup();
+    const creata = await creaScheda(token);
+
+    const res = await call(server, "DELETE", `/api/procedures/${creata.id}?definitivo=0`, {
+      accessToken: token,
+    });
+
+    // `definitivo=0` esplicito e non solo l'assenza: e' l'altra meta' dello
+    // schema, ed e' quella che un `z.coerce.boolean()` leggerebbe come «si'».
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await server.prisma.procedure.count({ where: { id: creata.id } })).toBe(1);
+  });
+
+  it("un valore che non e' ne' 1 ne' 0 e' un 400, e non una cancellazione", async () => {
+    const token = await signup();
+    const creata = await creaEArchivia(token);
+
+    const res = await call(server, "DELETE", `/api/procedures/${creata.id}?definitivo=vero`, {
+      accessToken: token,
+    });
+
+    // Nessuna interpretazione generosa. Su questa rotta la generosita' costa
+    // piu' che altrove, perche' dall'altra parte non c'e' un cestino da cui
+    // ripescare.
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
+    expect(await server.prisma.procedure.count({ where: { id: creata.id } })).toBe(1);
   });
 });
 

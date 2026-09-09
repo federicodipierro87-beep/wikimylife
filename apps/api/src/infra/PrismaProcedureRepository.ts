@@ -1,5 +1,6 @@
 import {
   CardStatus,
+  RecordingStatus,
   SEARCH_MIN_SIMILARITY,
   toVectorLiteral,
   type Scope,
@@ -7,6 +8,7 @@ import {
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   AddExecutionData,
+  DeleteProcedureOutcome,
   ListProceduresFilter,
   ProcedureDetailRow,
   ProcedurePage,
@@ -317,6 +319,94 @@ export class PrismaProcedureRepository implements ProcedureRepository {
       return null;
     }
     return this.findById(userId, id);
+  }
+
+  /**
+   * ## Perche' le letture stanno tutte prima delle scritture
+   *
+   * La `DELETE` sulla scheda e' un compare-and-swap: `deleteMany` con lo stato
+   * nel WHERE, come ovunque in questo progetto. Se fra la lettura e li' qualcuno
+   * ha ripescato la scheda dal cestino, `count` e' zero e non si cancella
+   * niente. Ma perche' quel «niente» sia vero davvero, nel frattempo non deve
+   * essere gia' successo altro — e per questo i due `SELECT` che raccolgono i
+   * vocali stanno sopra, e i due `UPDATE`/`DELETE` che li toccano stanno sotto.
+   * Con l'ordine opposto servirebbe un'eccezione per annullare la transazione, e
+   * un'eccezione usata come `return` e' una cosa che qualcuno prima o poi
+   * incapsula in un `try` per sbaglio.
+   *
+   * ## Perche' i vocali si leggono prima e non dopo
+   *
+   * `Recording.procedureId` e `Recording.duplicateOfId` sono `ON DELETE SET
+   * NULL`. Un istante dopo la `DELETE` sulla scheda quei due campi valgono
+   * `null` su tutte le righe interessate: cercarli allora vorrebbe dire cercare
+   * un legame che il database ha appena cancellato per conto suo.
+   *
+   * ## Perche' i sospetti duplicati tornano in coda invece di restare fermi
+   *
+   * Un vocale `DUPLICATO_SOSPETTO` e' fermo perche' esisteva gia' una scheda che
+   * gli somigliava. Se quella scheda non esiste piu', la ragione per cui e'
+   * fermo non c'e' piu'. Lasciarlo com'e' significherebbe lasciarlo con un
+   * `duplicate` che punta al nulla — la schermata lo mostra senza dettaglio, e
+   * `avvisoDi` lo dichiara non riprovabile: un vocale che non puo' ne' diventare
+   * una scheda ne' spiegare perche'. Rimetterlo in `BOZZA_AUDIO` costa
+   * un'estrazione, ed e' esattamente cio' che l'utente otterrebbe premendo
+   * «Riprova adesso» se il pulsante ci fosse.
+   */
+  async deleteForUser(userId: string, id: string): Promise<DeleteProcedureOutcome> {
+    return this.#prisma.$transaction(async (tx) => {
+      const row = await tx.procedure.findFirst({
+        where: { id, userId },
+        select: { status: true },
+      });
+      if (row === null) {
+        return { kind: "ASSENTE" };
+      }
+      if (row.status !== CardStatus.ARCHIVIATA) {
+        return { kind: "NON_ARCHIVIATA" };
+      }
+
+      const nati = await tx.recording.findMany({
+        where: { userId, procedureId: id },
+        select: { id: true, audioUrl: true },
+      });
+      const sospetti = await tx.recording.findMany({
+        where: {
+          userId,
+          duplicateOfId: id,
+          status: RecordingStatus.DUPLICATO_SOSPETTO,
+        },
+        select: { id: true },
+      });
+
+      const cancellate = await tx.procedure.deleteMany({
+        where: { id, userId, status: CardStatus.ARCHIVIATA },
+      });
+      if (cancellate.count === 0) {
+        return { kind: "NON_ARCHIVIATA" };
+      }
+
+      // Senza filtro sullo stato, al contrario della cancellazione di un singolo
+      // vocale, che rifiuta un `IN_ELABORAZIONE`. Qui non serve e non si
+      // potrebbe: un vocale con `procedureId` valorizzato e' per costruzione uno
+      // che l'estrazione ha gia' finito — `requeue` rifiuta gli `ESTRATTO` — e
+      // comunque la scheda a questo punto non c'e' gia' piu'. Un rifiuto
+      // manderebbe indietro un 409 su una cosa che e' gia' successa.
+      await tx.recording.deleteMany({ where: { id: { in: nati.map((r) => r.id) } } });
+
+      await tx.recording.updateMany({
+        where: { id: { in: sospetti.map((r) => r.id) } },
+        data: {
+          status: RecordingStatus.BOZZA_AUDIO,
+          duplicateOfId: null,
+          duplicateSimilarity: null,
+          // Subito, non fra un backoff: non e' un tentativo dopo un guasto, e'
+          // un vocale che non aveva mai fallito niente.
+          nextAttemptAt: null,
+        },
+      });
+
+      return { kind: "CANCELLATA", audioUrls: nati.map((r) => r.audioUrl) };
+    });
   }
 
   async addExecution(

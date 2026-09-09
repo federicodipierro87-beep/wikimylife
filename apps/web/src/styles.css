@@ -456,6 +456,57 @@ button:focus-visible {
   margin-top: 1rem;
 }
 
+/* --------------------------------------------------------------------------
+   Cestino
+   -------------------------------------------------------------------------- */
+
+/* Separato dalla lista da uno spazio e da una riga, non da un titolo: e' una
+   porta, non una sezione. E centrato, perche' una porta allineata a sinistra
+   sotto un elenco allineato a sinistra sembra l'undicesima voce. */
+.pie {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  text-align: center;
+}
+
+/* Come `.sospesa` ma senza il bordo colorato: qui le voci sono tutte nello
+   stesso stato, e un colore che non distingue niente e' solo rumore. */
+.cestinata {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--card);
+}
+
+/* Un bottone che non sembra un bottone: e' il titolo, e apre la scheda. Gli
+   altri due, sotto, sono i gesti — e devono restare gli unici a sembrarlo. */
+.cestinata__titolo {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cestinata__azioni {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 0.25rem;
+}
+
+.cestinata .bottone {
+  padding-left: 0;
+}
+
 .ricerca {
   flex: 1;
 }

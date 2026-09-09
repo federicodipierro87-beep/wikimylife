@@ -262,3 +262,31 @@ describe("ListScreen: la porta dell'account", () => {
     expect(window.location.hash).toBe(toHash({ name: "account" }));
   });
 });
+
+describe("ListScreen: la porta del cestino", () => {
+  it("«Cestino» ci porta davvero, perche' anche di quella non ce n'e' un'altra", async () => {
+    const { client } = clienteElenco(archivioDa45);
+
+    montaConApi(client, <ListScreen />);
+    await screen.findByText("Procedura 1");
+
+    window.location.hash = "";
+    const utente = userEvent.setup();
+    await utente.click(bottone("Cestino"));
+
+    expect(window.location.hash).toBe(toHash({ name: "cestino" }));
+  });
+
+  it("c'e' anche quando l'elenco e' vuoto, che e' quando serve di piu'", async () => {
+    const { client } = clienteElenco(() => unElenco({ items: [], total: 0 }));
+
+    montaConApi(client, <ListScreen />);
+    await screen.findByText("Qui non c'e' ancora niente.");
+
+    // Dentro il ramo che disegna le schede — dove sta la paginazione, e dove
+    // sarebbe finito senza pensarci — il pulsante sparirebbe proprio a chi ha
+    // archiviato tutto e sta cercando dove sia finito l'archivio. La frase
+    // «Qui non c'e' ancora niente» diventerebbe l'ultima parola dell'app.
+    expect(bottone("Cestino")).toBeTruthy();
+  });
+});

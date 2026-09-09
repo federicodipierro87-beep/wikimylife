@@ -332,6 +332,30 @@ export const updateProcedureBodySchema = z
     message: "Il corpo del PATCH non contiene nessun campo da modificare",
   });
 
+/**
+ * L'unica opzione della `DELETE`: non archiviare, cancellare.
+ *
+ * Nella query e con gli stessi due valori letterali di `ancheLaScheda`, per la
+ * stessa ragione: un corpo su una `DELETE` lo puo' togliere un proxy, e
+ * `z.coerce.boolean()` leggerebbe `?definitivo=false` come «si'». Qui la
+ * generosita' costa piu' che altrove, perche' dall'altra parte non c'e' un
+ * cestino da cui ripescare.
+ *
+ * Assente significa «archivia», cioe' cio' che questa rotta ha sempre fatto.
+ * Non e' un default prudente per abitudine: e' l'unico che non cambi sotto i
+ * piedi a un client gia' scritto, e ogni client gia' scritto chiama questa
+ * rotta credendo che sia reversibile.
+ */
+export const deleteProcedureQuerySchema = z
+  .object({
+    definitivo: z.enum(["1", "0"]).default("0"),
+  })
+  .strict()
+  .transform((q) => ({ definitivo: q.definitivo === "1" }));
+
+export type DeleteProcedureQuery = z.infer<typeof deleteProcedureQuerySchema>;
+export type DeleteProcedureQueryInput = z.input<typeof deleteProcedureQuerySchema>;
+
 // ---------------------------------------------------------------------------
 // Esecuzioni (§8)
 // ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import { RecordScreen } from "./screens/RecordScreen";
 import { RedactionScreen } from "./screens/RedactionScreen";
 import { ReviewScreen } from "./screens/ReviewScreen";
 import { SearchScreen } from "./screens/SearchScreen";
+import { TrashScreen } from "./screens/TrashScreen";
 import { SessionProvider, useSession } from "./session";
 
 /**
@@ -69,6 +70,8 @@ function Schermate(): React.JSX.Element {
       return <SearchScreen />;
     case "account":
       return <AccountScreen />;
+    case "cestino":
+      return <TrashScreen />;
     case "scheda":
       return <DetailScreen id={route.id} />;
     case "revisione":
