@@ -9,6 +9,7 @@ import {
   type ApplyRedactionBody,
   type CreateExecutionBody,
   type EmbeddingProvider,
+  type EmptyTrashResult,
   type ListProceduresQuery,
   type ProcedureDetail,
   type ProcedureList,
@@ -161,6 +162,7 @@ export interface ProceduresService {
   update(userId: string, id: string, patch: UpdateProcedureBody): Promise<ProcedureDetail>;
   archive(userId: string, id: string): Promise<ProcedureDetail>;
   deleteForever(userId: string, id: string): Promise<void>;
+  emptyTrash(userId: string): Promise<EmptyTrashResult>;
   addExecution(userId: string, id: string, body: CreateExecutionBody): Promise<ProcedureDetail>;
   proposeRedaction(userId: string, id: string): Promise<RedactionReport>;
   applyRedaction(userId: string, id: string, body: ApplyRedactionBody): Promise<ProcedureDetail>;
@@ -345,6 +347,30 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
     }
   }
 
+  /**
+   * I byte dei vocali di una scheda che non c'e' piu'.
+   *
+   * L'errore non risale, e non e' distrazione: la riga e' gia' sparita, e il
+   * chiamante non ha piu' niente da annullare. Se lo storage risponde male
+   * l'unica cosa che resta da fare e' dirlo a chi ascolta — quei byte sono
+   * orfani, e la scopa li ritrovera' passando. Alzare qui vorrebbe dire
+   * rispondere «non e' andata» a una cancellazione che invece e' andata.
+   *
+   * In fila e non in parallelo: sono al massimo una manciata di oggetti — i
+   * vocali di una scheda sola — e un `Promise.all` qui comprerebbe millisecondi
+   * al prezzo di una raffica di richieste allo storage nel momento in cui una
+   * di esse sta gia' fallendo.
+   */
+  async function togliDalBucket(keys: readonly string[]): Promise<void> {
+    for (const key of keys) {
+      try {
+        await deps.storage.delete(key);
+      } catch (error: unknown) {
+        deps.onOrphanedAudio?.({ key, error });
+      }
+    }
+  }
+
   return {
     async list(userId: string, query: ListProceduresQuery): Promise<ProcedureList> {
       const page = await repo.list(userId, {
@@ -408,17 +434,58 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
         );
       }
 
-      // In fila e non in parallelo: sono al massimo una manciata di oggetti —
-      // i vocali di una scheda sola — e un `Promise.all` qui comprerebbe
-      // millisecondi al prezzo di una raffica di richieste allo storage nel
-      // momento in cui una di esse sta gia' fallendo.
-      for (const key of esito.audioUrls) {
-        try {
-          await deps.storage.delete(key);
-        } catch (error: unknown) {
-          deps.onOrphanedAudio?.({ key, error });
+      await togliDalBucket(esito.audioUrls);
+    },
+
+    /**
+     * Svuotare il cestino: lo stesso gesto, ripetuto.
+     *
+     * ## Perche' non e' un errore quando una scheda non c'e' piu'
+     *
+     * `deleteForever` alza 404 e 409 perche' li' l'id lo ha scelto una persona,
+     * e sbagliarlo o cancellare una scheda viva sono due cose che deve sapere.
+     * Qui gli id li ha scelti il server un istante fa, quindi le uniche ragioni
+     * per cui `deleteForUser` puo' rispondere `ASSENTE` o `NON_ARCHIVIATA` sono
+     * che nel frattempo qualcuno l'ha cancellata da un'altra schermata o l'ha
+     * ripescata dal cestino. Nessuna delle due e' un errore di chi ha premuto
+     * «svuota»: nel primo caso il risultato voluto c'e' gia', nel secondo la
+     * scheda non e' piu' nel cestino e quindi non era fra quelle da buttare.
+     *
+     * Farne un errore avrebbe l'effetto peggiore possibile: interromperebbe uno
+     * svuotamento quasi riuscito, e la risposta che il client riceve non
+     * direbbe quante ne erano gia' andate.
+     *
+     * ## Perche' una scheda per volta
+     *
+     * Perche' cosi' ogni scheda e' atomica per conto suo. Se la richiesta muore
+     * a meta', cio' che e' stato cancellato e' cancellato per intero — figli,
+     * vocali, byte — e cio' che resta e' intatto. La stessa operazione scritta
+     * come un'unica transazione su un insieme sarebbe piu' veloce e avrebbe una
+     * seconda copia delle regole, che e' il modo in cui due strade cominciano a
+     * divergere. Il ragionamento intero sta su `listArchivedIds`.
+     */
+    async emptyTrash(userId: string): Promise<EmptyTrashResult> {
+      const ids = await repo.listArchivedIds(userId);
+
+      let cancellate = 0;
+      let saltate = 0;
+
+      for (const id of ids) {
+        const esito = await repo.deleteForUser(userId, id);
+        if (esito.kind !== "CANCELLATA") {
+          saltate += 1;
+          continue;
         }
+        cancellate += 1;
+        // Subito e non alla fine: fra la riga cancellata e i byte tolti c'e' una
+        // finestra in cui quell'audio e' spazzatura che nessuno nomina piu', e
+        // accumulare le chiavi per toglierle tutte in fondo allungherebbe quella
+        // finestra a tutto lo svuotamento. La scopa le raccoglierebbe comunque,
+        // ma raccoglierne meno e' meglio che raccoglierne di piu'.
+        await togliDalBucket(esito.audioUrls);
       }
+
+      return { cancellate, saltate };
     },
 
     async addExecution(

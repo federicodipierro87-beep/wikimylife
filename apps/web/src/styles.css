@@ -507,6 +507,26 @@ button:focus-visible {
   padding-left: 0;
 }
 
+/* Lo svuotamento dell'intero cestino, in fondo alla schermata. Il bordo in alto
+   e lo spazio prima servono a staccarlo dall'ultima voce dell'elenco: senza,
+   sembrerebbe il terzo pulsante di quella scheda invece che il gesto su tutte.
+   */
+.svuota {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.svuota__azioni {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
 .ricerca {
   flex: 1;
 }

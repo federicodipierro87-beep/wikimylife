@@ -66,6 +66,26 @@ class StorageSenzaCancellazione extends FakeStorageProvider {
   }
 }
 
+/**
+ * Un cestino su cui qualcuno mette le mani mentre lo si sta svuotando.
+ *
+ * `listArchivedIds` risponde con l'elenco vero e subito dopo lascia succedere
+ * qualcosa: e' la finestra fra la SELECT e le DELETE, che nel servizio dura
+ * quanto un ciclo e in produzione quanto basta a un'altra scheda del browser
+ * per premere «Ripristina». Senza questa classe `saltate` sarebbe un campo che
+ * nessun test riempie, e la differenza fra contarle e alzare un errore non si
+ * vedrebbe da nessuna parte.
+ */
+class RepoConSorpresa extends InMemoryProcedureRepository {
+  sorpresa: (repo: InMemoryProcedureRepository) => Promise<void> | void = () => {};
+
+  override async listArchivedIds(userId: string): Promise<readonly string[]> {
+    const ids = await super.listArchivedIds(userId);
+    await this.sorpresa(this);
+    return ids;
+  }
+}
+
 let h: Harness;
 
 beforeEach(() => {
@@ -535,6 +555,149 @@ describe("deleteForever", () => {
     // singola cancellazione lascerebbe nel bucket ogni oggetto dopo il primo
     // guasto, e la traccia direbbe che ne era rimasto uno solo.
     expect(orfani).toEqual(["user-1/primo.webm", "user-1/secondo.webm"]);
+  });
+});
+
+/**
+ * Lo stesso gesto, su tutto il cestino insieme.
+ *
+ * Qui i casi interessanti sono due, e nessuno dei due e' «cancella tutto».
+ *
+ * Il primo e' cosa NON viene toccato: una scheda viva, una `DA_RIVEDERE`, il
+ * cestino di un altro utente. `emptyTrash` non riceve nessun id da chi chiama —
+ * se li sceglie da solo — e quindi non ha, come `deleteForever`, un 404 che la
+ * ferma quando la scelta e' sbagliata. L'unica difesa e' la `where` di
+ * `listArchivedIds`, e questi casi sono il modo di guardarla.
+ *
+ * Il secondo e' `saltate`. Una scheda ripescata dal cestino mentre lo si svuota
+ * non deve essere cancellata e non deve interrompere niente: sono i due errori
+ * opposti, e stanno a un `if` di distanza l'uno dall'altro.
+ */
+describe("emptyTrash", () => {
+  /** Un servizio sopra un repository e un bucket scelti dal caso. */
+  function servizioSu(
+    repo: InMemoryProcedureRepository,
+    extra: {
+      storage?: FakeStorageProvider;
+      onOrphanedAudio?: (info: { key: string; error: unknown }) => void;
+    } = {},
+  ): ProceduresService {
+    return createProceduresService({
+      repo,
+      embeddings: new FakeEmbeddingProvider({ model: "fake", dimensions: 1536 }),
+      clock: new FixedClock(NOW),
+      storage: extra.storage ?? new FakeStorageProvider(),
+      onOrphanedAudio: extra.onOrphanedAudio,
+    });
+  }
+
+  it("porta via cio' che era nel cestino, e lascia in piedi tutto il resto", async () => {
+    h.repo.seed({ userId: USER, id: "buttata-1", status: CardStatus.ARCHIVIATA });
+    h.repo.seed({ userId: USER, id: "buttata-2", status: CardStatus.ARCHIVIATA });
+    h.repo.seed({ userId: USER, id: "viva", status: CardStatus.COMPLETA });
+    // `DA_RIVEDERE` e' lo stato in cui torna una scheda ripescata dal cestino:
+    // e' quella che un filtro scritto al contrario — «tutto tranne COMPLETA» —
+    // porterebbe via insieme alle altre.
+    h.repo.seed({ userId: USER, id: "ripescata-ieri", status: CardStatus.DA_RIVEDERE });
+
+    await expect(h.service.emptyTrash(USER)).resolves.toEqual({ cancellate: 2, saltate: 0 });
+
+    expect(h.repo.esiste("buttata-1")).toBe(false);
+    expect(h.repo.esiste("buttata-2")).toBe(false);
+    expect(h.repo.esiste("viva")).toBe(true);
+    expect(h.repo.esiste("ripescata-ieri")).toBe(true);
+  });
+
+  it("svuota il cestino di chi ha premuto, e non quello di un altro", async () => {
+    h.repo.seed({ userId: ALTRO, id: "sua", status: CardStatus.ARCHIVIATA });
+    h.repo.seed({ userId: USER, id: "mia", status: CardStatus.ARCHIVIATA });
+
+    // Uno `userId` dimenticato nella `where` non darebbe nessun errore: darebbe
+    // un due al posto di un uno, e il cestino di un estraneo vuoto.
+    await expect(h.service.emptyTrash(USER)).resolves.toEqual({ cancellate: 1, saltate: 0 });
+    expect(h.repo.esiste("mia")).toBe(false);
+    expect(h.repo.esiste("sua")).toBe(true);
+  });
+
+  it("un cestino vuoto risponde zero e zero, e non «fatto»", async () => {
+    h.repo.seed({ userId: USER, status: CardStatus.COMPLETA });
+
+    // Zero non e' un guasto e non e' un errore: e' un cestino gia' vuoto, e chi
+    // riceve la risposta ha bisogno di poterlo dire con quelle parole.
+    await expect(h.service.emptyTrash(USER)).resolves.toEqual({ cancellate: 0, saltate: 0 });
+  });
+
+  it("toglie dal bucket i vocali di ogni scheda cancellata, e nient'altro", async () => {
+    h.repo.seed({ userId: USER, status: CardStatus.ARCHIVIATA, audioUrls: ["user-1/aaa.webm"] });
+    h.repo.seed({ userId: USER, status: CardStatus.ARCHIVIATA, audioUrls: ["user-1/bbb.webm"] });
+    h.repo.seed({ userId: USER, status: CardStatus.COMPLETA, audioUrls: ["user-1/viva.webm"] });
+    for (const key of ["user-1/aaa.webm", "user-1/bbb.webm", "user-1/viva.webm"]) {
+      await h.blob.put({ key, data: new Uint8Array([1]), mimeType: "audio/webm" });
+    }
+
+    await h.service.emptyTrash(USER);
+
+    // Due chiavi su tre. Uno svuotamento che cancellasse le righe senza passare
+    // dallo storage lascerebbe tutti e tre i file nel bucket, e ogni altra
+    // asserzione di questo describe resterebbe verde.
+    expect([...h.blob.keys]).toEqual(["user-1/viva.webm"]);
+  });
+
+  it("salta la scheda ripescata mentre si cancellava, e non la tocca", async () => {
+    const repo = new RepoConSorpresa();
+    const service = servizioSu(repo);
+    repo.seed({ userId: USER, id: "buttata", status: CardStatus.ARCHIVIATA });
+    repo.seed({ userId: USER, id: "ripescata", status: CardStatus.ARCHIVIATA });
+    repo.sorpresa = (r) => {
+      r.seed({ userId: USER, id: "ripescata", status: CardStatus.DA_RIVEDERE });
+    };
+
+    await expect(service.emptyTrash(USER)).resolves.toEqual({ cancellate: 1, saltate: 1 });
+
+    // La scheda e' uscita dal cestino un istante prima: cancellarla comunque
+    // vorrebbe dire che «Ripristina» non protegge da «Svuota».
+    expect(repo.esiste("ripescata")).toBe(true);
+    expect(repo.snapshot("ripescata").status).toBe(CardStatus.DA_RIVEDERE);
+    expect(repo.esiste("buttata")).toBe(false);
+  });
+
+  it("salta la scheda che nel frattempo era gia' sparita, e arriva in fondo", async () => {
+    const repo = new RepoConSorpresa();
+    const service = servizioSu(repo);
+    repo.seed({ userId: USER, id: "sparita", status: CardStatus.ARCHIVIATA });
+    repo.seed({ userId: USER, id: "ultima", status: CardStatus.ARCHIVIATA });
+    repo.sorpresa = async (r) => {
+      await r.deleteForUser(USER, "sparita");
+    };
+
+    // «Non c'e' piu'» e' il risultato che si stava chiedendo. Farne un 404
+    // interromperebbe lo svuotamento sulla prima scheda, e «ultima» resterebbe
+    // dentro per un motivo che nessuno saprebbe leggere nella risposta.
+    await expect(service.emptyTrash(USER)).resolves.toEqual({ cancellate: 1, saltate: 1 });
+    expect(repo.esiste("ultima")).toBe(false);
+  });
+
+  it("un bucket che rifiuta non ferma lo svuotamento, e ogni chiave viene nominata", async () => {
+    const orfani: string[] = [];
+    const repo = new InMemoryProcedureRepository();
+    const service = servizioSu(repo, {
+      storage: new StorageSenzaCancellazione(),
+      onOrphanedAudio: ({ key }) => orfani.push(key),
+    });
+    repo.seed({ userId: USER, id: "prima", status: CardStatus.ARCHIVIATA, audioUrls: ["a.webm"] });
+    repo.seed({ userId: USER, id: "seconda", status: CardStatus.ARCHIVIATA, audioUrls: ["b.webm"] });
+
+    await expect(service.emptyTrash(USER)).resolves.toEqual({ cancellate: 2, saltate: 0 });
+
+    // Le righe sono sparite entrambe: i byte stanno fuori dalla transazione, e
+    // un bucket irraggiungibile non e' una ragione per lasciare in piedi schede
+    // che l'utente ha chiesto di cancellare.
+    expect(repo.esiste("prima")).toBe(false);
+    expect(repo.esiste("seconda")).toBe(false);
+    // Due e non una: se il guasto della prima scheda uscisse dal ciclo, la
+    // seconda chiave non sarebbe nemmeno provata, e la scopa la ritroverebbe
+    // senza che nessun registro l'avesse mai nominata.
+    expect([...orfani].sort()).toEqual(["a.webm", "b.webm"]);
   });
 });
 

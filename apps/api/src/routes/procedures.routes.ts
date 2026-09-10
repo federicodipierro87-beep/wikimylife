@@ -2,6 +2,7 @@ import {
   applyRedactionBodySchema,
   createExecutionBodySchema,
   deleteProcedureQuerySchema,
+  emptyTrashQuerySchema,
   listProceduresQuerySchema,
   updateProcedureBodySchema,
 } from "@wikimylife/shared";
@@ -11,7 +12,7 @@ import { parseBody, parseQuery } from "../http/validate.js";
 import type { ProceduresService } from "../services/procedures.service.js";
 
 /**
- * Le sette rotte sulle schede.
+ * Le otto rotte sulle schede.
  *
  * Nessun `if` di dominio qui dentro: si prende lo `userId` dal token, si valida
  * l'ingresso con lo schema di `packages/shared` e si delega. Le regole della §8
@@ -80,6 +81,29 @@ export function createProceduresRouter(deps: {
     const patch = parseBody(updateProcedureBodySchema, req.body);
     const scheda = await deps.proceduresService.update(userId, req.params.id, patch);
     res.status(200).json(scheda);
+  });
+
+  /**
+   * Svuotare il cestino.
+   *
+   * Sta prima di `/:id` perche' cosi' si legge accanto all'altra `DELETE`, non
+   * perche' serva: Express non fa combaciare `/:id` con la collezione, e un id
+   * vuoto finirebbe comunque qui anche invertendo le due righe. Il motivo per
+   * cui una richiesta storta non diventa uno svuotamento e' un altro, e sta
+   * nello schema: `emptyTrashQuerySchema` pretende `status=ARCHIVIATA` e
+   * `definitivo=1`, due valori letterali che nessun errore di composizione
+   * produce da solo.
+   *
+   * Risponde 200 con `{ cancellate, saltate }` e non 204: fra la lettura
+   * dell'elenco e l'ultima cancellazione qualcuno puo' aver ripescato una
+   * scheda dal cestino, e allora il cestino dopo lo svuotamento non e' vuoto.
+   * Con un 204 quel cestino sembrerebbe un guasto.
+   */
+  router.delete("/", async (req, res) => {
+    const { userId } = authContext(req);
+    parseQuery(emptyTrashQuerySchema, req.query);
+    const esito = await deps.proceduresService.emptyTrash(userId);
+    res.status(200).json(esito);
   });
 
   router.delete("/:id", async (req, res) => {

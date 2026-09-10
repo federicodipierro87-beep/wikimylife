@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  CardStatus,
   cardStatusValues,
   outcomeValues,
   prereqTypeValues,
@@ -355,6 +356,54 @@ export const deleteProcedureQuerySchema = z
 
 export type DeleteProcedureQuery = z.infer<typeof deleteProcedureQuerySchema>;
 export type DeleteProcedureQueryInput = z.input<typeof deleteProcedureQuerySchema>;
+
+/**
+ * Svuotare il cestino: una `DELETE` sulla collezione, non su un id.
+ *
+ * ## Perche' due parametri obbligatori invece di zero
+ *
+ * `DELETE /api/procedures` senza niente sarebbe una richiesta che cancella
+ * l'archivio intero di una persona e che si scrive per sbaglio — basta un id
+ * che vale stringa vuota nel client, e il percorso e' quello. Qui invece
+ * entrambi i valori sono letterali con un solo valore ammesso, cioe' due
+ * affermazioni che il chiamante deve scrivere apposta: `status=ARCHIVIATA` dice
+ * *quali* schede, `definitivo=1` dice che non e' un'archiviazione.
+ *
+ * Un `status` che accettasse l'enum intero renderebbe esprimibile
+ * `?status=COMPLETA&definitivo=1`, cioe' esattamente la richiesta che non deve
+ * esistere. Il campo sembra inutile perche' ha un solo valore: e' inutile
+ * finche' nessuno lo allarga, ed e' li' perche' allargarlo diventi una
+ * decisione invece di una svista.
+ */
+export const emptyTrashQuerySchema = z
+  .object({
+    status: z.literal(CardStatus.ARCHIVIATA),
+    definitivo: z.literal("1"),
+  })
+  .strict();
+
+export type EmptyTrashQuery = z.infer<typeof emptyTrashQuerySchema>;
+
+/**
+ * Quante ne sono andate via, e quante sono rimaste.
+ *
+ * `saltate` non e' un errore ed e' il motivo per cui questa rotta risponde 200
+ * con un corpo invece di 204. Fra il momento in cui si legge l'elenco e quello
+ * in cui l'ultima scheda viene cancellata puo' passare un ripristino da
+ * un'altra schermata, e quella scheda non va cancellata: e' uscita dal cestino,
+ * e il gesto era «svuota il cestino», non «cancella queste».
+ *
+ * Chi riceve `saltate > 0` ha davanti un cestino che dopo lo svuotamento non e'
+ * vuoto. Senza questo numero sembrerebbe un guasto.
+ */
+export const emptyTrashResultSchema = z
+  .object({
+    cancellate: z.number().int().min(0),
+    saltate: z.number().int().min(0),
+  })
+  .strict();
+
+export type EmptyTrashResult = z.infer<typeof emptyTrashResultSchema>;
 
 // ---------------------------------------------------------------------------
 // Esecuzioni (§8)

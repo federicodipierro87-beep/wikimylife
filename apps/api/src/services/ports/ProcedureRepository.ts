@@ -275,6 +275,27 @@ export interface ProcedureRepository {
    */
   deleteForUser(userId: string, id: string): Promise<DeleteProcedureOutcome>;
 
+  /**
+   * Gli id di tutto cio' che sta nel cestino, per svuotarlo.
+   *
+   * Solo gli id e non le righe: quello che segue e' una cancellazione, e
+   * leggere titoli, passi e costi di schede che stanno per sparire sarebbe
+   * lavoro speso per niente. E senza paginazione, perche' «svuota» vuol dire
+   * tutto: un elenco tagliato produrrebbe uno svuotamento che lascia dentro
+   * qualcosa senza dirlo.
+   *
+   * Non c'e' un `deleteAllArchivedForUser` che faccia tutto in una transazione,
+   * ed e' una scelta. Le regole di cosa succede intorno a una scheda cancellata
+   * — i figli in cascata, i vocali che spariscono, i sospetti duplicati che
+   * tornano in coda — sono scritte una volta sola dentro `deleteForUser`, e una
+   * seconda versione «per insiemi» sarebbe la stessa logica riscritta con
+   * l'`IN (...)` al posto dell'uguale, in un punto dove sbagliare significa
+   * cancellare i vocali di una scheda che nel frattempo qualcuno ha ripescato.
+   * Il prezzo e' una transazione per scheda; il guadagno e' che le due strade
+   * non possono divergere.
+   */
+  listArchivedIds(userId: string): Promise<readonly string[]>;
+
   addExecution(
     userId: string,
     id: string,

@@ -252,6 +252,21 @@ export class InMemoryProcedureRepository implements ProcedureRepository {
     return { kind: "CANCELLATA", audioUrls };
   }
 
+  /**
+   * L'ordine e' quello che promette il repository vero — dalla piu' vecchia —
+   * e non quello in cui il test ha chiamato `seed`. Una fake che restituisse
+   * l'ordine d'inserimento lascerebbe passare un servizio che si aspetta gli id
+   * cosi' come li ha creati il test, cioe' proprio l'ipotesi che Postgres senza
+   * `orderBy` non garantisce.
+   */
+  async listArchivedIds(userId: string): Promise<readonly string[]> {
+    return [...this.#rows.values()]
+      .filter((row) => this.#owners.get(row.id) === userId)
+      .filter((row) => row.status === CardStatus.ARCHIVIATA)
+      .sort((a, b) => a.updatedAt.getTime() - b.updatedAt.getTime())
+      .map((row) => row.id);
+  }
+
   async addExecution(
     userId: string,
     id: string,

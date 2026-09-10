@@ -237,6 +237,8 @@ GET    /api/procedures/:id             scheda completa con tutte le relazioni
 PATCH  /api/procedures/:id             modifica manuale
 DELETE /api/procedures/:id             soft delete → ARCHIVIATA
      ?definitivo=1                     cancellazione vera, solo dal cestino
+DELETE /api/procedures                 svuota il cestino, e conta
+     ?status=ARCHIVIATA&definitivo=1   obbligatori tutti e due, alla lettera
 POST   /api/procedures/:id/executions  registra un'esecuzione (§8)
 GET    /api/search?q=                  ricerca ibrida (§7), paginata con offset
 ```
@@ -269,6 +271,36 @@ quella scheda somigliava soltanto. Restano, ma tornano a `BOZZA_AUDIO` con
 `duplicateOfId` e `nextAttemptAt` azzerati, perché lasciarli `DUPLICATO_SOSPETTO`
 con il legame sciolto dal `SET NULL` produrrebbe un avviso che non ha più niente
 da nominare e un pulsante «tienilo comunque» che punta a una scheda che non c'è.
+
+**Svuotare il cestino è quella stessa cancellazione, ripetuta.** La `DELETE`
+sulla collezione vuole due parametri e li vuole alla lettera: `status=ARCHIVIATA`
+e `definitivo=1`. Nessuno dei due ha un valore alternativo — `status=COMPLETA` è
+un `400`, `definitivo=0` è un `400`, e mancarne uno è un `400` — perché non sono
+un filtro ma un interruttore a due chiavi. Servono soprattutto per una ragione
+che non si vede leggendo la rotta: `DELETE /api/procedures/`, con l'id vuoto,
+finisce qui e non sulla `/:id`, e senza i due parametri una sbarra di troppo in
+un URL cancellerebbe l'archivio di chi l'ha scritta invece di rispondere `400`.
+
+Dentro, le schede si cancellano **una per volta**, chiamando la stessa
+`deleteForUser` del pulsante singolo su ognuno degli id appena letti. Una
+`deleteMany` con `IN (...)` sarebbe una richiesta sola invece di quaranta, ma
+avrebbe anche una seconda copia delle regole — i figli in cascata, i vocali, i
+duplicati rimessi in coda — che nessuno terrebbe allineata alla prima. E ne
+perderebbe una che sugli insiemi non ha un equivalente pulito: sotto READ
+COMMITTED, una scheda ripristinata da un'altra schermata fra la `SELECT` e la
+`DELETE` si vedrebbe portare via i vocali pur sopravvivendo, perché la guardia
+che lo impedisce è `if (cancellate.count === 0) return NON_ARCHIVIATA`, ed è
+scritta per una riga per volta.
+
+Per la stessa ragione `ASSENTE` e `NON_ARCHIVIATA` qui non sono errori: contano
+fra le `saltate`. Quegli id li ha scelti il server un istante prima, quindi le
+uniche cause possibili sono una cancellazione o un ripristino arrivati nel
+frattempo da un'altra schermata aperta — e nessuna delle due è uno sbaglio di chi
+ha premuto «svuota». Farne un `409` fermerebbe uno svuotamento quasi riuscito
+senza dire quante ne erano già andate. La risposta è `200` con
+`{ cancellate, saltate }` e non un `204` proprio perché quei due numeri sono
+l'unica cosa che chi ha premuto non poteva sapere prima: che il cestino sia
+adesso vuoto lo dava per scontato.
 
 **Gli array si sostituiscono in blocco.** Una `PATCH` con `steps` cancella i
 passi e li riscrive, rinumerati `1..n` — il client manda lo stato finale, non un
@@ -689,8 +721,8 @@ che vuol dire che il problema, se c'è, è da un'altra parte.
 **Il cestino è una schermata e non un quarto chip.** I filtri dell'elenco sono
 gli ambiti — personale, lavoro, clienti — e sono tutti dello stesso tipo:
 mostrano un sottoinsieme delle stesse schede, con le stesse azioni. Il cestino
-no. Contiene cose che non sono più in uso e offre due gesti che altrove non
-esistono, di cui uno non si annulla. Come quarto chip avrebbe voluto dire che
+no. Contiene cose che non sono più in uso e offre gesti che altrove non
+esistono, di cui due non si annullano. Come quarto chip avrebbe voluto dire che
 «Clienti» e «Cestino» si premono per sbaglio l'uno al posto dell'altro, e che da
 un tocco distratto si arriva a un pulsante rosso. Ci si va dal fondo dell'elenco
 e non dalla testata: al contrario dei vocali in sospeso — che stanno in cima
@@ -711,6 +743,25 @@ già premuto uno. E la voce non riusa `ProcedureCard`, che è un `<button>` che
 apre la scheda: qui ogni riga ne ha già tre dentro, e un pulsante dentro un
 pulsante non è HTML valido — il browser lo risolve a modo suo, di solito
 sganciando il tocco da entrambi.
+
+**«Svuota il cestino» dice quante, e le conta tutte.** Il numero sul pulsante
+rosso è `total` e non `items.length`: con trentaquattro archiviate e venti per
+pagina, «Cancella 20 schede per sempre» sarebbe una frase falsa detta nel
+momento peggiore, e chi la legge non ha modo di accorgersene finché non torna a
+guardare. Anche il pulsante sta **fuori** dal ramo che disegna le schede, ma per
+un motivo diverso da quello del pulsante nell'elenco: dentro, sparirebbe
+portandosi via il proprio messaggio d'esito nell'istante esatto in cui c'è da
+leggerlo, perché la ricarica riporta la lista in attesa e il cestino appena
+svuotato non ha più righe. Per questo scompare quando `quante` è zero **ma non**
+finché c'è un esito o un errore da mostrare.
+
+Finito lo svuotamento non si ricarica la pagina in cui si era: se l'offset non è
+zero si torna alla prima, perché la pagina tre di un cestino vuoto è una schermata
+vuota che sembra un guasto. E l'esito non è mai «fatto»: sono `cancellate` e
+`saltate`, al singolare o al plurale a seconda del numero, con una seconda frase
+solo quando qualcosa è rimasto — «1 scheda è stata ripristinata nel frattempo».
+Zero e zero diventano «Il cestino era già vuoto», che è l'unica cosa vera da dire
+a chi ha premuto un pulsante che non ha cancellato niente.
 
 ### Il service worker fa una cosa sola
 
@@ -1437,6 +1488,23 @@ nel frattempo è diventata un'altra. Accanto, che «Ripristina» rimetta la sche
 `DA_RIVEDERE` e non a `COMPLETA`: lo stato che aveva prima non è scritto da
 nessuna parte, e «completa» è la sola delle due bugie che non si nota.
 
+Dello svuotamento, il numero e ciò che resta a schermo. Il caso che conta di più
+non guarda una riga sparita ma una frase: un cestino di trentaquattro schede con
+venti per pagina deve far scrivere «Cancella 34 schede per sempre», e un caso che
+si accontentasse di «Cancella» passerebbe contro una schermata che promette di
+cancellarne venti e ne cancella trentaquattro. Poi le due metà del messaggio
+d'esito, ognuna con il suo singolare e il suo plurale — «1 scheda cancellata» e
+«3 schede cancellate», «1 scheda è stata ripristinata» e «2 schede sono state
+ripristinate» — perché sono quattro rami di due ternari, e tre su quattro non si
+vedono mai provando a mano. Zero e zero devono dire «era già vuoto» e non
+«fatto». Accanto, quello che succede dopo: che l'elenco si rilegga davvero e
+dalla prima pagina (gli offset delle richieste partite sono `[0, 20, 0]` se si
+svuota stando alla seconda), che dopo un guasto del server il rosso si spenga e
+il messaggio compaia, che un secondo tentativo cancelli l'errore del primo invece
+di lasciarlo lì a contraddire l'esito appena arrivato, e che il rosso sia spento
+mentre la richiesta è in volo — è il pulsante da cui si perdono trentaquattro
+schede, e premerlo due volte non deve poter partire due volte.
+
 Della ricerca, quante volte parte. Ogni ricerca calcola un embedding, cioè una
 chiamata a pagamento verso OpenAI, e i 300 ms di silenzio fra l'ultimo tasto e
 la partenza sono l'unica cosa che separa una parola scritta da una richiesta. Se
@@ -1579,6 +1647,21 @@ tolto uno solo, tutti i casi passano lo stesso. Tolti tutti e due insieme, il
 qualcuno che ripesca la scheda dal cestino fra la lettura e la cancellazione, e
 una corsa non si mette in scena in un test end-to-end su una connessione sola.
 Resta quindi una riga che nessun caso difende da sola, ed è voluta.
+
+**Lo svuotamento aggiunge una `where` in più da sbagliare.** L'elenco degli id
+archiviati è l'unica query nuova, e ha due filtri che in memoria si direbbero
+uguali fra loro: senza `status` porta via anche le schede vive, senza `userId`
+porta via il cestino di tutti. Il secondo è il difetto peggiore che questo
+progetto possa avere, e un repository finto non lo troverebbe mai, perché lì
+dentro gli utenti sono chiavi di una `Map` che il test ha scritto. I casi sono
+quindi quattro: che le vive restino, che il cestino dell'altro utente non venga
+sfiorato — contato riga per riga da Postgres, non dalla risposta — che figli,
+vocali e byte nel bucket spariscano per *ognuna* delle schede e non solo per la
+prima, e che un cestino vuoto risponda `200` con due zeri. Accanto, i quattro
+modi di scrivere male la richiesta, che sono `400` e devono lasciare tutto dov'è:
+`status=COMPLETA`, `definitivo=0`, i parametri assenti, e `DELETE
+/api/procedures/` con l'id vuoto — quest'ultimo è il motivo per cui i parametri
+esistono, e senza un caso che lo fissi nessuno saprebbe più perché.
 
 **La scopa ha un file suo, e nasce da un buco che era scritto qui sotto.**
 `storageSweep.test.ts` prova trenta casi in memoria: le tre regole, le pagine, i
@@ -2634,11 +2717,17 @@ Non installate, e il perché:
   comando che qualcuno deve lanciare. La promessa che il pulsante fa a chi la
   legge è più forte di quella che il sistema mantiene, e la differenza si misura
   in giorni.
-- **Il cestino si svuota una scheda per volta.** Non c'è nessun «svuota tutto»:
-  con quaranta archiviate sono ottanta tocchi, e il gesto lungo è proprio quello
-  che si vuole poter fare quando si smette di usare l'applicazione. La conferma a
-  due passi è pensata per la scheda singola, ed è la ragione per cui un pulsante
-  solo non basterebbe — ma è anche la ragione per cui non ce n'è ancora uno.
+- **Svuotare un cestino grosso è una richiesta sola, e lunga.** Il «svuota tutto»
+  adesso c'è, ma non ha nessun tetto al numero di schede — e non ce l'ha apposta,
+  perché un tetto farebbe di «svuota» una promessa che il pulsante non mantiene,
+  lasciando chi ha premuto a ripremere senza sapere quante volte ancora. Il
+  prezzo è che le cancellazioni sono in fila, una per scheda, ognuna con la sua
+  transazione e le sue chiamate al bucket: con qualche centinaio di archiviate
+  quella `DELETE` resta aperta abbastanza da incontrare il timeout di un proxy, e
+  allora il browser non riceve nessun conto pur avendo il server cancellato quasi
+  tutto. Premere di nuovo riprende da dove era rimasto, ed è l'unica consolazione:
+  il pulsante dice «Cancello…» e non quante ne mancano, perché finché la risposta
+  non arriva non c'è niente che glielo dica.
 - **Il sospetto duplicato torna in coda, e la coda spende.** Cancellata la scheda
   a cui somigliava, quel vocale riparte da `BOZZA_AUDIO` con `nextAttemptAt`
   azzerato: alla passata successiva il worker rifà la trascrizione e

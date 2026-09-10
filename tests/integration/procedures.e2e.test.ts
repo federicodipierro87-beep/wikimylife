@@ -6,6 +6,7 @@ import {
   Severity,
   Visibility,
   authSessionSchema,
+  emptyTrashResultSchema,
   errorBodySchema,
   procedureDetailSchema,
   procedureListSchema,
@@ -702,6 +703,195 @@ describe("DELETE /api/procedures/:id?definitivo=1", () => {
     expect(res.status).toBe(400);
     expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
     expect(await server.prisma.procedure.count({ where: { id: creata.id } })).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/procedures?status=ARCHIVIATA&definitivo=1
+// ---------------------------------------------------------------------------
+
+/**
+ * Lo stesso gesto sull'intero cestino.
+ *
+ * `procedures.service.test.ts` prova gia' in memoria le due cose che decide il
+ * servizio: quali schede finiscono nell'elenco, e che una ripescata nel
+ * frattempo si conti invece di interrompere. Qui si prova quello che in memoria
+ * non esiste.
+ *
+ * Il primo e' la `where` vera. `listArchivedIds` e' l'unica difesa di questa
+ * rotta — non arriva nessun id da rifiutare — e uno `userId` dimenticato non
+ * darebbe un errore: darebbe il cestino di un estraneo vuoto, e nessun test
+ * dell'altro file lo vedrebbe, perche' il repository in memoria filtra con la
+ * stessa riga di codice che si vorrebbe controllare.
+ *
+ * Il secondo e' cosa resta appeso. Una scheda per volta significa passare N
+ * volte da `deleteForUser`, cioe' N cascate e N `SET NULL`: se una di quelle
+ * andasse storta a meta' elenco, il conto tornerebbe lo stesso e resterebbero
+ * dietro righe di `Recording` con la trascrizione dentro.
+ *
+ * Il terzo sono i due parametri obbligatori. In memoria non passano nemmeno da
+ * uno schema: e' qui che si vede se `?status=COMPLETA&definitivo=1` e' un 400 o
+ * un archivio cancellato.
+ */
+describe("DELETE /api/procedures?status=ARCHIVIATA&definitivo=1", () => {
+  const SVUOTA = "/api/procedures?status=ARCHIVIATA&definitivo=1";
+
+  async function archivia(token: string, id: string): Promise<void> {
+    const res = await call(server, "DELETE", `/api/procedures/${id}`, { accessToken: token });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  }
+
+  /** Il corpo della risposta, che qui e' l'unica cosa che dice com'e' andata. */
+  function esito(body: unknown): { cancellate: number; saltate: number } {
+    return emptyTrashResultSchema.parse(body);
+  }
+
+  it("richiede l'autenticazione", async () => {
+    const res = await call(server, "DELETE", SVUOTA);
+
+    expect(res.status).toBe(401);
+    expect(errorCode(res.body)).toBe("UNAUTHORIZED");
+  });
+
+  it("porta via il cestino e lascia in piedi le schede in uso", async () => {
+    const token = await signup();
+    const buttata = await creaScheda(token, { titolo: "Disdire la palestra" });
+    const viva = await creaScheda(token, { titolo: "Richiedere il casellario" });
+    await archivia(token, buttata.id);
+
+    const res = await call(server, "DELETE", SVUOTA, { accessToken: token });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(esito(res.body)).toEqual({ cancellate: 1, saltate: 0 });
+    expect(await server.prisma.procedure.count({ where: { id: buttata.id } })).toBe(0);
+    expect(await server.prisma.procedure.count({ where: { id: viva.id } })).toBe(1);
+  });
+
+  it("non tocca il cestino di un altro utente", async () => {
+    const mio = await signup();
+    const altrui = await signup();
+    const sua = await creaScheda(altrui, { titolo: "Scheda di un altro" });
+    await archivia(altrui, sua.id);
+    const mia = await creaScheda(mio, { titolo: "Scheda mia" });
+    await archivia(mio, mia.id);
+
+    const res = await call(server, "DELETE", SVUOTA, { accessToken: mio });
+
+    // Uno solo, e non due. E' la sola rotta dell'app in cui una `where`
+    // incompleta cancella l'archivio di uno sconosciuto senza nemmeno un id
+    // sbagliato da cui accorgersene.
+    expect(esito(res.body)).toEqual({ cancellate: 1, saltate: 0 });
+    expect(await server.prisma.procedure.count({ where: { id: sua.id } })).toBe(1);
+    expect(await server.prisma.procedure.count({ where: { id: mia.id } })).toBe(0);
+  });
+
+  it("si porta via i figli e i vocali di ognuna, e i loro byte", async () => {
+    const token = await signup();
+    const prima = await creaScheda(token, { titolo: "Prima da buttare" });
+    const seconda = await creaScheda(token, { titolo: "Seconda da buttare" });
+    await archivia(token, prima.id);
+    await archivia(token, seconda.id);
+    const vocali = await server.prisma.recording.findMany({
+      where: { procedureId: { in: [prima.id, seconda.id] } },
+      select: { id: true, audioUrl: true },
+    });
+    expect(vocali).toHaveLength(2);
+
+    const res = await call(server, "DELETE", SVUOTA, { accessToken: token });
+
+    expect(esito(res.body)).toEqual({ cancellate: 2, saltate: 0 });
+    // La seconda scheda e' quella che conta: un ciclo che si fermasse dopo la
+    // prima restituirebbe comunque due, perche' il conto lo tiene il servizio e
+    // non il database.
+    expect(
+      await server.prisma.step.count({ where: { procedureId: { in: [prima.id, seconda.id] } } }),
+    ).toBe(0);
+    for (const vocale of vocali) {
+      expect(await server.prisma.recording.count({ where: { id: vocale.id } })).toBe(0);
+      expect(blob.keys).not.toContain(vocale.audioUrl);
+    }
+  });
+
+  it("un cestino vuoto risponde zero, e non un errore", async () => {
+    const token = await signup();
+    await creaScheda(token);
+
+    const res = await call(server, "DELETE", SVUOTA, { accessToken: token });
+
+    // 200 con un corpo e non 204: e' l'unica risposta che permette a chi ha
+    // premuto di distinguere «non c'era niente» da «e' andato tutto via».
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(esito(res.body)).toEqual({ cancellate: 0, saltate: 0 });
+  });
+
+  it("«status=COMPLETA» e' un 400, e non uno svuotamento dell'archivio", async () => {
+    const token = await signup();
+    const viva = await creaScheda(token);
+    const buttata = await creaScheda(token, { titolo: "Nel cestino" });
+    await archivia(token, buttata.id);
+
+    const res = await call(server, "DELETE", "/api/procedures?status=COMPLETA&definitivo=1", {
+      accessToken: token,
+    });
+
+    // E' la richiesta che non deve esistere, ed e' a un carattere di distanza da
+    // quella buona. Un `status` che accettasse l'enum intero la renderebbe
+    // esprimibile, e a rifiutarla resterebbe solo il servizio.
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
+    expect(await server.prisma.procedure.count({ where: { id: viva.id } })).toBe(1);
+    expect(await server.prisma.procedure.count({ where: { id: buttata.id } })).toBe(1);
+  });
+
+  it("«definitivo=0» non e' una mezza misura: e' un 400", async () => {
+    const token = await signup();
+    const buttata = await creaScheda(token);
+    await archivia(token, buttata.id);
+
+    const res = await call(server, "DELETE", "/api/procedures?status=ARCHIVIATA&definitivo=0", {
+      accessToken: token,
+    });
+
+    // Sulla voce singola `definitivo=0` archivia, e ha senso: c'e' una scheda
+    // da mettere via. Qui non c'e' niente da archiviare — sono gia' tutte nel
+    // cestino — e un `z.string()` al posto del letterale trasformerebbe questa
+    // richiesta, che vuole dire tutto tranne «cancella», in uno svuotamento.
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
+    expect(await server.prisma.procedure.count({ where: { id: buttata.id } })).toBe(1);
+  });
+
+  it("senza parametri non cancella niente: e' un 400", async () => {
+    const token = await signup();
+    const buttata = await creaScheda(token);
+    await archivia(token, buttata.id);
+
+    const res = await call(server, "DELETE", "/api/procedures", { accessToken: token });
+
+    // `DELETE` sulla collezione e' il percorso in cui si finisce per sbaglio —
+    // un id che vale stringa vuota nel client, e la barra finale sparisce. I due
+    // parametri obbligatori sono li' perche' quello sbaglio non diventi un
+    // archivio cancellato.
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
+    expect(await server.prisma.procedure.count({ where: { id: buttata.id } })).toBe(1);
+  });
+
+  it("un id vuoto sulla rotta della voce singola non diventa uno svuotamento", async () => {
+    const token = await signup();
+    const buttata = await creaScheda(token);
+    await archivia(token, buttata.id);
+
+    const res = await call(server, "DELETE", "/api/procedures/?definitivo=1", {
+      accessToken: token,
+    });
+
+    // Express fa combaciare `/api/procedures/` con la collezione, non con
+    // `/:id`: e' esattamente il caso in cui una `DELETE` scritta per una scheda
+    // sola arriva dove si cancella tutto. A fermarla e' `status` che manca.
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
+    expect(await server.prisma.procedure.count({ where: { id: buttata.id } })).toBe(1);
   });
 });
 

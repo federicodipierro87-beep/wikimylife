@@ -2,6 +2,7 @@ import {
   ApiError,
   AUTH_STORAGE_KEYS,
   createApiClient,
+  emptyTrashQuerySchema,
   listProceduresQuerySchema,
   searchQuerySchema,
   type AuthSession,
@@ -591,5 +592,81 @@ describe("query string — nessun parametro si perde per strada", () => {
     expect(parametriDi(calls[0]?.url ?? "")).toEqual(
       Object.keys(listProceduresQuerySchema.shape).sort(),
     );
+  });
+});
+
+/**
+ * La `DELETE` sulla collezione, che e' l'unica richiesta dell'app capace di
+ * cancellare molte cose insieme.
+ *
+ * `emptyTrash()` non prende argomenti: i due parametri che il server pretende
+ * li scrive il client. E' una scelta che sposta il rischio, non lo toglie —
+ * nessuna schermata puo' comporre `?status=COMPLETA`, ma se il client
+ * dimenticasse un parametro nessuno se ne accorgerebbe finche' qualcuno non
+ * preme un pulsante rosso e riceve un 400. Da qui i casi: cosa parte, con
+ * quale token, e cosa succede se cio' che torna non e' quel che dice il
+ * contratto.
+ */
+describe("svuotare il cestino", () => {
+  const ROTTA = "DELETE /api/procedures?status=ARCHIVIATA&definitivo=1";
+
+  it("scrive lui i due parametri, e sono quelli che il server pretende", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      [ROTTA]: () => ({ status: 200, payload: { cancellate: 3, saltate: 1 } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(client.emptyTrash()).resolves.toEqual({ cancellate: 3, saltate: 1 });
+
+    const url = new URL(calls[0]?.url ?? "");
+    expect(calls[0]?.method).toBe("DELETE");
+    // Sulla collezione e non su un id: `/api/procedures/qualcosa` sarebbe la
+    // rotta che ne cancella una sola, e risponderebbe 204 a un pulsante che ha
+    // appena promesso di svuotare tutto.
+    expect(url.pathname).toBe("/api/procedures");
+    // Non un URL atteso scritto a mano: gli stessi parametri passati per lo
+    // schema con cui il server li leggera'. Il giorno in cui uno dei due cambia
+    // nome, o smette di essere obbligatorio, questa riga lo dice qui invece che
+    // in un 400 davanti all'utente.
+    const inviati = Object.fromEntries(url.searchParams);
+    expect(emptyTrashQuerySchema.safeParse(inviati).success).toBe(true);
+    expect(inviati).toEqual({ status: "ARCHIVIATA", definitivo: "1" });
+  });
+
+  it("allega il token, che e' l'unica cosa che distingue il proprio cestino da quello di un altro", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      [ROTTA]: () => ({ status: 200, payload: { cancellate: 0, saltate: 0 } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+    await client.login({ email: "chi@esempio.it", password: "password-lunga-abbastanza" });
+
+    await client.emptyTrash();
+
+    expect(calls[1]?.authorization).toBe("Bearer access-1");
+  });
+
+  it("una risposta senza «saltate» non passa per uno svuotamento riuscito", async () => {
+    // Il campo che manca diventerebbe `undefined`, e la schermata direbbe
+    // «undefined schede sono state ripristinate» — oppure, peggio, tacerebbe su
+    // schede rimaste nel cestino facendole sembrare un guasto.
+    const { fetchImpl } = stubFetch({
+      [ROTTA]: () => ({ status: 200, payload: { cancellate: 3 } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(client.emptyTrash()).rejects.toBeInstanceOf(ApiError);
   });
 });

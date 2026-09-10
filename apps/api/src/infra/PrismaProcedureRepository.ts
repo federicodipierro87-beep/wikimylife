@@ -409,6 +409,24 @@ export class PrismaProcedureRepository implements ProcedureRepository {
     });
   }
 
+  /**
+   * Dalla piu' vecchia alla piu' recente, e un ordine c'e' per una ragione
+   * sola: uno svuotamento interrotto a meta' — la rete che cade, il processo
+   * che muore — deve lasciare dentro qualcosa di prevedibile. Cosi' resta cio'
+   * che e' finito nel cestino per ultimo, e sparisce cio' che ci sta da piu'
+   * tempo, che e' l'ordine in cui l'utente ha deciso di buttarlo. Senza
+   * `orderBy` Postgres non promette niente, e due passate sulla stessa tabella
+   * potrebbero lasciare dentro due insiemi diversi.
+   */
+  async listArchivedIds(userId: string): Promise<readonly string[]> {
+    const righe = await this.#prisma.procedure.findMany({
+      where: { userId, status: CardStatus.ARCHIVIATA },
+      orderBy: { updatedAt: "asc" },
+      select: { id: true },
+    });
+    return righe.map((r) => r.id);
+  }
+
   async addExecution(
     userId: string,
     id: string,

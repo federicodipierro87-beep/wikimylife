@@ -1,4 +1,10 @@
-import type { ApiClient, ListProceduresQueryInput, ProcedureList } from "@wikimylife/shared";
+import type {
+  ApiClient,
+  EmptyTrashResult,
+  ListProceduresQueryInput,
+  ProcedureList,
+  ProcedureSummary,
+} from "@wikimylife/shared";
 import { ApiError, CardStatus, PROCEDURE_PAGE_SIZE } from "@wikimylife/shared";
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -229,16 +235,340 @@ describe("TrashScreen: ripristinare", () => {
   });
 });
 
+/**
+ * Il gesto su tutto il cestino insieme.
+ *
+ * Sopra, la voce singola: un tocco distratto costa una scheda. Qui ne costa
+ * quante ne contiene il cestino, e nessuna delle due schermate ha un modo di
+ * rimediare. Cambia anche la difesa del server, che sulla voce singola risponde
+ * 409 se la scheda non era archiviata: qui non c'e' nessun id da rifiutare —
+ * quali schede toccare lo decide il server stesso — e quindi fra il dito e la
+ * cancellazione resta la sola conferma.
+ *
+ * L'altra meta' dei casi e' il messaggio d'esito. Non e' cortesia: `saltate`
+ * puo' non essere zero, e allora il cestino dopo lo svuotamento contiene ancora
+ * qualcosa. Senza una riga che lo dica, quella schermata sembra un guasto.
+ */
+describe("TrashScreen: svuotare tutto", () => {
+  /**
+   * Un cestino che si svuota davvero: il secondo `listProcedures` risponde con
+   * quello che il primo aveva promesso di cancellare, cioe' niente.
+   *
+   * Le richieste si tengono tutte perche' due dei casi qui sotto non guardano
+   * cosa c'e' a schermo ma quante volte l'elenco e' stato richiesto, e con quale
+   * `offset`: e' li' che si vede la differenza fra tornare alla prima pagina e
+   * restare a guardare oltre la fine di un cestino vuoto.
+   */
+  function clienteSvuotabile(
+    esito: () => Promise<EmptyTrashResult>,
+    totale = 2,
+    /** Cio' che il cestino contiene dopo: vuoto, tranne dove `saltate` non e' zero. */
+    rimaste: readonly ProcedureSummary[] = [],
+  ): { client: ApiClient; richieste: ListProceduresQueryInput[]; svuotamenti: number[] } {
+    const richieste: ListProceduresQueryInput[] = [];
+    const svuotamenti: number[] = [];
+    let svuotato = false;
+    const client = creaClienteFinto({
+      listProcedures: (query = {}) => {
+        richieste.push(query);
+        return Promise.resolve(
+          svuotato
+            ? unElenco({ items: [...rimaste], offset: 0 })
+            : unElenco({
+                items: dueCestinate().items,
+                total: totale,
+                offset: query.offset ?? 0,
+              }),
+        );
+      },
+      emptyTrash: () => {
+        svuotamenti.push(richieste.length);
+        svuotato = true;
+        return esito();
+      },
+    });
+    return { client, richieste, svuotamenti };
+  }
+
+  const andataBene = (): Promise<EmptyTrashResult> =>
+    Promise.resolve({ cancellate: 2, saltate: 0 });
+
+  it("il primo tocco apre la domanda, e al server non parte niente", async () => {
+    const { client, svuotamenti } = clienteSvuotabile(andataBene);
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+
+    // Come per la voce singola, e per una ragione piu' grossa: qui il primo
+    // tocco che cancellasse davvero porterebbe via l'intero cestino.
+    expect(svuotamenti).toEqual([]);
+    expect(screen.getByText("Cambio di residenza")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancella per sempre 2 schede" })).toBeTruthy();
+  });
+
+  it("il numero sul rosso e' quello del cestino, non quante se ne vedono", async () => {
+    // Trentaquattro nel cestino, venti per pagina, due in questo finto. Il
+    // pulsante che dicesse «2 schede» starebbe descrivendo la pagina e non il
+    // gesto: chi lo preme ne perde trentaquattro.
+    const { client } = clienteSvuotabile(andataBene, 34);
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+
+    expect(screen.getByRole("button", { name: "Cancella per sempre 34 schede" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancella per sempre 2 schede" })).toBeNull();
+  });
+
+  it("con una scheda sola non dice «1 schede»", async () => {
+    const { client } = clienteSvuotabile(andataBene, 1);
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+
+    // Il cestino con dentro una cosa sola e' il caso piu' frequente di tutti:
+    // e' il plurale automatico che qui si nota, non il singolare.
+    expect(screen.getByRole("button", { name: "Cancella per sempre 1 scheda" })).toBeTruthy();
+  });
+
+  it("il secondo tocco svuota, e l'elenco riletto lo conferma", async () => {
+    const { client, richieste, svuotamenti } = clienteSvuotabile(andataBene);
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Cancella per sempre 2 schede" }));
+
+    expect(svuotamenti).toEqual([1]);
+    expect(await screen.findByText("Il cestino e' vuoto.")).toBeTruthy();
+    expect(screen.queryByText("Cambio di residenza")).toBeNull();
+    // Il messaggio sopravvive alla sparizione dell'elenco: e' l'unica cosa che
+    // distingue «ho svuotato il cestino» da «il cestino non si carica».
+    expect(screen.getByRole("status").textContent).toBe("2 schede cancellate per sempre.");
+    // Il pulsante invece se ne va con l'elenco: offrire di svuotare un cestino
+    // vuoto sarebbe un gesto che non puo' riuscire.
+    expect(screen.queryByRole("button", { name: "Svuota il cestino" })).toBeNull();
+    // Due richieste e non tre: chi era gia' alla prima pagina la rilegge una
+    // volta sola.
+    expect(richieste.map((r) => r.offset)).toEqual([0, 0]);
+  });
+
+  it("dice quante ne sono rimaste quando una e' stata ripescata nel frattempo", async () => {
+    // L'unico caso in cui dopo lo svuotamento il cestino non e' vuoto: la
+    // scheda ripescata e' ancora li', e accanto al messaggio c'e' di nuovo il
+    // pulsante grigio — ma non quello rosso, che era la domanda di prima e ha
+    // avuto la sua risposta.
+    const { client } = clienteSvuotabile(() => Promise.resolve({ cancellate: 1, saltate: 1 }), 2, [
+      unaVoce({ id: "proc-2", titolo: "Disdetta della palestra", status: CardStatus.ARCHIVIATA }),
+    ]);
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Cancella per sempre 2 schede" }));
+
+    // Senza la seconda frase, un cestino che dopo lo svuotamento non e' vuoto
+    // sembrerebbe un difetto — e il secondo tentativo cancellerebbe la scheda
+    // che qualcuno aveva appena rimesso a posto.
+    expect((await screen.findByRole("status")).textContent).toBe(
+      "1 scheda cancellata per sempre. 1 scheda e' stata ripristinata mentre si cancellava, e non e' stata toccata.",
+    );
+    expect(screen.getByRole("button", { name: "Svuota il cestino" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Cancella per sempre/ })).toBeNull();
+  });
+
+  it("al plurale le conta al plurale, tutte e due", async () => {
+    const { client } = clienteSvuotabile(() =>
+      Promise.resolve({ cancellate: 3, saltate: 2 }),
+    );
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Cancella per sempre 2 schede" }));
+
+    expect((await screen.findByRole("status")).textContent).toBe(
+      "3 schede cancellate per sempre. 2 schede sono state ripristinate mentre si cancellava, e non sono state toccate.",
+    );
+  });
+
+  it("un cestino svuotato altrove non e' un guasto, ed e' detto senza numeri", async () => {
+    const { client } = clienteSvuotabile(() =>
+      Promise.resolve({ cancellate: 0, saltate: 0 }),
+    );
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Cancella per sempre 2 schede" }));
+
+    // Fra il caricamento della pagina e il tocco, un altro dispositivo ha fatto
+    // la stessa cosa. «0 schede cancellate per sempre» sarebbe vero e
+    // illeggibile.
+    expect((await screen.findByRole("status")).textContent).toBe("Il cestino era gia' vuoto.");
+  });
+
+  it("«Annulla» richiude la domanda senza aver svuotato niente", async () => {
+    const { client, svuotamenti, richieste } = clienteSvuotabile(andataBene);
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Annulla" }));
+
+    expect(svuotamenti).toEqual([]);
+    expect(richieste).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Cancella per sempre 2 schede" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Svuota il cestino" })).toBeTruthy();
+  });
+
+  it("se il server rifiuta, il rosso non resta acceso sotto il dito", async () => {
+    const { client, svuotamenti } = clienteSvuotabile(() =>
+      Promise.reject(
+        new ApiError({ code: "INTERNAL_ERROR", message: "Il server non risponde.", status: 500 }),
+      ),
+    );
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Cancella per sempre 2 schede" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe("Il server non risponde.");
+    expect(svuotamenti).toEqual([1]);
+    // Un errore a meta' svuotamento puo' aver cancellato qualcosa: il pulsante
+    // rosso lasciato acceso invita a un secondo tocco che nessuno ha deciso, e
+    // per giunta su un numero che non e' piu' quello scritto sopra.
+    expect(screen.queryByRole("button", { name: "Cancella per sempre 2 schede" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Svuota il cestino" })).toBeTruthy();
+  });
+
+  it("il secondo tentativo non lascia a schermo l'errore del primo", async () => {
+    let tentativi = 0;
+    const client = creaClienteFinto({
+      listProcedures: () => Promise.resolve(unElenco({ items: dueCestinate().items })),
+      emptyTrash: () => {
+        tentativi += 1;
+        return tentativi === 1
+          ? Promise.reject(
+              new ApiError({ code: "INTERNAL_ERROR", message: "Il server non risponde.", status: 500 }),
+            )
+          : Promise.resolve({ cancellate: 2, saltate: 0 });
+      },
+    });
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Cancella per sempre 2 schede" }));
+    await screen.findByRole("alert");
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Cancella per sempre 2 schede" }));
+
+    // «Il server non risponde» accanto a «2 schede cancellate per sempre» e'
+    // peggio di uno dei due da solo: chi legge non sa quale delle due frasi
+    // riguarda cio' che ha appena fatto.
+    expect((await screen.findByRole("status")).textContent).toBe("2 schede cancellate per sempre.");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("mentre svuota non si lascia premere una seconda volta", async () => {
+    let chiamate = 0;
+    let sblocca = (_esito: EmptyTrashResult): void => {};
+    const client = creaClienteFinto({
+      listProcedures: () => Promise.resolve(unElenco({ items: dueCestinate().items })),
+      emptyTrash: () => {
+        chiamate += 1;
+        return new Promise<EmptyTrashResult>((risolvi) => {
+          sblocca = risolvi;
+        });
+      },
+    });
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Cancella per sempre 2 schede" }));
+
+    // Il pulsante cambia parole e smette di rispondere. Una seconda richiesta
+    // partita mentre la prima cancella non svuoterebbe due volte lo stesso
+    // cestino: cancellerebbe cio' che nel frattempo qualcuno ha ripescato, e il
+    // secondo esito coprirebbe il primo.
+    const rosso = await screen.findByRole("button", { name: "Cancello…" });
+    await utente.click(rosso);
+    expect(chiamate).toBe(1);
+
+    sblocca({ cancellate: 2, saltate: 0 });
+    expect(await screen.findByRole("status")).toBeTruthy();
+  });
+
+  it("dopo aver svuotato torna alla prima pagina, e la chiede una volta sola", async () => {
+    const { client, richieste } = clienteSvuotabile(
+      () => Promise.resolve({ cancellate: 34, saltate: 0 }),
+      34,
+    );
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+    await utente.click(screen.getByRole("button", { name: "Successive" }));
+    await screen.findByText("21–22 di 34");
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Cancella per sempre 34 schede" }));
+
+    await screen.findByText("Il cestino e' vuoto.");
+    // Restare a `offset: 20` dopo aver cancellato tutto mostrerebbe un cestino
+    // vuoto perche' si sta guardando oltre la fine, e le schede eventualmente
+    // saltate sarebbero invisibili proprio a chi ha appena letto che ce ne sono.
+    // Tre richieste e non quattro: cambiare `offset` ricarica gia' da solo.
+    expect(richieste.map((r) => r.offset)).toEqual([0, 20, 0]);
+  });
+});
+
 describe("TrashScreen: quando non c'e' niente", () => {
   it("un cestino vuoto lo dice, e non offre nessun pulsante da premere", async () => {
     const client = creaClienteFinto({
       listProcedures: () => Promise.resolve(unElenco({ items: [] })),
     });
 
-    montaConApi(client, <TrashScreen />);
+    const { container } = montaConApi(client, <TrashScreen />);
 
     expect(await screen.findByText("Il cestino e' vuoto.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Elimina" })).toBeNull();
+    // Nemmeno lo svuotamento: un pulsante che promette di cancellare tutto
+    // davanti a un cestino vuoto e' un gesto che non puo' riuscire, e chi lo
+    // vede si chiede cosa contenga quel cestino che lui non vede.
+    expect(screen.queryByRole("button", { name: "Svuota il cestino" })).toBeNull();
+    // E nemmeno il riquadro che lo conterrebbe. Non e' pignoleria: `.svuota` ha
+    // un bordo in alto, quindi rimasto vuoto disegna una riga che separa «Il
+    // cestino e' vuoto.» da niente. Cercare il pulsante non basta a vederla,
+    // perche' il pulsante ha una sua condizione che lo toglie lo stesso.
+    expect(container.querySelector(".svuota")).toBeNull();
     // Nemmeno l'avvertenza su cosa comporta cancellare: senza niente da
     // cancellare e' una minaccia rivolta a nessuno.
     expect(screen.queryByText(/Non si torna indietro/)).toBeNull();

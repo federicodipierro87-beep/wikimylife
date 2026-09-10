@@ -3,10 +3,12 @@ import { AUTH_STORAGE_KEYS, type SecureStorageAdapter } from "../adapters/secure
 import { errorBodySchema, type ValidationIssue } from "../errors/body.js";
 import { ErrorCode, type ErrorCode as ErrorCodeType } from "../errors/codes.js";
 import {
+  emptyTrashResultSchema,
   procedureDetailSchema,
   procedureListSchema,
   searchResultSchema,
   type CreateExecutionBodyInput,
+  type EmptyTrashResult,
   type ListProceduresQueryInput,
   type ProcedureDetail,
   type ProcedureList,
@@ -229,6 +231,21 @@ export interface ApiClient {
    * vocali irraggiungibili — l'unica schermata che li mostra e' la scheda.
    */
   deleteProcedureForever(id: string): Promise<void>;
+  /**
+   * Lo stesso gesto, su tutto il cestino insieme.
+   *
+   * Non e' una comodita' costruita sopra `deleteProcedureForever`: farla dal
+   * client vorrebbe dire una richiesta per scheda, e un cestino svuotato a
+   * meta' perche' la rete e' caduta alla dodicesima. Quali schede toccare lo
+   * decide il server, sulle schede archiviate *adesso* e non su un elenco letto
+   * prima.
+   *
+   * Torna quante ne ha cancellate e quante ne ha saltate. Una saltata e' una
+   * che nel frattempo qualcuno ha ripescato dal cestino: non e' un errore, ma
+   * senza quel numero un cestino non vuoto dopo lo svuotamento sembrerebbe un
+   * guasto.
+   */
+  emptyTrash(): Promise<EmptyTrashResult>;
   /** §8: un esito `CAMBIATA` riporta la scheda in `DA_RIVEDERE`. */
   recordExecution(id: string, body: CreateExecutionBodyInput): Promise<ProcedureDetail>;
   /**
@@ -720,6 +737,23 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           method: "DELETE",
           path: `/api/procedures/${encodeURIComponent(id)}${queryString({ definitivo: "1" })}`,
           accept: "application/json",
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    emptyTrash(): Promise<EmptyTrashResult> {
+      return send(
+        {
+          method: "DELETE",
+          // I due parametri sono scritti qui e non ricevuti da chi chiama:
+          // sono l'unica coppia che questa rotta accetta, e prenderli in
+          // ingresso vorrebbe dire permettere a una schermata di comporre
+          // `?status=COMPLETA`. La firma senza argomenti e' il modo piu' breve
+          // di dire che di svuotamenti del cestino ce n'e' uno solo.
+          path: `/api/procedures${queryString({ status: "ARCHIVIATA", definitivo: "1" })}`,
+          schema: emptyTrashResultSchema,
           auth: true,
         },
         true,

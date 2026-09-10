@@ -1,6 +1,7 @@
 import {
   CardStatus,
   PROCEDURE_PAGE_SIZE,
+  type EmptyTrashResult,
   type ProcedureList,
   type ProcedureSummary,
 } from "@wikimylife/shared";
@@ -38,6 +39,13 @@ import { useAsync } from "../useAsync";
  * gia' due pulsanti dentro. Un pulsante dentro un pulsante non e' HTML valido,
  * e il browser lo risolve a modo suo — di solito sganciando il tocco da
  * entrambi. La riga qui e' un `<article>` con tre bottoni dichiarati.
+ *
+ * ## Perche' «svuota» sta in fondo e non in testata
+ *
+ * Perche' e' il gesto piu' distruttivo dell'applicazione, e in testata sarebbe
+ * la prima cosa sotto il pollice di chi apre la schermata per ripescare una
+ * scheda. In fondo ci arriva chi ha gia' scorso l'elenco, cioe' chi ha appena
+ * visto cosa sta per buttare via.
  */
 
 export function TrashScreen(): React.JSX.Element {
@@ -111,8 +119,175 @@ export function TrashScreen(): React.JSX.Element {
           />
         </>
       )}
+
+      {/* Fuori dal blocco qui sopra, e non e' una svista di indentazione: dopo
+          uno svuotamento riuscito il cestino e' vuoto, quel blocco sparisce, e
+          un pulsante montato dentro si porterebbe via il proprio messaggio
+          d'esito nel momento esatto in cui c'e' da leggerlo. Qui invece resta
+          montato, e mentre `ricarica()` riporta lo stato ad `attesa` continua a
+          dire com'e' andata. */}
+      <SvuotaIlCestino
+        quante={stato.kind === "pronto" ? stato.dato.total : 0}
+        onSvuotato={() => {
+          // Alla prima pagina, se non ci si era gia'. Restare all'offset 40 dopo
+          // aver cancellato tutto mostrerebbe un cestino che sembra vuoto perche'
+          // si sta guardando oltre la fine — e le schede eventualmente saltate
+          // sarebbero invisibili. Il ramo `else` non chiama anche `ricarica`
+          // perche' cambiare `offset` e' gia' una dipendenza di `useAsync`:
+          // farebbero due richieste per lo stesso motivo.
+          if (offset === 0) {
+            ricarica();
+          } else {
+            setOffset(0);
+          }
+        }}
+      />
     </main>
   );
+}
+
+/**
+ * Il gesto sull'intero cestino.
+ *
+ * ## Perche' il numero sta sul pulsante rosso e non su quello grigio
+ *
+ * Perche' e' li' che serve. «Svuota il cestino» e' una richiesta, e chi la fa sa
+ * gia' cosa ha buttato; «Cancella per sempre 34 schede» e' l'ultima cosa che si
+ * legge prima che sia troppo tardi, ed e' l'unico punto in cui il numero puo'
+ * ancora far cambiare idea. Il numero e' `total`, non quante se ne vedono: la
+ * pagina ne mostra venti, e cancellarne trentaquattro dopo aver letto «venti»
+ * sarebbe una bugia detta da un pulsante rosso.
+ *
+ * ## Perche' l'esito e' un messaggio e non un silenzio
+ *
+ * Perche' `saltate` esiste. Una scheda ripristinata da un'altra scheda del
+ * browser mentre lo svuotamento e' in corso non viene cancellata — ed e' giusto
+ * — ma cosi' il cestino dopo lo svuotamento non e' vuoto, e senza una riga che
+ * lo dica sembrerebbe un guasto.
+ */
+function SvuotaIlCestino({
+  quante,
+  onSvuotato,
+}: {
+  quante: number;
+  onSvuotato: () => void;
+}): React.JSX.Element | null {
+  const apiClient = useApi();
+  const [attesa, setAttesa] = useState(false);
+  const [errore, setErrore] = useState<string | null>(null);
+  const [conferma, setConferma] = useState(false);
+  const [esito, setEsito] = useState<EmptyTrashResult | null>(null);
+
+  async function svuota(): Promise<void> {
+    setAttesa(true);
+    setErrore(null);
+    setEsito(null);
+    try {
+      const risultato = await apiClient.emptyTrash();
+      setEsito(risultato);
+      setConferma(false);
+      onSvuotato();
+    } catch (error: unknown) {
+      setErrore(messaggioDi(error));
+      // Come nella voce singola: la conferma si richiude, perche' un pulsante
+      // rosso che resta aperto dopo un errore invita a un secondo tocco che
+      // nessuno ha piu' deciso.
+      setConferma(false);
+    } finally {
+      setAttesa(false);
+    }
+  }
+
+  if (quante === 0 && esito === null && errore === null) {
+    return null;
+  }
+
+  return (
+    <section className="svuota">
+      {esito !== null && (
+        <p className="avviso" role="status">
+          {esitoDelloSvuotamento(esito)}
+        </p>
+      )}
+
+      {errore !== null && (
+        <p className="avviso avviso--errore" role="alert">
+          {errore}
+        </p>
+      )}
+
+      {quante > 0 &&
+        (conferma ? (
+          <div className="svuota__azioni">
+            <button
+              type="button"
+              className="bottone bottone--pericolo"
+              disabled={attesa}
+              onClick={() => {
+                void svuota();
+              }}
+            >
+              {attesa ? "Cancello…" : `Cancella per sempre ${schede(quante)}`}
+            </button>
+            <button
+              type="button"
+              className="bottone bottone--piatto"
+              disabled={attesa}
+              onClick={() => {
+                setConferma(false);
+              }}
+            >
+              Annulla
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="bottone bottone--piatto"
+            onClick={() => {
+              setConferma(true);
+            }}
+          >
+            Svuota il cestino
+          </button>
+        ))}
+    </section>
+  );
+}
+
+/** «1 scheda», «12 schede»: il singolare esiste perche' un cestino con dentro
+ *  una cosa sola e' il caso piu' frequente di tutti. */
+function schede(n: number): string {
+  return n === 1 ? "1 scheda" : `${String(n)} schede`;
+}
+
+/**
+ * I tre esiti possibili detti in italiano.
+ *
+ * Zero cancellate e zero saltate non e' un guasto: e' il cestino che qualcuno ha
+ * gia' svuotato altrove fra il caricamento della pagina e il tocco. Dirlo
+ * «cancellate 0 schede» sarebbe vero e illeggibile.
+ */
+function esitoDelloSvuotamento(esito: EmptyTrashResult): string {
+  if (esito.cancellate === 0 && esito.saltate === 0) {
+    return "Il cestino era gia' vuoto.";
+  }
+
+  const via =
+    esito.cancellate === 1
+      ? "1 scheda cancellata per sempre."
+      : `${String(esito.cancellate)} schede cancellate per sempre.`;
+
+  if (esito.saltate === 0) {
+    return via;
+  }
+
+  const rimaste =
+    esito.saltate === 1
+      ? "1 scheda e' stata ripristinata mentre si cancellava, e non e' stata toccata."
+      : `${String(esito.saltate)} schede sono state ripristinate mentre si cancellava, e non sono state toccate.`;
+
+  return `${via} ${rimaste}`;
 }
 
 function VoceCestinata({
