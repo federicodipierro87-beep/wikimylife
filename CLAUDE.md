@@ -113,14 +113,14 @@ ventitré cadute.
 
 ---
 
-## Il giro in corso, interrotto a metà
+## Il giro in corso, a metà
 
 Quattro attività scelte dall'elenco dei difetti noti, una per commit.
 
 | | | stato |
 |---|---|---|
 | 1 | MinIO sotto la scopa: uno storage vero nei test d'integrazione | fatto, `8d5f608` |
-| 2 | svuotare il cestino in un gesto solo | **a metà, non committato** |
+| 2 | svuotare il cestino in un gesto solo | fatto, `9fb2126` |
 | 3 | l'elenco delle sessioni aperte, con la sola data di nascita | da fare |
 | 4 | il ponte fra la schermata e il server | da fare |
 
@@ -141,66 +141,29 @@ minuti invece di quaranta secondi. Adesso quel ciclo ha un tetto di venti scorse
 > `.env.example`. Senza, i due file nuovi non partono. `.env` non è leggibile
 > dagli strumenti, quindi non ho potuto farlo io.
 
-### 2 — dove mi sono fermato
+### 2 — fatto
 
-**Il typecheck è verde sui quattro passaggi.** L'albero è sporco: dieci file
-modificati, nessun commit. Non manca niente per compilare, mancano i test.
+`9fb2126`, «svuotare il cestino in un gesto solo, e sapere quante ne sono
+andate». Il codice di produzione era già scritto e compilava dal giro prima;
+questa sessione ha aggiunto i **sessantatré casi** che mancavano, sui quattro
+project: il servizio, il client, la schermata, e la rotta contro Postgres.
 
-Il codice scritto, in ordine di dipendenza:
+Stato all'ultimo commit: typecheck verde sui quattro passaggi, **943 test**
+unit + web su 44 file, **332** d'integrazione su 13 file, albero pulito.
 
-| file | cosa c'è dentro |
-|---|---|
-| `packages/shared/src/api/procedures.ts` | `emptyTrashQuerySchema` (due `z.literal`: `status=ARCHIVIATA`, `definitivo=1`), `emptyTrashResultSchema` (`{ cancellate, saltate }`) |
-| `packages/shared/src/api/client.ts` | `emptyTrash(): Promise<EmptyTrashResult>`, senza argomenti — i due parametri li scrive il client, non chi chiama |
-| `apps/api/src/services/ports/ProcedureRepository.ts` | `listArchivedIds(userId)` |
-| `apps/api/src/infra/PrismaProcedureRepository.ts` | la sua implementazione, `orderBy: { updatedAt: "asc" }` |
-| `apps/api/src/services/procedures.service.ts` | `emptyTrash(userId)`, e il nuovo `togliDalBucket` che ora serve anche a `deleteForever` |
-| `apps/api/src/routes/procedures.routes.ts` | `DELETE /` → 200 con `{ cancellate, saltate }` |
-| `tests/support/InMemoryProcedureRepository.ts` | `listArchivedIds`, ordinato come Postgres e non come `seed` |
-| `tests/web/helpers/clienteFinto.ts` | il ventiseiesimo metodo |
-| `apps/web/src/screens/TrashScreen.tsx` | `SvuotaIlCestino`, `schede`, `esitoDelloSvuotamento` |
-| `apps/web/src/styles.css` | `.svuota`, `.svuota__azioni` |
+Le tre decisioni che il diff non racconta — una scheda per volta invece di una
+`deleteMany`, `ASSENTE` e `NON_ARCHIVIATA` contate come `saltate`, il pulsante
+montato fuori dal ramo dell'elenco — adesso stanno nel README, in «Leggere,
+modificare, cercare» e nella sezione della schermata. Qui non si ripetono.
 
-Le tre decisioni che non si ricostruiscono leggendo il diff:
-
-1. **Una scheda per volta, riusando `deleteForUser`.** Una `deleteMany` con
-   `IN (...)` sarebbe più veloce e avrebbe una seconda copia delle regole
-   (figli in cascata, vocali, duplicati rimessi in coda). Peggio: sotto READ
-   COMMITTED una scheda ripristinata fra la `SELECT` e la `DELETE` si vedrebbe
-   cancellare i vocali pur sopravvivendo. `deleteForUser` da quello si difende
-   con `if (cancellate.count === 0) return NON_ARCHIVIATA`, e quella guardia non
-   ha un equivalente pulito sugli insiemi.
-2. **`ASSENTE` e `NON_ARCHIVIATA` non sono errori qui,** contano come `saltate`.
-   Gli id li ha scelti il server un istante fa: le uniche cause sono una
-   cancellazione o un ripristino da un'altra scheda del browser, e nessuna delle
-   due è un errore di chi ha premuto «svuota». Farne un 409 interromperebbe uno
-   svuotamento quasi riuscito senza dire quante ne erano già andate.
-3. **`SvuotaIlCestino` è montato fuori dal blocco `items.length > 0`.** Dentro,
-   sparirebbe portandosi via il proprio messaggio d'esito nel momento esatto in
-   cui c'è da leggerlo — perché `ricarica()` riporta `useAsync` ad `attesa`.
-
-**Cosa manca, in quest'ordine:**
-
-- `tests/unit/procedures.service.test.ts` — c'è già un `describe("deleteForever")`
-  alla riga 439, il nuovo va accanto. I casi: le sole archiviate spariscono e le
-  altre no; una ripristinata nel frattempo finisce in `saltate` e non alza; i
-  vocali passano allo storage; uno storage che rifiuta non ferma lo svuotamento e
-  chiama `onOrphanedAudio`; un cestino vuoto risponde `{0, 0}` e non «fatto».
-- `tests/unit/routes.test.ts` — che `?status=COMPLETA&definitivo=1` sia un 400,
-  e che la rotta non si confonda con `DELETE /:id`.
-- `tests/web/trash.test.tsx` — i due tocchi, il numero sul pulsante rosso che è
-  `total` e non quanti se ne vedono, il messaggio con `saltate > 0`, l'errore che
-  richiude la conferma, e il pulsante che non c'è quando il cestino è vuoto.
-- `tests/integration/procedures.e2e.test.ts` — la rotta contro Postgres vero:
-  che le schede di un altro utente non vengano toccate, e che figli e vocali
-  spariscano davvero.
-- Mutation testing (`muta.py` + `.muta.json`, **cancellati prima del commit**),
-  README (prosa + riscrivere il difetto noto sul cestino che si svuota una
-  scheda per volta), commit.
-
-Il residuo da dichiarare nel README: un cestino molto grosso diventa una
-richiesta molto lunga, perché non c'è un tetto al numero di schede — e non c'è
-apposta, un tetto renderebbe «svuota» una promessa che il pulsante non mantiene.
+Trenta mutazioni, ventinove cadute al primo giro. **La sopravvissuta va
+ricordata**, perché è il tipo di buco che si rifà da solo: tolto il
+`return null` anticipato di `SvuotaIlCestino`, il riquadro restava nel DOM
+vuoto, e siccome `.svuota` ha un `border-top` disegnava una riga che separava
+«Il cestino e' vuoto.» da niente. Nessun caso lo vedeva, perché tutti cercavano
+il *pulsante* — che ha una sua condizione e spariva lo stesso. Il caso nuovo
+guarda il contenitore (`container.querySelector(".svuota")`), come già fa
+`pending.test.tsx`, e quella mutazione cade.
 
 ### 4 — c'è una domanda aperta
 
