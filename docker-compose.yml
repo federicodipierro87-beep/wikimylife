@@ -22,6 +22,66 @@ services:
       retries: 20
       start_period: 10s
 
+  # --- Il bucket -------------------------------------------------------------
+  # MinIO parla il protocollo S3, che e' l'unica cosa che S3StorageProvider
+  # conosce: nessun SDK in mezzo, quindi il codice che qui firma una richiesta
+  # e' identico a quello che la firmera' contro AWS o R2. E' il motivo per cui
+  # un container serve davvero — FakeStorageProvider impagina e conta i byte,
+  # ma non ha una firma da sbagliare, non ha un segnalibro opaco da rimandare
+  # indietro e non ha un XML da interpretare.
+  storage:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: wikimylife-storage
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: wikimylife
+      # Almeno otto caratteri, o MinIO non parte. Vale quanto la password di
+      # Postgres qui sopra: e' un servizio che ascolta su localhost.
+      MINIO_ROOT_PASSWORD: wikimylife-segreto
+    ports:
+      # Dentro il container sono 9000 (l'API S3) e 9001 (la console da browser),
+      # che sono i default di MinIO. Fuori no, di proposito: chi ha MinIO ha
+      # buone probabilita' di averlo per piu' di un progetto, e due compose che
+      # chiedono la 9000 non partono insieme. Lo scarto di cento e' arbitrario,
+      # l'importante e' che sia scritto anche in S3_ENDPOINT_TEST.
+      - "9100:9000"
+      - "9101:9001"
+    volumes:
+      - wikimylife-storage-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # Crea i due bucket e muore. Compare in `docker compose ps` come "exited",
+  # e va bene cosi': non e' un servizio, e' l'equivalente di docker/initdb per
+  # lo storage.
+  #
+  # Due bucket per la stessa ragione per cui ci sono due database. La suite
+  # svuota il bucket fra un file e l'altro, e farlo su quello di sviluppo
+  # vorrebbe dire cancellare gli audio veri di chi sta provando l'app —
+  # esattamente cio' che DATABASE_URL_TEST esiste per impedire dall'altra parte.
+  storage-init:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: wikimylife-storage-init
+    depends_on:
+      storage:
+        condition: service_healthy
+    # `--ignore-existing` rende il comando ripetibile: `docker compose up -d`
+    # si lancia molte volte, e la seconda non deve fallire.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        mc alias set wml http://storage:9000 wikimylife wikimylife-segreto &&
+        mc mb --ignore-existing wml/wikimylife &&
+        mc mb --ignore-existing wml/wikimylife-test
+
 volumes:
   wikimylife-db-data:
     name: wikimylife-db-data
+  wikimylife-storage-data:
+    name: wikimylife-storage-data

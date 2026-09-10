@@ -5,6 +5,7 @@ import { loadConfig } from "../../../apps/api/src/config/env.js";
 import { compose, type Composition } from "../../../apps/api/src/composition.js";
 import { createLogger } from "../../../apps/api/src/logger.js";
 import { testDatabaseUrl, testPrisma } from "./db.js";
+import { testS3Env } from "./storage.js";
 
 /**
  * L'API vera, in ascolto su una porta effimera.
@@ -60,6 +61,17 @@ export interface TestServerOptions {
    * accende poi programma il fake da `composition.providers.redaction`.
    */
   readonly redactionProvider?: "nessuno" | "fake";
+  /**
+   * `fake` di default: la memoria e' istantanea, e per quasi tutti i file
+   * l'audio e' un dettaglio che deve solo esserci.
+   *
+   * `s3` fa comporre all'API il provider vero puntato al MinIO di
+   * docker-compose. Serve dove il bucket non e' un dettaglio ma il soggetto —
+   * la scopa, il caricamento, la cancellazione definitiva — e costa un giro di
+   * rete per oggetto. Chi lo accende deve anche svuotare il bucket fra un caso
+   * e l'altro: quello vero vive quanto il container, non quanto il file.
+   */
+  readonly storage?: "fake" | "s3";
 }
 
 export async function startTestServer(options: TestServerOptions = {}): Promise<TestServer> {
@@ -74,6 +86,11 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     CORS_ORIGINS: options.corsOrigins ?? "",
     AUTH_RATE_LIMIT_MAX: String(options.authRateLimitMax ?? 10_000),
     REDACTION_PROVIDER: options.redactionProvider ?? "nessuno",
+    // Le variabili dello storage entrano solo quando servono: passarle sempre
+    // legherebbe ogni file della suite al bucket di test, e i quindici che non
+    // sanno nemmeno di avere un bucket comincerebbero a fallire per una
+    // variabile mancante che non li riguarda.
+    ...(options.storage === "s3" ? testS3Env() : {}),
   });
 
   const prisma = testPrisma();

@@ -62,6 +62,19 @@ previsto, non un guasto.
 > Se la porta 5432 è già occupata da un Postgres locale, mappa `5433:5432` in
 > `docker-compose.yml` e allinea `DATABASE_URL` e `DATABASE_URL_TEST`.
 
+`docker compose up -d` tira su due cose: il Postgres con pgvector e un MinIO, che
+parla il protocollo S3 e fa da bucket. I bucket sono due — `wikimylife` per lo
+sviluppo e `wikimylife-test` per la suite d'integrazione, che lo svuota fra un
+file e l'altro — e li crea un container che muore subito dopo, per cui vederlo
+`exited` in `docker compose ps` è normale. La console sta su
+[localhost:9101](http://localhost:9101), utente e password `wikimylife` /
+`wikimylife-segreto`.
+
+> Le porte del bucket sono **9100 e 9101**, non le 9000 e 9001 di default: chi ha
+> MinIO ha buone probabilità di averlo per più di un progetto, e due `compose`
+> che chiedono la stessa porta non partono insieme. Se cambi lo scarto, cambialo
+> anche in `S3_ENDPOINT` e `S3_ENDPOINT_TEST`.
+
 ---
 
 ## Com'è fatto
@@ -72,7 +85,7 @@ apps/worker     Secondo processo: trascrive, estrae, valida, persiste.
 apps/web        PWA Vite + React. Consuma packages/shared senza alias né polyfill.
 packages/shared Codice isomorfo: contratti Zod, enum, interfacce, client API.
 prisma/         Schema, migration, seed.
-tests/          unit (senza Docker) e integration (con Postgres vero).
+tests/          unit (senza Docker) e integration (Postgres e bucket veri).
 docs/           Le deviazioni dalla specifica, con le motivazioni.
 netlify.toml    Netlify serve file e nient'altro: redirect SPA e header.
 apps/*/railway.toml   Come si costruisce e come parte ciascun servizio.
@@ -1588,6 +1601,74 @@ tranne uno — e la corsa che la soglia esiste per non perdere, cioè l'istante 
 il `put` e la riga in cui l'audio di qualcuno è indistinguibile da spazzatura, con
 la data dell'oggetto scritta dal caricamento vero e non scelta dal test.
 
+**L'altra metà di quel buco è il bucket, e da lì nascono due file.** Quel test
+mise sotto la scopa un Postgres vero e lasciò in memoria lo storage; il che vuol
+dire che `S3StorageProvider` — trecento righe, una firma SigV4 scritta a mano e
+un XML da interpretare — era l'unico pezzo di produzione che nessun test
+eseguiva. La firma aveva i suoi casi contro i vettori ufficiali di AWS, e
+`storageList.test.ts` leggeva XML battuto a macchina: fra i due non passava mai
+una richiesta HTTP. Adesso `docker-compose.yml` ha un MinIO, e passa.
+
+`storage.s3.e2e.test.ts` prova il provider da solo, contro il bucket. I byte
+tornano identici — `0x00` e `0xFF` compresi, che è il modo di accorgersi che
+qualcuno li abbia fatti passare per una stringa; `exists` risponde in tutte e due
+le direzioni; una chiave con spazi, parentesi e un `+` sopravvive al giro, ed è
+il caso in cui l'`encodeKey` scritto a mano si separa da `encodeURIComponent`;
+`get` su una chiave che non c'è rifiuta invece di restituire zero byte, mentre
+`delete` sulla stessa chiave non si lamenta, perché cancellare ciò che non esiste
+è il risultato voluto. Poi le tre cose che solo un servizio vero sa fare storte:
+che il prefisso di `list` tagli **caratteri e non segmenti di percorso** —
+`utente-uno` seleziona anche `utente-uno-bis/`, e chi lo dimenticasse
+costruirebbe una scopa che cancella l'archivio del vicino; che oltre il migliaio
+di oggetti arrivi un `continuationToken` vero, opaco e in base64, e che
+rimandandolo indietro si ottenga il resto senza doppioni; e che un bucket
+inesistente o una chiave segreta sbagliata **rifiutino** invece di somigliare a
+un bucket vuoto, che è la differenza fra accorgersi di una configurazione rotta e
+passare una scopa su un elenco vuoto.
+
+`sweep.s3.e2e.test.ts` rimette la scopa sopra quel bucket. Il caso che vale il
+container è l'ultimo: **il segnalibro dopo una cancellazione.** Il servizio
+cancella blocco per blocco *mentre* scorre, e il commento che lo giustifica dice
+che si può fare perché il segnalibro «dice dopo quale oggetto riprendere e non a
+quale posizione» — vero per il protocollo, mai verificato contro qualcuno che lo
+implementi. La seconda pagina si chiede con un segnalibro costruito sull'ultima
+chiave della prima, e quella chiave a quel punto è stata cancellata da un
+istante. Se il servizio rispondesse con una pagina vuota, la passata annuncerebbe
+di aver finito: nessun errore, nessun conteggio strano, solo un bucket che non
+smette di crescere. Il caso mette milleuno oggetti, di cui uno vivo e ordinato
+per ultimo, e conta. Accanto, che l'orfano non sia solo *contato* — `cancellati:
+1` dice che la chiamata non ha lanciato, `exists` dice che i byte non ci sono
+più — che l'audio vivo si riscarichi dalla rotta da cui lo chiederebbe l'utente,
+e che un file estraneo messo nel bucket da qualcun altro sopravviva alla regola
+3.
+
+La regola 2 resta invece a `sweep.e2e.test.ts`, e non per pigrizia: invecchiare
+un oggetto è un potere che `FakeStorageProvider` ha — `touch()` — e un bucket
+vero non dà a nessuno, perché la data la scrive il servizio. Per lo stesso motivo
+il file S3 lavora con una grazia **negativa**: la data la scrive MinIO dentro il
+container e la soglia la calcola il test fuori, sono due orologi, e con
+`graceMs: 0` mezzo secondo di scarto renderebbe «troppo recente» un oggetto
+appena scritto un giorno su dieci.
+
+Le mutazioni provate su questi due file sono ventidue e cadono tutte: sette sulla
+firma — l'host senza la porta, la query canonica non ordinata,
+`x-amz-content-sha256` fuori dalle intestazioni firmate, lo scope con la data
+intera al posto del giorno, `encodeKey` che codifica anche le barre, un
+`uriEncode` che si accontenta di `encodeURIComponent`, path style e virtual
+hosted scambiati — otto sul provider — `put` che dichiara zero byte, `get` che
+restituisce byte vuoti invece di lamentarsi, `exists` che dice sempre di sì,
+`delete` che non chiama nessuno, i due versi della tolleranza ai 404, `list` che
+ignora il prefisso, il segnalibro, o che chiede la versione 1 dell'elenco — tre
+sulla scopa, e due sulla guardia che impedisce alla suite di svuotare il bucket
+di sviluppo.
+
+Una di quelle ventidue ha lasciato un segno nel codice. Con `delete` ridotta a
+un no-op, `svuotaIlBucket` — il `resetDatabase()` del bucket — girava per sempre:
+la pagina successiva riportava le stesse chiavi. La mutazione moriva lo stesso,
+ma dopo trentaquattro minuti invece dei quaranta secondi delle altre. Adesso
+quel ciclo ha un tetto di venti scorse e un messaggio che dice cosa significa
+superarlo, e la stessa mutazione muore in quattordici secondi.
+
 L'end-to-end della ricerca costruisce le schede facendole passare per la pipeline
 vera invece di scriverle con `prisma.procedure.create`: è l'unico modo perché
 `searchText` e l'embedding siano davvero popolati come in produzione. Prova le
@@ -1646,7 +1727,13 @@ stanno in memoria di processo e `resetDatabase()` non li tocca.
 
 `DATABASE_URL_TEST` non ha un valore di default, di proposito: i test fanno
 `TRUNCATE`, e un default che puntasse al database di sviluppo lo svuoterebbe in
-silenzio.
+silenzio. Le cinque `S3_*_TEST` seguono la stessa regola per la stessa ragione, e
+in più `S3_BUCKET_TEST` non può coincidere con `S3_BUCKET`: la suite svuota il
+bucket fra un file e l'altro, e su quello di sviluppo vorrebbe dire cancellare
+gli audio di chi sta provando l'app. Il `globalSetup` controlla che il bucket
+risponda prima ancora del primo test, perché un `list` che fallisce dentro un
+`beforeAll` dice «fetch failed», cioè la stessa frase con cui si annuncerebbe una
+firma sbagliata.
 
 ### La CI, e perché sono tre job
 
@@ -1655,7 +1742,7 @@ silenzio.
 | Job | Cosa fa | Cosa dimostra |
 |---|---|---|
 | `verifica` | `typecheck` + `npm test` | **senza nessun service container** |
-| `integrazione` | `npm run test:integration` | Postgres con pgvector, migration versionate |
+| `integrazione` | `npm run test:integration` | Postgres con pgvector, migration versionate, un bucket S3 |
 | `build` | `build:web`, `build:api`, `build:worker` | i tre comandi che girano in produzione |
 
 Il primo non ha il database, e non è una svista: il repository promette che
@@ -1664,7 +1751,7 @@ Con un job solo, il giorno in cui un test unitario o una schermata aprisse una
 connessione nessuno se ne accorgerebbe — il database ci sarebbe, e sarebbe
 verde.
 
-Due dettagli del job di integrazione. Il database di test lo crea `initdb` con
+Tre dettagli del job di integrazione. Il database di test lo crea `initdb` con
 `POSTGRES_DB`, perché in locale lo crea `docker/initdb` e lì non si può: i
 service container partono **prima** del checkout, quindi quella cartella non
 esiste ancora sul disco. E `DATABASE_URL` resta deliberatamente non definita —
@@ -1674,6 +1761,16 @@ Le migration le applica il `globalSetup` con `migrate deploy` e non un passo del
 workflow, così il percorso provato in CI è lo stesso di chi sviluppa e
 `schema.test.ts` continua a verificare che le migration versionate bastino da
 sole a costruire indice HNSW e colonna generata.
+
+Il bucket invece **non** è un service container: uno non prende un comando, e
+l'immagine di MinIO senza `server /data` non fa niente. Lo tira su
+`docker compose` dal file di questo repository, che è anche il modo di non
+riscrivere una seconda volta versione, credenziali, porta e nomi dei bucket — a
+questa altezza del job il checkout c'è già, che è esattamente ciò che a Postgres
+manca. Il container che crea i bucket muore appena finito, quindi non lo si può
+aspettare con `--wait`: lo si aspetta con `docker wait` e se ne controlla il
+codice d'uscita, perché una creazione fallita in silenzio diventerebbe un
+«NoSuchBucket» un minuto più tardi, lontano dalla causa.
 
 Il job di build gira con `PRISMA_SKIP_POSTINSTALL_GENERATE` e mette `build:web`
 per **primo**, prima che qualunque cosa generi il client Prisma: è la condizione
@@ -2494,18 +2591,30 @@ Non installate, e il perché:
   ha deciso per me». Ma va detto per quello che è: il costo dello storage non
   scende finché qualcuno non lo chiede, e chi guarda solo la fattura non nota la
   differenza fra oggi e quando la scopa era spenta.
-- **La scopa ha un Postgres vero sotto, ma non uno storage vero.** Da
-  `sweep.e2e.test.ts` la domanda che conta — se `findExistingAudioKeys` riconosca
-  le chiavi che il caricamento ha davvero scritto — passa per un `IN (...)` su una
-  colonna di Postgres e per chiavi che nessun test costruisce a mano, e un
-  prefisso di troppo o uno `stored.url` al posto di `stored.key` fanno cadere il
-  file. Dall'altra parte però c'è ancora la memoria: `FakeStorageProvider`
-  impagina davvero e conta i byte, ma non è S3, e `docker-compose.yml` un bucket
-  non ce l'ha. Restano quindi fuori le cose che solo un servizio vero sa fare
-  male — che `list` restituisca le chiavi con un prefisso che qui non c'è, che il
-  bookmark di pagina scada, che una `delete` risponda 204 su un oggetto che
-  resta. Sono proprio le differenze che, sulla strada del `cancella`, decidono
-  fra una passata a vuoto e una passata di troppo.
+- **La scopa ha un bucket vero sotto, ma quel bucket è MinIO.** Adesso
+  `docker-compose.yml` ha uno storage che parla S3, e con lui `S3StorageProvider`
+  ha smesso di essere l'unico pezzo di produzione che nessun test eseguiva: la
+  firma SigV4 scritta a mano viene calcolata contro un server che la verifica, il
+  `continuationToken` è opaco e in base64 come sarà in produzione, e il
+  segnalibro che la scopa rimanda indietro *dopo* aver cancellato le chiavi su cui
+  si appoggia è provato invece che spiegato in un commento. Ma MinIO non è AWS, e
+  non è R2 né B2 — sono proprio quei tre i posti in cui il provider girerà. Le
+  differenze che restano fuori sono piccole e tutte nello stesso punto: come ogni
+  servizio normalizza una chiave con caratteri strani, quanti oggetti mette
+  davvero in una pagina, quale XML manda in un errore, e se ci sia una latenza
+  fra un `put` e il `list` che dovrebbe vederlo — MinIO su un disco locale è
+  immediato, un servizio distribuito no, e la regola 2 esiste apposta per quella
+  finestra. Che la scopa non cancelli l'archivio di nessuno lo dice questo
+  container; che non lo cancelli **su AWS** lo dirà la prima passata con
+  `--cancella` spento contro un bucket vero.
+- **La regola 2 della scopa resta provata solo in memoria.** «Abbastanza
+  vecchio» ha i suoi casi in `storageSweep.test.ts` e `sweep.e2e.test.ts`, e tutti
+  e due si appoggiano a `FakeStorageProvider.touch()` — invecchiare un oggetto è
+  un potere che il finto ha e un bucket vero non dà a nessuno, perché la data la
+  scrive il servizio. Contro MinIO il file S3 lavora quindi con una grazia
+  negativa, cioè con la regola 2 disattivata: prova cosa succede *dopo*, non la
+  soglia. Per provare la soglia contro un servizio vero servirebbe un test che
+  aspetta, e un test che aspetta è un test che un giorno qualcuno toglie.
 - **Il gesto che toglie tutte e due le cose sta in un posto solo.** È nella
   sezione «Da cosa nasce» del dettaglio, dentro il riquadro del vocale, ed è
   l'unico punto dell'app in cui la voce e la scheda che ne è nata sono sotto gli

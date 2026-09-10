@@ -63,7 +63,7 @@ jobs:
       - run: npm test
 
   integrazione:
-    name: integrazione su Postgres
+    name: integrazione su Postgres e su un bucket
     runs-on: ubuntu-latest
 
     services:
@@ -96,6 +96,21 @@ jobs:
       # e qui di database ce n'e' uno solo: definirla sarebbe l'unico modo di
       # sbagliare.
 
+      # Gli stessi valori di .env.example, e per la stessa ragione per cui la
+      # riga qui sopra ripete quelli del service container: non sono segreti,
+      # sono le coordinate di un servizio che ascolta su localhost e vive quanto
+      # questo job. Un secret di GitHub li nasconderebbe a chi legge il file
+      # senza nasconderli a nessun altro.
+      S3_ENDPOINT_TEST: http://127.0.0.1:9100
+      S3_BUCKET_TEST: wikimylife-test
+      S3_REGION_TEST: us-east-1
+      S3_ACCESS_KEY_ID_TEST: wikimylife
+      S3_SECRET_ACCESS_KEY_TEST: wikimylife-segreto
+      # S3_BUCKET resta assente per lo stesso motivo di DATABASE_URL: il bucket
+      # e' uno, i test lo svuotano, e dichiararlo uguale a quello di test
+      # sarebbe l'unico modo di far cancellare alla suite qualcosa che non e'
+      # suo. Il controllo che lo impedisce sta in `helpers/storage.ts`.
+
     steps:
       - uses: actions/checkout@v4
 
@@ -107,6 +122,31 @@ jobs:
       - run: npm ci
 
       - run: npm run db:generate
+
+      # Il bucket lo tira su docker compose, e non un service container come
+      # Postgres qui sopra.
+      #
+      # Il motivo tecnico e' che un service container non prende un comando, e
+      # l'immagine di MinIO senza `server /data` non serve niente. Ma quello che
+      # conta di piu' e' il duplicato che si evita: versione dell'immagine,
+      # credenziali, porta e nomi dei bucket restano scritti in un posto solo, e
+      # il giorno in cui cambiano in docker-compose.yml cambiano anche qui.
+      # Postgres non puo' fare lo stesso perche' i service container partono
+      # prima del checkout, e a quel punto docker-compose.yml non e' ancora sul
+      # disco; a questa altezza del job invece c'e'.
+      #
+      # `storage-init` e' un container che crea i bucket e muore, quindi non lo
+      # si puo' aspettare con `--wait`, che aspetta i servizi *vivi*. Lo si
+      # aspetta con `docker wait`, e se ne controlla il codice d'uscita: senza,
+      # una `mc mb` fallita passerebbe inosservata e la suite direbbe
+      # «NoSuchBucket» un minuto dopo, lontano dalla causa.
+      - name: il bucket dei test
+        run: |
+          docker compose up -d --wait storage
+          docker compose up -d storage-init
+          docker wait wikimylife-storage-init
+          docker logs wikimylife-storage-init
+          test "$(docker inspect -f '{{.State.ExitCode}}' wikimylife-storage-init)" = 0
 
       # Le migration le applica il `globalSetup` con `migrate deploy`, e il
       # build dei pacchetti lo fa `pretest:integration`: nessuno dei due e' un
