@@ -113,6 +113,103 @@ ventitré cadute.
 
 ---
 
+## Il giro in corso, interrotto a metà
+
+Quattro attività scelte dall'elenco dei difetti noti, una per commit.
+
+| | | stato |
+|---|---|---|
+| 1 | MinIO sotto la scopa: uno storage vero nei test d'integrazione | fatto, `8d5f608` |
+| 2 | svuotare il cestino in un gesto solo | **a metà, non committato** |
+| 3 | l'elenco delle sessioni aperte, con la sola data di nascita | da fare |
+| 4 | il ponte fra la schermata e il server | da fare |
+
+### 1 — fatto
+
+`8d5f608`, «un bucket vero sotto il provider che nessun test eseguiva». MinIO in
+`docker-compose.yml`, `tests/integration/helpers/storage.ts`, e due file nuovi:
+`storage.s3.e2e.test.ts` (14 casi) e `sweep.s3.e2e.test.ts` (4). Da **305 su 11
+file** a **323 su 13**. Ventidue mutazioni, tutte cadute.
+
+Una di quelle mutazioni ha lasciato un segno: con `delete` ridotta a un no-op,
+`svuotaIlBucket` girava per sempre, e la mutazione moriva dopo trentaquattro
+minuti invece di quaranta secondi. Adesso quel ciclo ha un tetto di venti scorse.
+
+> **Da fare a mano, una volta sola:** aggiungere al proprio `.env` le cinque
+> righe `S3_ENDPOINT_TEST`, `S3_BUCKET_TEST`, `S3_REGION_TEST`,
+> `S3_ACCESS_KEY_ID_TEST`, `S3_SECRET_ACCESS_KEY_TEST`, copiandole da
+> `.env.example`. Senza, i due file nuovi non partono. `.env` non è leggibile
+> dagli strumenti, quindi non ho potuto farlo io.
+
+### 2 — dove mi sono fermato
+
+**Il typecheck è verde sui quattro passaggi.** L'albero è sporco: dieci file
+modificati, nessun commit. Non manca niente per compilare, mancano i test.
+
+Il codice scritto, in ordine di dipendenza:
+
+| file | cosa c'è dentro |
+|---|---|
+| `packages/shared/src/api/procedures.ts` | `emptyTrashQuerySchema` (due `z.literal`: `status=ARCHIVIATA`, `definitivo=1`), `emptyTrashResultSchema` (`{ cancellate, saltate }`) |
+| `packages/shared/src/api/client.ts` | `emptyTrash(): Promise<EmptyTrashResult>`, senza argomenti — i due parametri li scrive il client, non chi chiama |
+| `apps/api/src/services/ports/ProcedureRepository.ts` | `listArchivedIds(userId)` |
+| `apps/api/src/infra/PrismaProcedureRepository.ts` | la sua implementazione, `orderBy: { updatedAt: "asc" }` |
+| `apps/api/src/services/procedures.service.ts` | `emptyTrash(userId)`, e il nuovo `togliDalBucket` che ora serve anche a `deleteForever` |
+| `apps/api/src/routes/procedures.routes.ts` | `DELETE /` → 200 con `{ cancellate, saltate }` |
+| `tests/support/InMemoryProcedureRepository.ts` | `listArchivedIds`, ordinato come Postgres e non come `seed` |
+| `tests/web/helpers/clienteFinto.ts` | il ventiseiesimo metodo |
+| `apps/web/src/screens/TrashScreen.tsx` | `SvuotaIlCestino`, `schede`, `esitoDelloSvuotamento` |
+| `apps/web/src/styles.css` | `.svuota`, `.svuota__azioni` |
+
+Le tre decisioni che non si ricostruiscono leggendo il diff:
+
+1. **Una scheda per volta, riusando `deleteForUser`.** Una `deleteMany` con
+   `IN (...)` sarebbe più veloce e avrebbe una seconda copia delle regole
+   (figli in cascata, vocali, duplicati rimessi in coda). Peggio: sotto READ
+   COMMITTED una scheda ripristinata fra la `SELECT` e la `DELETE` si vedrebbe
+   cancellare i vocali pur sopravvivendo. `deleteForUser` da quello si difende
+   con `if (cancellate.count === 0) return NON_ARCHIVIATA`, e quella guardia non
+   ha un equivalente pulito sugli insiemi.
+2. **`ASSENTE` e `NON_ARCHIVIATA` non sono errori qui,** contano come `saltate`.
+   Gli id li ha scelti il server un istante fa: le uniche cause sono una
+   cancellazione o un ripristino da un'altra scheda del browser, e nessuna delle
+   due è un errore di chi ha premuto «svuota». Farne un 409 interromperebbe uno
+   svuotamento quasi riuscito senza dire quante ne erano già andate.
+3. **`SvuotaIlCestino` è montato fuori dal blocco `items.length > 0`.** Dentro,
+   sparirebbe portandosi via il proprio messaggio d'esito nel momento esatto in
+   cui c'è da leggerlo — perché `ricarica()` riporta `useAsync` ad `attesa`.
+
+**Cosa manca, in quest'ordine:**
+
+- `tests/unit/procedures.service.test.ts` — c'è già un `describe("deleteForever")`
+  alla riga 439, il nuovo va accanto. I casi: le sole archiviate spariscono e le
+  altre no; una ripristinata nel frattempo finisce in `saltate` e non alza; i
+  vocali passano allo storage; uno storage che rifiuta non ferma lo svuotamento e
+  chiama `onOrphanedAudio`; un cestino vuoto risponde `{0, 0}` e non «fatto».
+- `tests/unit/routes.test.ts` — che `?status=COMPLETA&definitivo=1` sia un 400,
+  e che la rotta non si confonda con `DELETE /:id`.
+- `tests/web/trash.test.tsx` — i due tocchi, il numero sul pulsante rosso che è
+  `total` e non quanti se ne vedono, il messaggio con `saltate > 0`, l'errore che
+  richiude la conferma, e il pulsante che non c'è quando il cestino è vuoto.
+- `tests/integration/procedures.e2e.test.ts` — la rotta contro Postgres vero:
+  che le schede di un altro utente non vengano toccate, e che figli e vocali
+  spariscano davvero.
+- Mutation testing (`muta.py` + `.muta.json`, **cancellati prima del commit**),
+  README (prosa + riscrivere il difetto noto sul cestino che si svuota una
+  scheda per volta), commit.
+
+Il residuo da dichiarare nel README: un cestino molto grosso diventa una
+richiesta molto lunga, perché non c'è un tetto al numero di schede — e non c'è
+apposta, un tetto renderebbe «svuota» una promessa che il pulsante non mantiene.
+
+### 4 — c'è una domanda aperta
+
+Prima di cominciare il quarto va chiesto all'utente se vuole un browser pilotato
+(Playwright, una dipendenza pesante) o un ponte più leggero: l'`ApiClient` vero
+contro il server HTTP vero, senza schermata.
+
+---
+
 ## Cosa resta scoperto
 
 L'elenco intero è la sezione `## Cosa non c'è ancora, e si sa` del README, ed è
@@ -126,9 +223,9 @@ la prima cosa da leggere per decidere cosa fare dopo. I tre più grossi:
 - **Del dettaglio restano circa cinquecento righe senza casi** — campi stampati,
   sommario, trascrizione, player. È una scelta dichiarata (se spariscono si vede
   aprendo la pagina), non una dimenticanza.
-- **La scopa ha un Postgres vero sotto, ma non uno storage vero.**
-  `docker-compose.yml` non ha un bucket, quindi i modi in cui S3 sbaglia
-  restano fuori — ed è lì che si decide fra una passata a vuoto e una di troppo.
+- **La scopa ha un bucket vero sotto, ma quel bucket è MinIO.** Le differenze
+  che restano fuori sono quelle fra MinIO e S3 vero: i 503 sotto carico, la
+  coerenza eventuale, i limiti di richieste al secondo.
 
 E la più grande di tutte, che nessun test coprirà mai: che il pulsante di
 registrazione sia davvero collegato al microfono lo dice solo premerlo su un
