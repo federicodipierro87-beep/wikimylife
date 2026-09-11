@@ -35,6 +35,24 @@ export interface NewRefreshToken {
 }
 
 /**
+ * Una famiglia ancora viva, ridotta a cio' che serve per mostrarla.
+ *
+ * Il `familyId` c'e' qui e non nella risposta HTTP: serve al servizio per
+ * riconoscere quale riga e' la sessione da cui arriva la richiesta, e la sua
+ * utilita' finisce li'. Farlo uscire dalla porta e' gratis, farlo uscire dal
+ * server vorrebbe dire spedire un identificativo di sessione a ogni apertura
+ * della schermata dell'account, senza nessun gesto che lo consumi.
+ *
+ * `createdAt` e' il minimo degli `issuedAt` della famiglia, cioe' il login. Non
+ * e' l'`issuedAt` della riga viva: quello si sposta a ogni rotazione, ed e'
+ * «ultimo accesso» sotto un altro nome.
+ */
+export interface OpenSessionRecord {
+  readonly familyId: string;
+  readonly createdAt: Date;
+}
+
+/**
  * La sola domanda che il middleware di autenticazione pone al database.
  *
  * E' una porta a se' e non `AuthRepository` intero perche' `requireAuth` non
@@ -84,6 +102,26 @@ export interface AuthRepository extends FamilyRegistry {
 
   /** Revoca ogni token non ancora revocato della famiglia. Restituisce quanti. */
   revokeFamily(familyId: string, revokedAt: Date): Promise<number>;
+
+  /**
+   * Le famiglie dell'utente che hanno ancora un token vivo, dalla piu' recente.
+   *
+   * ## «Viva» qui vuol dire la stessa cosa che in `isFamilyActive`
+   *
+   * Almeno una riga con `revokedAt: null`, e nessun controllo sulla scadenza.
+   * Deve essere la stessa definizione, altrimenti l'elenco mostra sessioni che
+   * `requireAuth` rifiuterebbe, o ne nasconde di funzionanti — e in entrambi i
+   * casi il numero che torna da `revokeOtherFamilies` non corrisponde a quello
+   * che l'utente ha appena finito di leggere. Un token scaduto e non revocato
+   * resta elencato perche' e' esattamente cio' che e': una sessione che la
+   * scopa non ha ancora raccolto e che un refresh farebbe ancora ripartire.
+   *
+   * Non e' `listSessions`: la porta non sa cosa sia una «sessione» per chi
+   * guarda, sa cos'e' una famiglia con un token vivo. La traduzione la fa il
+   * servizio, che e' anche l'unico a sapere da quale famiglia arriva la
+   * richiesta.
+   */
+  listOpenSessions(userId: string): Promise<readonly OpenSessionRecord[]>;
 
   /**
    * Revoca ogni sessione dell'utente tranne una: quella da cui la richiesta

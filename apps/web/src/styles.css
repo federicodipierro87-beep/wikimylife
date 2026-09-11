@@ -557,6 +557,31 @@ button:focus-visible {
   margin: 1.75rem 0;
 }
 
+/* I dispositivi collegati. Senza pallino: non e' un elenco da leggere in ordine,
+   sono righe che si contano. */
+.dispositivi {
+  list-style: none;
+  margin: 0.75rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.dispositivo {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+/* La parola, non il colore: chi non distingue il grigio dal testo normale legge
+   comunque «questo dispositivo», ed e' l'unica cosa che deve arrivare. */
+.dispositivo__questo {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 .lista-puntata {
   margin: 0;
   padding-left: 1.1rem;

@@ -1,6 +1,7 @@
 import type {
   AuthRepository,
   NewRefreshToken,
+  OpenSessionRecord,
   RefreshTokenRecord,
   UserRecord,
 } from "../../apps/api/src/services/ports/AuthRepository.js";
@@ -200,5 +201,42 @@ export class InMemoryAuthRepository implements AuthRepository {
       }
     }
     return revoked;
+  }
+
+  /**
+   * Due scorse sulla mappa, come Postgres fa due interrogazioni.
+   *
+   * La prima raccoglie le famiglie con un token vivo, la seconda il minimo degli
+   * `issuedAt` su tutte le righe di quelle famiglie — comprese le revocate, che
+   * sono la storia delle rotazioni e contengono la nascita. Farlo in una scorsa
+   * sola tenendo il minimo solo delle righe vive darebbe l'ultima rotazione, ed
+   * e' proprio lo sbaglio che il test deve poter vedere.
+   *
+   * L'ordinamento e' esplicito e non l'ordine d'inserimento della `Map`: il
+   * database non ne ha uno, e un doppio in memoria che ne regala uno gratis
+   * lascia passare una `sort` dimenticata nell'adattatore vero.
+   */
+  async listOpenSessions(userId: string): Promise<readonly OpenSessionRecord[]> {
+    const vive = new Set<string>();
+    for (const token of this.#tokens.values()) {
+      if (token.userId === userId && token.revokedAt === null) {
+        vive.add(token.familyId);
+      }
+    }
+
+    const nascite = new Map<string, Date>();
+    for (const token of this.#tokens.values()) {
+      if (token.userId !== userId || !vive.has(token.familyId)) {
+        continue;
+      }
+      const gia = nascite.get(token.familyId);
+      if (gia === undefined || token.issuedAt.getTime() < gia.getTime()) {
+        nascite.set(token.familyId, token.issuedAt);
+      }
+    }
+
+    return [...nascite.entries()]
+      .map(([familyId, createdAt]) => ({ familyId, createdAt }))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 }

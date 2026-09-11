@@ -670,3 +670,86 @@ describe("svuotare il cestino", () => {
     await expect(client.emptyTrash()).rejects.toBeInstanceOf(ApiError);
   });
 });
+
+/**
+ * L'elenco dei dispositivi collegati.
+ *
+ * Due rotte vicine si contendono la stessa parola: `GET /api/auth/sessions`
+ * legge, `POST /api/auth/sessions/revoke` chiude. Sbagliare percorso qui non
+ * produce un errore di compilazione — sono entrambe stringhe — e il danno non e'
+ * simmetrico: chiedere la lista alla rotta sbagliata scollegherebbe dei
+ * dispositivi all'apertura di una schermata.
+ */
+describe("elenco delle sessioni", () => {
+  const ROTTA = "GET /api/auth/sessions";
+
+  it("legge, e lo fa con il token che dice di chi e' l'elenco", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      [ROTTA]: () => ({
+        status: 200,
+        payload: {
+          sessions: [
+            { createdAt: "2026-04-01T10:00:00.000Z", current: true },
+            { createdAt: "2026-03-01T10:00:00.000Z", current: false },
+          ],
+        },
+      }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+    await client.login({ email: "chi@esempio.it", password: "password-lunga-abbastanza" });
+
+    const { sessions } = await client.listSessions();
+
+    expect(sessions).toHaveLength(2);
+    // GET e non POST: un verbo sbagliato su `/sessions` non troverebbe nessuna
+    // rotta e darebbe un 404, ma un percorso sbagliato con il verbo giusto — un
+    // `/sessions/revoke` copiato dal metodo accanto — troverebbe eccome.
+    expect(calls[1]?.method).toBe("GET");
+    expect(new URL(calls[1]?.url ?? "").pathname).toBe("/api/auth/sessions");
+    // Nessun corpo: se ce ne fosse uno, sarebbe una password copiata dal metodo
+    // di fianco e spedita a ogni apertura della schermata.
+    expect(calls[1]?.body).toBeUndefined();
+    expect(calls[1]?.authorization).toBe("Bearer access-1");
+  });
+
+  it("una riga senza «current» non passa per una sessione", async () => {
+    // Il campo mancante diventerebbe `undefined`, cioe' falso: la schermata non
+    // marcherebbe nessuna riga come «questo dispositivo», e chi legge
+    // crederebbe che ce ne sia uno in piu' da scollegare.
+    const { fetchImpl } = stubFetch({
+      [ROTTA]: () => ({
+        status: 200,
+        payload: { sessions: [{ createdAt: "2026-04-01T10:00:00.000Z" }] },
+      }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(client.listSessions()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("un elenco vuoto e' una risposta valida, non un guasto", async () => {
+    // Non dovrebbe succedere — chi chiede ha per forza una sessione viva — ma
+    // se succedesse, il posto dove accorgersene e' una lista vuota a schermo,
+    // non un errore di contratto che nasconde il fatto sotto un «risposta non
+    // conforme».
+    const { fetchImpl } = stubFetch({
+      [ROTTA]: () => ({ status: 200, payload: { sessions: [] } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(client.listSessions()).resolves.toEqual({ sessions: [] });
+  });
+});

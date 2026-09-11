@@ -2,7 +2,9 @@ import {
   authSessionSchema,
   errorBodySchema,
   meResponseSchema,
+  openSessionsResponseSchema,
   type AuthSession,
+  type OpenSessionsResponse,
 } from "@wikimylife/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectTestPrisma, resetDatabase, testPrisma } from "./helpers/db.js";
@@ -905,6 +907,141 @@ describe("scollega gli altri dispositivi", () => {
     });
     expect(inPiu.status).toBe(400);
     expect(errorCode(inPiu.body)).toBe("VALIDATION_FAILED");
+  });
+});
+
+/**
+ * L'elenco delle sessioni aperte, contro Postgres vero.
+ *
+ * `auth.service.test.ts` prova la stessa logica piu' in fretta, e non basta: qui
+ * ci sono due cose che il repository in memoria non puo' sbagliare come le
+ * sbaglia il database. La prima e' il `groupBy` con `_min` — l'aggregazione che
+ * distingue la nascita di una famiglia dalla sua ultima rotazione la fa
+ * Postgres, e il doppio in memoria la rifa' a mano con un `for`. La seconda e'
+ * il routing: `GET /sessions` e `POST /sessions/revoke` condividono un prefisso,
+ * e chi decide se si pestano i piedi e' Express, che nei test unitari non c'e'.
+ */
+describe("elenco delle sessioni aperte", () => {
+  async function login(): Promise<AuthSession> {
+    const res = await call(server, "POST", "/api/auth/login", {
+      body: { email: EMAIL, password: PASSWORD },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return authSessionSchema.parse(res.body);
+  }
+
+  async function elenco(accessToken: string): Promise<OpenSessionsResponse> {
+    const res = await call(server, "GET", "/api/auth/sessions", { accessToken });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // Parsato con lo schema `.strict()` e non letto a mano: e' cio' che fa
+    // fallire il caso se un giorno il `familyId` uscisse dal servizio insieme
+    // agli altri due campi.
+    return openSessionsResponseSchema.parse(res.body);
+  }
+
+  it("un dispositivo per login, e una sola riga e' quella da cui si chiede", async () => {
+    const telefono = await signup();
+    await login();
+    await login();
+
+    const { sessions } = await elenco(telefono.accessToken);
+
+    expect(sessions).toHaveLength(3);
+    expect(sessions.filter((s) => s.current)).toHaveLength(1);
+    expect(sessions.filter((s) => !s.current)).toHaveLength(2);
+
+    // Dalla piu' recente. Il `groupBy` non ha un ordine — Postgres restituisce i
+    // gruppi come gli conviene — quindi se la `sort` nell'adattatore sparisse la
+    // lista cambierebbe ordine da una lettura all'altra senza che niente sia
+    // cambiato. Che il dispositivo di questa richiesta sia l'ultimo dice che
+    // l'ordine c'e' davvero: e' il primo dei tre ad essersi collegato.
+    const date = sessions.map((s) => s.createdAt);
+    expect(date).toEqual([...date].sort().reverse());
+    expect(sessions[2]?.current).toBe(true);
+  });
+
+  it("una rotazione non aggiunge una riga, e non sposta la data", async () => {
+    const telefono = await signup();
+    const prima = await elenco(telefono.accessToken);
+
+    const ruotata = authSessionSchema.parse((await refresh(telefono.refreshToken)).body);
+    const dopo = await elenco(ruotata.tokens.accessToken);
+
+    // Una riga sola: la famiglia adesso ha due token nel database, e contarli
+    // invece di raggrupparli farebbe comparire un secondo dispositivo che non
+    // esiste — uno in piu' a ogni quarto d'ora di uso.
+    expect(dopo.sessions).toHaveLength(1);
+    // E la stessa data: e' il `_min` che lo garantisce. Leggere l'`issuedAt`
+    // della riga viva darebbe l'istante della rotazione, cioe' «ultimo
+    // accesso», che questo prodotto ha deciso di non raccogliere.
+    expect(dopo.sessions[0]?.createdAt).toBe(prima.sessions[0]?.createdAt);
+    expect(dopo.sessions[0]?.current).toBe(true);
+  });
+
+  it("dopo «scollega gli altri» l'elenco si accorcia davvero", async () => {
+    const telefono = await signup();
+    await login();
+    await login();
+    expect((await elenco(telefono.accessToken)).sessions).toHaveLength(3);
+
+    await call(server, "POST", "/api/auth/sessions/revoke", {
+      accessToken: telefono.accessToken,
+      body: { currentPassword: PASSWORD },
+    });
+
+    // Le righe revocate restano nel database — servono alla reuse detection — e
+    // devono sparire da qui. Senza `revokedAt: null` nella clausola, l'elenco
+    // crescerebbe a ogni revoca invece di accorciarsi, cioe' direbbe l'opposto
+    // di quello che e' appena successo.
+    const { sessions } = await elenco(telefono.accessToken);
+    expect(sessions).toEqual([{ createdAt: sessions[0]?.createdAt ?? "", current: true }]);
+  });
+
+  it("non mostra le sessioni di un altro utente", async () => {
+    const mio = await signup();
+    await signup("altra@wikimylife.test");
+
+    const { sessions } = await elenco(mio.accessToken);
+
+    // Senza `userId` nella clausola, aprire la schermata dell'account
+    // mostrerebbe a ogni utente quando si sono collegati tutti gli altri.
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.current).toBe(true);
+  });
+
+  it("senza access token non si legge niente", async () => {
+    await signup();
+
+    const res = await call(server, "GET", "/api/auth/sessions");
+    expect(res.status).toBe(401);
+    expect(errorCode(res.body)).toBe("UNAUTHORIZED");
+  });
+
+  it("le due rotte sotto /sessions non si contendono il percorso", async () => {
+    const telefono = await signup();
+    await login();
+
+    // Il verbo giusto sul percorso giusto: entrambe rispondono, e rispondono
+    // cose diverse.
+    expect((await elenco(telefono.accessToken)).sessions).toHaveLength(2);
+    const revoca = await call(server, "POST", "/api/auth/sessions/revoke", {
+      accessToken: telefono.accessToken,
+      body: { currentPassword: PASSWORD },
+    });
+    expect(revoca.body).toEqual({ revoked: 1 });
+
+    // E le due combinazioni sbagliate non trovano niente. La piu' pericolosa e'
+    // la prima: se `GET /sessions` fosse scritta come `/sessions/:qualcosa`,
+    // leggere l'elenco potrebbe finire su un gestore che revoca.
+    const getSuRevoke = await call(server, "GET", "/api/auth/sessions/revoke", {
+      accessToken: telefono.accessToken,
+    });
+    expect(getSuRevoke.status).toBe(404);
+    const postSuSessions = await call(server, "POST", "/api/auth/sessions", {
+      accessToken: telefono.accessToken,
+      body: {},
+    });
+    expect(postSuSessions.status).toBe(404);
   });
 });
 

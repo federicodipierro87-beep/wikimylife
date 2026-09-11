@@ -718,6 +718,32 @@ perché sono tre notizie. Lo zero è quella che conta di più ed è quella che u
 averlo scollegato, mentre la verità è che quel telefono non era collegato — il
 che vuol dire che il problema, se c'è, è da un'altra parte.
 
+**Sopra quel pulsante c'è l'elenco dei dispositivi collegati**, che è ciò che dà
+un metro al numero. Non è una sezione a sé e non potrebbe esserlo: da solo
+sarebbe una lista di date che non si possono toccare. Accanto al pulsante serve a
+due cose — dire quanti dispositivi ci sono *prima* di premere, e far vedere la
+lista accorciarsi dopo, perché è quello che trasforma «ne ho scollegate due» da
+un'affermazione in una verifica. Per questo dopo una revoca riuscita l'elenco si
+ricarica, e dopo un rifiuto no: lì non è stato revocato niente, la lista a
+schermo è ancora quella giusta, e rileggerla la farebbe sparire e riapparire
+identica sotto un messaggio d'errore, come se il guasto riguardasse anche lei.
+
+Di ogni dispositivo si legge **una cosa sola**: da quando è collegato, in
+italiano relativo — «Collegato 3 giorni fa», «Collegato 2 mesi fa» — e quello in
+mano porta scritto «questo dispositivo». Sotto l'elenco c'è una riga che dice
+cos'altro non si sa, ed è lì apposta: senza, la lista sembrerebbe la versione
+ridotta di un registro più completo tenuto da qualche altra parte. Niente da
+dove, niente con che cosa, niente «ultimo uso» — le ragioni stanno più sotto,
+dove c'è la rotta. Un elenco che lo dicesse sarebbe più utile nel momento in cui
+serve, e un registro degli spostamenti del proprietario in tutti gli altri,
+leggibile da chiunque prenda in mano uno qualsiasi dei dispositivi elencati.
+
+Se l'elenco non si carica, la frase che compare è grigia e non un avviso rosso.
+Il pulsante qui sotto funziona ancora, e continua a scollegare gli altri
+dispositivi anche se non si è riusciti a contarli: un `role="alert"` accanto a un
+modulo intatto direbbe che il gesto è diventato impossibile, e chi ha appena
+perso un telefono smetterebbe di provarci.
+
 **Il cestino è una schermata e non un quarto chip.** I filtri dell'elenco sono
 gli ambiti — personale, lavoro, clienti — e sono tutti dello stesso tipo:
 mostrano un sottoinsieme delle stesse schede, con le stesse azioni. Il cestino
@@ -1022,6 +1048,11 @@ curl.exe -X POST http://localhost:3000/api/auth/refresh `
 # Il PRIMO, quello da cui è partita la richiesta, non è stato toccato:
 curl.exe http://localhost:3000/api/auth/me -H "authorization: Bearer <quello di prima>"
 #   → 200, e nessun token nuovo da mettere via: non ce n'era bisogno
+
+# E il numero si può guardare in faccia, prima e dopo:
+curl.exe http://localhost:3000/api/auth/sessions -H "authorization: Bearer <quello di prima>"
+#   → 200 {"sessions":[{"createdAt":"2026-…","current":true}]}
+#     Una riga sola, ed è questa. Prima della revoca ce n'erano due.
 ```
 
 Le differenze dal cambio password sono tre, e nessuna è di comodo. La prima è che
@@ -1050,6 +1081,32 @@ risparmia la sessione da cui parte: se non chiedesse niente, chi ha in mano il
 telefono rubato potrebbe premerlo e restare l'unico collegato, buttando fuori il
 proprietario da tutto il resto. Il campo che sembra un fastidio è l'unica cosa
 che tiene l'arma dalla parte giusta.
+
+`GET /api/auth/sessions` è il metro di quel numero, ed è arrivata dopo per la
+stessa ragione per cui era la risposta a essere un numero: «ne ho scollegate due»
+significa qualcosa solo a chi sapeva che ce n'erano tre. Risponde con una riga
+per dispositivo collegato e, di ogni riga, **due campi soli** — `createdAt` e
+`current`. Non chiede la password perché non fa niente: è una lettura, e ciò che
+mostra lo sa già chiunque abbia in mano una sessione viva, perché è il proprio
+account.
+
+`createdAt` è il momento del **login**, non quello dell'ultima rotazione, e la
+differenza è tutta la ragione per cui questa rotta esiste in questa forma. Una
+famiglia viva ha un solo refresh token vivo, e il suo `issuedAt` si sposta a ogni
+giro: leggerlo darebbe «ultimo accesso» sotto un altro nome, cioè il registro
+degli spostamenti che questo prodotto ha deciso di non tenere. La nascita è
+`MIN(issuedAt)` su tutte le righe della famiglia, comprese le decine che la
+rotazione ha già revocato — che è il motivo per cui l'adattatore fa due
+interrogazioni e non una: «viva» è una proprietà della riga corrente, «nata» è
+un'aggregazione su tutta la storia. Per lo stesso motivo non escono né IP né
+user-agent, e non esce nemmeno un identificativo di sessione: non c'è un gesto
+che ne prenda una sola, quindi sarebbe un id spedito a ogni apertura di una
+schermata senza che nessuno lo consumi.
+
+La rotta sta dietro `requireAuth` e **fuori** dal limite dei tentativi, per la
+ragione già scritta per `/me`: non accetta nessun segreto, quindi non c'è niente
+da indovinare a colpi di richieste, e limitarla spegnerebbe l'elenco proprio a
+chi ricarica la schermata mentre cerca di capire quale dispositivo scollegare.
 
 ### Un vocale che diventa una scheda, a mano
 
@@ -1372,6 +1429,23 @@ che ognuna dica cosa lascia in piedi, e che i tre pulsanti abbiano tre nomi
 diversi, perché sono tre gesti irreversibili in tre modi diversi e distinguerli è
 tutto il lavoro di questa schermata.
 
+Dell'elenco dei dispositivi, quale riga porta l'etichetta e cosa succede dopo.
+Che «questo dispositivo» stia su una riga sola non basta a dire che stia sulla
+riga giusta: il caso mette di proposito il dispositivo corrente al **secondo**
+posto, perché una schermata che marcasse sempre il primo passerebbe qualunque
+prova fatta con la sessione corrente in cima — ed è l'ordine che viene naturale
+scrivendo l'esempio a mano. Accanto, il caso opposto, che nessun'altra riga la
+porti. Le date si leggono relative e non ISO, e un dispositivo solo non è un caso
+speciale che rompe la lista. Poi le due cose che non si vedono provando a mano:
+che dopo una revoca riuscita l'elenco si **ricarichi** — senza, la schermata
+scrive «due scollegati» sopra una lista che ne mostra ancora tre, cioè si
+contraddice da sola — e che dopo un rifiuto **non** si ricarichi, il che si prova
+contando le letture partite e non guardando lo schermo, perché una lista
+ricaricata identica è indistinguibile da una lista rimasta ferma. Infine il
+guasto dell'elenco: il modulo della revoca resta usabile e in pagina non compare
+nessun `role="alert"`, che è la differenza fra «non sono riuscito a contarli» e
+«non puoi più scollegarli».
+
 Della sezione «In lavorazione», quando smette di chiedere. Il polling è il caso
 esemplare del guasto senza sintomo: se resta acceso quando non doveva, la
 schermata è identica e corretta, la prova manuale passa, e l'unico segno è una
@@ -1603,6 +1677,38 @@ mettere il `fid` in `req.auth`, ciascuno dei due middleware tolto dalla rotta, l
 concorrono file di tre project diversi, il che è anche il modo più economico di
 dire che questo gesto attraversa tutta l'applicazione: un middleware, un
 servizio, una riga di SQL e tre frasi in italiano.
+
+Dell'elenco delle sessioni si prova da Postgres ciò che il repository in memoria
+rifà a mano. Due cose, e sono proprio le due: il `groupBy` con `_min`, cioè
+l'aggregazione che distingue la nascita di una famiglia dalla sua ultima
+rotazione — in memoria è un `for` con un confronto, nel database è la query che
+decide se l'app racconta «da quando sei collegato» o «quando lo hai usato
+l'ultima volta» — e il routing, perché `GET /sessions` e `POST /sessions/revoke`
+condividono un prefisso e chi decide se si pestano i piedi è Express, che nei
+test unitari non c'è. I casi: due login danno due righe e una sola è `current`;
+un `refresh` non aggiunge una terza riga e **non sposta la data**, che è il caso
+che tiene in piedi tutta la scelta (contarle invece di raggrupparle farebbe
+comparire un dispositivo in più a ogni quarto d'ora di uso); dopo
+`sessions/revoke` la lista si accorcia davvero, perché le righe revocate restano
+nel database e devono sparire da qui; l'utente accanto non compare. E l'ordine,
+che nel `groupBy` non esiste: il dispositivo di chi chiede è il primo dei tre a
+essersi collegato, quindi deve risultare **ultimo**. La risposta si legge con lo
+schema `.strict()` e non a mano, che è ciò che farebbe fallire il caso se un
+giorno il `familyId` uscisse dal servizio insieme agli altri due campi. In fondo,
+le due combinazioni sbagliate di verbo e percorso: `GET /sessions/revoke` e
+`POST /sessions` devono dare 404 entrambe, perché la più pericolosa delle due
+sarebbe la prima — se l'elenco fosse scritto come `/sessions/:qualcosa`, leggerlo
+potrebbe finire su un gestore che revoca.
+
+Le mutazioni su questo blocco sono ventiquattro e cadono tutte: tre sul servizio
+(`current` sempre vero e sempre falso, la data buttata via), quattro
+sull'adattatore Prisma (le famiglie chiuse, le sessioni di tutti, il minimo preso
+sulla sola riga viva, l'ordine invertito), quattro sul doppio in memoria, tre sul
+client, una sul contratto, due sulla rotta e sette sulla schermata. Due sono
+dovute essere scritte doppie: togliere lo `userId` da una sola delle due
+interrogazioni non cambia niente, perché a filtrare resta l'altra — la mutazione
+sopravviveva senza dire niente di vero sui test, e il difetto vero è
+dimenticarlo in tutti e due i posti.
 
 L'end-to-end delle registrazioni carica un multipart vero e poi esegue
 `ingestionService.processNext()` in-process, sulle **stesse istanze** che servono
@@ -2268,9 +2374,12 @@ martella. Le finestre non si mescolano, perché la chiave contiene la rotta: un
 cambio password non consuma i tentativi di `/login`, «scollega gli altri» non
 consuma quelli del cambio password, e nessuno dei tre può esaurire gli altri.
 
-`/logout` e `/me` non sono limitati. Il primo non regala niente a chi lo martella;
-il secondo sta già dietro `requireAuth`, e limitarlo significherebbe rompere
-l'app in mano a un utente legittimo che ricarica.
+`/logout`, `/me` e `GET /sessions` non sono limitati. Il primo non regala niente a
+chi lo martella; gli altri due stanno già dietro `requireAuth` e non accettano
+nessun segreto, quindi non c'è niente da indovinare a colpi di richieste, e
+limitarli significherebbe rompere l'app in mano a un utente legittimo che
+ricarica — nel caso dell'elenco, spegnerlo proprio a chi lo sta ricaricando per
+capire quale dispositivo scollegare.
 
 Le voci scadute si eliminano ogni 500 richieste, dentro la richiesta stessa: un
 `setInterval` terrebbe vivo l'event loop e un processo che non muore su `SIGTERM`
@@ -2540,20 +2649,31 @@ Non installate, e il perché:
   finestra fissa resta però una finestra fissa, e chi prova dieci password al
   minuto per un mese non incontra mai il muro. Fermarlo vorrebbe dire contare per
   account e su giorni, cioè un'altra cosa da questa.
-- **Non esiste l'elenco delle sessioni aperte.** I due gesti che chiudono le
-  sessioni ci sono entrambi: `POST /api/auth/password` cambia la password e
-  chiude tutto nella stessa transazione, `POST /api/auth/sessions/revoke` chiude
-  tutto tranne il dispositivo da cui parte e risponde con quante ne sono cadute.
-  Il secondo però è cieco: dice un numero e non dice mai *quali*. Chi si vede
-  rispondere "tre" e ne riconosce due non ha modo di chiudere solo la terza, e
-  chi si vede rispondere "zero" deve fidarsi che voglia dire quello che sembra.
-  Per fare meglio bisognerebbe scrivere accanto a ogni famiglia quando è nata,
-  quando è stata usata l'ultima volta e da dove è arrivata — cioè tenere un
-  registro di dove e quando una persona si collega, che è esattamente il genere
-  di dato che un archivio come questo farebbe bene a pensarci due volte prima di
-  possedere. Il compromesso che sembra onesto — la data di creazione e nient'altro,
-  che basta a distinguere "il telefono di ieri" da "quello di due anni fa" — non è
-  stato scritto, e finché non lo è questo resta un buco e non una scelta.
+- **Le sessioni aperte si vedono, ma si chiudono solo tutte insieme.**
+  `GET /api/auth/sessions` esiste e l'elenco è in fondo alla schermata
+  dell'account: una riga per dispositivo collegato, con la data in cui lo è
+  diventato e un segno su quello in mano. Quello che manca è il gesto per riga.
+  Chi riconosce due dispositivi su tre e vuole chiudere solo il terzo non può:
+  preme «scollega gli altri dispositivi» e li chiude tutti e due, poi rientra da
+  quello che gli serviva. Il costo vero non è il secondo login, è che il gesto
+  disponibile è più grosso del problema, e chi ha un dubbio piccolo tende a non
+  usare uno strumento grosso. Farlo vorrebbe dire spedire un identificativo di
+  sessione a ogni apertura della schermata, e quell'id andrebbe poi accettato in
+  ingresso da una rotta che revoca: due cose che oggi non esistono apposta.
+  Aggiungere il campo al contratto **prima** che esista il gesto sarebbe il modo
+  peggiore di farlo — un id in giro, in ogni risposta e prima o poi in un log,
+  senza nessuno che lo consumi.
+
+- **E di ogni sessione si sa una cosa sola: quando è nata.** Niente indirizzo,
+  niente dispositivo, niente «ultimo uso». È una scelta e non una mancanza: un
+  elenco che dicesse da dove e con che cosa ci si è collegati sarebbe più utile
+  nel momento in cui serve e un registro degli spostamenti del proprietario in
+  tutti gli altri, leggibile da chiunque prenda in mano uno qualsiasi dei
+  dispositivi elencati. Ma il prezzo va scritto qui e non nascosto sotto la
+  motivazione: due telefoni aperti lo stesso pomeriggio sono due righe
+  indistinguibili, e chi deve decidere quale buttare, da questo elenco, non lo
+  scopre. La data di nascita distingue «il telefono di ieri» da «quello di due
+  anni fa», e si ferma lì.
 - **Non si recupera una password dimenticata.** Non c'è rotta, non c'è mail, non
   c'è nulla: chi dimentica la password perde l'archivio. La schermata
   dell'account fa quel che può — chiede la nuova due volte e dice che non c'è

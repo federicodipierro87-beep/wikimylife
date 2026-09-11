@@ -86,10 +86,38 @@ function bottone(nome: string): HTMLButtonElement {
   return screen.getByRole("button", { name: nome }) as HTMLButtonElement;
 }
 
-/** Il finto minimo: la sessione c'e', e nient'altro e' previsto. */
+/**
+ * Un istante fa, in ISO.
+ *
+ * Il tempo non e' congelato in questi casi: `formatQuando` usa l'orologio vero
+ * quando non gliene si passa un altro, e la schermata non gliene passa nessuno.
+ * Una data a pochi secondi da adesso finisce nel ramo «adesso» della funzione,
+ * che e' stabile — mentre una data fissa scritta nel file diventerebbe «2 anni
+ * fa» e poi una data assoluta, e il caso si romperebbe da solo col passare dei
+ * mesi senza che nessuno abbia toccato niente.
+ */
+const ADESSO = new Date().toISOString();
+
+/**
+ * Il finto minimo: la sessione c'e', c'e' l'elenco dei dispositivi, e nient'altro
+ * e' previsto.
+ *
+ * Le due risposte insegnate qui sono le due che il montaggio chiede da solo, e
+ * nessun caso le ha chieste: `restoreSession` la chiama `SessionProvider`,
+ * `listSessions` la chiama la sezione di mezzo appena compare. Un finto che non
+ * le sapesse farebbe fallire ogni caso del file con un errore che parla di una
+ * rotta a cui nessuno era interessato — cioe' nasconderebbe la vera ragione del
+ * fallimento sotto trenta righe identiche.
+ *
+ * Il predefinito e' una sessione sola, ed e' quella corrente: e' cio' che vede
+ * chiunque abbia fatto login una volta, quindi e' lo sfondo giusto per i casi
+ * che guardano altro. Chi vuole una lista diversa la passa.
+ */
 function collegato(risposte: Partial<ApiClient> = {}): ApiClient {
   return creaClienteFinto({
     restoreSession: () => Promise.resolve(unaSessione().user),
+    listSessions: () =>
+      Promise.resolve({ sessions: [{ createdAt: ADESSO, current: true }] }),
     ...risposte,
   });
 }
@@ -541,6 +569,175 @@ describe("AccountScreen: scollegare gli altri dispositivi", () => {
     // caso con il proprio nome dentro l'errore. E la schermata e' ancora qui,
     // che e' quello che il testo sopra il pulsante promette.
     expect(bottone("Esci da questo dispositivo")).toBeTruthy();
+  });
+});
+
+/**
+ * L'elenco dei dispositivi, che e' il metro del numero della sezione di sopra.
+ *
+ * Senza, «ne ho scollegate due» e' una frase che non si puo' verificare: chi la
+ * legge non sapeva quante fossero prima. I casi qui guardano le tre cose che
+ * quella verifica richiede — che le righe ci siano, che si capisca quale e' il
+ * dispositivo in mano, e che dopo il gesto la lista dica la verita' nuova invece
+ * di quella vecchia.
+ */
+describe("AccountScreen: l'elenco dei dispositivi collegati", () => {
+  const TRE_GIORNI_FA = new Date(Date.now() - 3 * 86_400_000).toISOString();
+  const SETTANTA_GIORNI_FA = new Date(Date.now() - 70 * 86_400_000).toISOString();
+
+  function conElenco(sessions: readonly { createdAt: string; current: boolean }[]): ApiClient {
+    return collegato({ listSessions: () => Promise.resolve({ sessions: [...sessions] }) });
+  }
+
+  it("mostra una riga per dispositivo, con da quando e' collegato", async () => {
+    await montaAccount(
+      conElenco([
+        { createdAt: TRE_GIORNI_FA, current: true },
+        { createdAt: SETTANTA_GIORNI_FA, current: false },
+      ]),
+    );
+
+    const righe = await screen.findAllByRole("listitem");
+    expect(righe).toHaveLength(2);
+    // Relative e non assolute: «3 giorni fa» accanto a «2 mesi fa» si confronta
+    // a colpo d'occhio, e il confronto e' l'unica operazione che si fa su questa
+    // lista. Due date in cifre chiederebbero di sottrarle a mente.
+    expect(righe[0]?.textContent).toContain("Collegato 3 giorni fa");
+    expect(righe[1]?.textContent).toContain("Collegato 2 mesi fa");
+  });
+
+  it("marca il dispositivo in mano, e marca solo quello", async () => {
+    await montaAccount(
+      conElenco([
+        { createdAt: TRE_GIORNI_FA, current: false },
+        { createdAt: SETTANTA_GIORNI_FA, current: true },
+      ]),
+    );
+
+    const righe = await screen.findAllByRole("listitem");
+    // La riga giusta, e non la prima: marcare sempre la prima passerebbe con
+    // l'ordine piu' comune — il dispositivo in uso e' spesso l'ultimo aperto —
+    // e sbaglierebbe esattamente su chi ha appena fatto login altrove, cioe' su
+    // chi sta guardando questa schermata per un motivo.
+    expect(righe[0]?.textContent).not.toContain("questo dispositivo");
+    expect(righe[1]?.textContent).toContain("questo dispositivo");
+    expect(screen.getAllByText("questo dispositivo")).toHaveLength(1);
+  });
+
+  it("un solo dispositivo non e' un caso speciale: la riga c'e' lo stesso", async () => {
+    await montaAccount(conElenco([{ createdAt: TRE_GIORNI_FA, current: true }]));
+
+    const righe = await screen.findAllByRole("listitem");
+    expect(righe).toHaveLength(1);
+    // Nascondere la lista quando ce n'e' uno solo sembrerebbe un'economia e
+    // sarebbe una bugia per omissione: chi cerca un telefono perduto e non vede
+    // niente non sa se la risposta e' «ce n'e' uno solo» o «non ho guardato».
+    expect(righe[0]?.textContent).toContain("questo dispositivo");
+  });
+
+  it("mentre conta lo dice, invece di mostrare una lista vuota", async () => {
+    await montaAccount(
+      collegato({
+        listSessions: () => new Promise(() => undefined),
+      }),
+    );
+
+    // Una lista vuota durante il caricamento si legge come «nessun altro
+    // dispositivo collegato», che e' la risposta piu' rassicurante delle tre e
+    // qui sarebbe inventata.
+    expect(screen.getByText("Conto i dispositivi collegati…")).toBeTruthy();
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+  });
+
+  it("se l'elenco non arriva, il pulsante che serve davvero resta usabile", async () => {
+    await montaAccount(
+      collegato({
+        listSessions: () =>
+          Promise.reject(
+            new ApiError({ code: "INTERNAL_ERROR", message: "Il server non risponde.", status: 500 }),
+          ),
+      }),
+    );
+
+    expect(await screen.findByText(/Non sono riuscito a leggere l'elenco/)).toBeTruthy();
+    // Il modulo e' intatto: l'elenco e' un contorno, non una precondizione. Chi
+    // ha appena perso un telefono deve poterlo scollegare anche quando il conto
+    // dei dispositivi non arriva.
+    expect(campo("La tua password")).toBeTruthy();
+    expect(bottone("Scollega gli altri").disabled).toBe(false);
+    // E soprattutto non e' un allarme: un rosso con `role="alert"` accanto a un
+    // modulo funzionante direbbe che il gesto e' diventato impossibile.
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("dopo una revoca riuscita la lista si accorcia, invece di restare quella di prima", async () => {
+    const risposte: { sessions: { createdAt: string; current: boolean }[] }[] = [
+      {
+        sessions: [
+          { createdAt: TRE_GIORNI_FA, current: true },
+          { createdAt: SETTANTA_GIORNI_FA, current: false },
+        ],
+      },
+      { sessions: [{ createdAt: TRE_GIORNI_FA, current: true }] },
+    ];
+    let giro = 0;
+    await montaAccount(
+      collegato({
+        listSessions: () => {
+          const risposta = risposte[Math.min(giro, risposte.length - 1)];
+          giro += 1;
+          return Promise.resolve(risposta ?? { sessions: [] });
+        },
+        revokeOtherSessions: () => Promise.resolve({ revoked: 1 }),
+      }),
+    );
+
+    expect(await screen.findAllByRole("listitem")).toHaveLength(2);
+
+    const utente = userEvent.setup();
+    await utente.type(campo("La tua password"), "quella-che-so");
+    await utente.click(bottone("Scollega gli altri"));
+    await screen.findByRole("status");
+
+    // Senza la ricarica, sotto «un altro dispositivo e' stato scollegato»
+    // resterebbero scritti due dispositivi: il messaggio e la lista si
+    // smentirebbero a vicenda, e la lista e' quella che si crede.
+    await waitFor(() => {
+      expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    });
+  });
+
+  it("dopo un rifiuto la lista non si ricarica, perche' non e' cambiato niente", async () => {
+    let letture = 0;
+    await montaAccount(
+      collegato({
+        listSessions: () => {
+          letture += 1;
+          return Promise.resolve({ sessions: [{ createdAt: TRE_GIORNI_FA, current: true }] });
+        },
+        revokeOtherSessions: () =>
+          Promise.reject(
+            new ApiError({
+              code: "INVALID_CREDENTIALS",
+              message: "Email o password non corretti.",
+              status: 401,
+            }),
+          ),
+      }),
+    );
+    await screen.findAllByRole("listitem");
+    expect(letture).toBe(1);
+
+    const utente = userEvent.setup();
+    await utente.type(campo("La tua password"), "sbagliata");
+    await utente.click(bottone("Scollega gli altri"));
+    await screen.findByRole("alert");
+
+    // Una `ricarica` anche qui farebbe sparire e riapparire la lista identica
+    // sotto un messaggio d'errore, come se il guasto riguardasse anche lei — e
+    // costerebbe una richiesta per ogni password digitata male.
+    expect(letture).toBe(1);
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
   });
 });
 

@@ -125,6 +125,45 @@ export const revokeOtherSessionsResponseSchema = z
   })
   .strict();
 
+/**
+ * Una sessione aperta, vista da chi la possiede.
+ *
+ * ## Due campi, e nessun terzo
+ *
+ * Niente indirizzo IP, niente user-agent, niente «ultimo accesso». Non e' una
+ * versione ridotta in attesa di crescere: un elenco che dice da dove e con che
+ * cosa ci si e' collegati, e quando lo si e' fatto l'ultima volta, e' un
+ * registro degli spostamenti di chi lo legge. Lo si costruirebbe per far
+ * riconoscere la sessione da buttare, e intanto esisterebbe anche quando
+ * nessuno ha niente da buttare — leggibile da chiunque prenda in mano uno
+ * qualsiasi dei dispositivi elencati.
+ *
+ * `createdAt` e' il momento del login, non quello dell'ultima rotazione. La
+ * differenza non e' un dettaglio: la riga viva di una famiglia ha un `issuedAt`
+ * che si sposta a ogni giro, cioe' e' esattamente «ultimo accesso» sotto un
+ * altro nome. La nascita e' il minimo sulla famiglia, e distingue «il telefono
+ * di ieri» da «quello di due anni fa» senza dire nient'altro.
+ *
+ * Non c'e' un identificativo, perche' non c'e' un gesto che lo consumi: si
+ * scollegano tutti gli altri insieme, e per quello basta sapere quale e'
+ * `current`. Un id di sessione spedito senza che serva e' un id di sessione che
+ * prima o poi finisce in un log.
+ */
+export const openSessionSchema = z
+  .object({
+    /** ISO, come tutte le date del contratto. */
+    createdAt: z.string(),
+    /** Quella da cui arriva la richiesta: l'unica che «scollega gli altri» risparmia. */
+    current: z.boolean(),
+  })
+  .strict();
+
+export const openSessionsResponseSchema = z
+  .object({
+    sessions: z.array(openSessionSchema),
+  })
+  .strict();
+
 export const refreshRequestSchema = z
   .object({
     refreshToken: z.string().min(1),
@@ -185,6 +224,8 @@ export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export type ChangePasswordRequest = z.infer<typeof changePasswordRequestSchema>;
 export type RevokeOtherSessionsRequest = z.infer<typeof revokeOtherSessionsRequestSchema>;
 export type RevokeOtherSessionsResponse = z.infer<typeof revokeOtherSessionsResponseSchema>;
+export type OpenSession = z.infer<typeof openSessionSchema>;
+export type OpenSessionsResponse = z.infer<typeof openSessionsResponseSchema>;
 export type RefreshRequest = z.infer<typeof refreshRequestSchema>;
 export type LogoutRequest = z.infer<typeof logoutRequestSchema>;
 export type PublicUser = z.infer<typeof publicUserSchema>;

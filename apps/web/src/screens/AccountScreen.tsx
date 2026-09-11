@@ -1,8 +1,10 @@
-import { PASSWORD_MIN_LENGTH } from "@wikimylife/shared";
+import { PASSWORD_MIN_LENGTH, type OpenSessionsResponse } from "@wikimylife/shared";
 import { useState } from "react";
 import { useApi } from "../api";
+import { formatQuando } from "../format";
 import { goBack } from "../router";
 import { messaggioDi, useSession } from "../session";
+import { useAsync, type Async } from "../useAsync";
 
 /**
  * L'account: chi sei, cambia password, esci.
@@ -269,6 +271,17 @@ function ScollegaAltri(): React.JSX.Element {
   const [attesa, setAttesa] = useState(false);
   const [esito, setEsito] = useState<EsitoRevoca>({ kind: "niente" });
 
+  /**
+   * L'elenco vive qui e non in una sezione sua.
+   *
+   * Da solo non servirebbe a niente: e' una lista di date che non si possono
+   * toccare. Accanto al pulsante serve a due cose — dire quanti dispositivi ci
+   * sono *prima* di premere, e dare un metro al numero che torna dopo, perche'
+   * «ne ho scollegate due» significa qualcosa solo a chi sapeva che ce n'erano
+   * tre.
+   */
+  const elenco = useAsync(() => apiClient.listSessions(), [apiClient]);
+
   async function invia(event: React.FormEvent): Promise<void> {
     event.preventDefault();
     setAttesa(true);
@@ -280,7 +293,16 @@ function ScollegaAltri(): React.JSX.Element {
       // un secondo invio involontario partirebbe da solo.
       setPassword("");
       setEsito({ kind: "fatto", quante: revoked });
+      // L'elenco appena mostrato adesso e' falso: ci sono ancora scritti sopra
+      // i dispositivi che questa chiamata ha appena chiuso. Ricaricarlo e' cio'
+      // che trasforma il numero in una verifica — si legge «due» e si vede la
+      // lista accorciarsi di due.
+      elenco.ricarica();
     } catch (error: unknown) {
+      // Nessun `ricarica` di qua: non e' stato revocato niente, quindi la lista
+      // a schermo e' ancora quella giusta, e rileggerla la farebbe sparire e
+      // riapparire identica sotto un messaggio d'errore — come se il guasto
+      // riguardasse anche lei.
       setEsito({ kind: "errore", messaggio: messaggioDi(error) });
     } finally {
       setAttesa(false);
@@ -295,6 +317,8 @@ function ScollegaAltri(): React.JSX.Element {
         bene. Questo dispositivo resta collegato; gli altri dovranno rientrare
         con la stessa password di adesso, che non cambia.
       </p>
+
+      <Dispositivi stato={elenco.stato} />
 
       <form
         onSubmit={(e) => {
@@ -343,5 +367,60 @@ function ScollegaAltri(): React.JSX.Element {
         </button>
       </form>
     </section>
+  );
+}
+
+/**
+ * L'elenco dei dispositivi collegati, e di ognuno una cosa sola.
+ *
+ * ## Perche' una riga di sole date
+ *
+ * Un elenco che dicesse anche da dove e con che cosa ci si e' collegati, e
+ * quando lo si e' fatto l'ultima volta, sarebbe piu' utile nel momento in cui
+ * serve — e un registro degli spostamenti del proprietario in tutti gli altri,
+ * leggibile da chiunque prenda in mano uno qualsiasi dei dispositivi elencati.
+ * La data di nascita basta a distinguere «il telefono di ieri» da «quello di
+ * due anni fa», che e' la domanda vera di chi sta guardando questa lista.
+ *
+ * ## Perche' l'errore e' muto e non un allarme
+ *
+ * Perche' non e' successo niente di grave: il pulsante qui sotto funziona
+ * ancora, e continua a scollegare gli altri dispositivi anche se non si e'
+ * riusciti a contarli. Un `role="alert"` rosso accanto a un modulo intatto
+ * farebbe credere che il gesto sia diventato impossibile, e chi ha appena perso
+ * un telefono smetterebbe di provarci.
+ */
+function Dispositivi({ stato }: { stato: Async<OpenSessionsResponse> }): React.JSX.Element {
+  if (stato.kind === "attesa") {
+    return <p className="muto">Conto i dispositivi collegati…</p>;
+  }
+
+  if (stato.kind === "errore") {
+    return <p className="muto">Non sono riuscito a leggere l&apos;elenco dei dispositivi.</p>;
+  }
+
+  const sessioni = stato.dato.sessions;
+
+  return (
+    <>
+      <ul className="dispositivi">
+        {sessioni.map((sessione, indice) => (
+          // La chiave e' la posizione perche' non c'e' altro: il server manda
+          // due campi e nessun identificativo, di proposito — non esiste un
+          // gesto che ne prenda uno solo. Va bene proprio per quel motivo: la
+          // lista non si riordina e non si modifica a pezzi, si ricarica intera.
+          <li key={indice} className="dispositivo">
+            <span>
+              Collegato {formatQuando(sessione.createdAt) ?? "in un momento che non so leggere"}
+            </span>
+            {sessione.current && <span className="dispositivo__questo">questo dispositivo</span>}
+          </li>
+        ))}
+      </ul>
+      <p className="muto">
+        Di ognuno so soltanto da quando e&apos; collegato: non tengo traccia
+        ne&apos; di dove sei ne&apos; di quando lo hai usato l&apos;ultima volta.
+      </p>
+    </>
   );
 }

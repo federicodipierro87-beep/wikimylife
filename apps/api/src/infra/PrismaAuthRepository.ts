@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import type {
   AuthRepository,
   NewRefreshToken,
+  OpenSessionRecord,
   RefreshTokenRecord,
   UserRecord,
 } from "../services/ports/AuthRepository.js";
@@ -110,6 +111,57 @@ export class PrismaAuthRepository implements AuthRepository {
       data: { revokedAt },
     });
     return result.count;
+  }
+
+  /**
+   * Due interrogazioni, e non una.
+   *
+   * Le due domande non si fanno insieme perche' hanno due soggetti diversi.
+   * «Viva» e' una proprieta' di una riga — quella non revocata — e la trova un
+   * `findMany` sull'indice `userId`. «Nata» e' un minimo su tutte le righe della
+   * famiglia, comprese le decine che la rotazione ha gia' revocato: se la si
+   * chiedesse alla sola riga viva si otterrebbe l'ultima rotazione, che e'
+   * l'informazione che il contratto ha deciso di non raccogliere.
+   *
+   * L'alternativa a una query sola sarebbe leggere ogni riga dell'utente e
+   * aggregare in memoria. Funziona, e trasferisce qualche centinaio di righe per
+   * produrne tre: il `groupBy` fa il minimo dentro Postgres e riporta una riga
+   * per famiglia.
+   *
+   * Fra le due interrogazioni c'e' una finestra: un logout puo' revocare una
+   * famiglia che il `findMany` aveva visto viva, e allora resta elencata una
+   * sessione che non c'e' piu'. Non e' un caso da chiudere con una transazione:
+   * la stessa finestra esiste, e piu' larga, fra la risposta e l'occhio che la
+   * legge. Una lettura di questo tipo e' vera al momento in cui parte, non per
+   * sempre.
+   *
+   * `_min: { issuedAt }` e nessun `orderBy` nel `groupBy`: ordinare per
+   * un'aggregazione si scrive in un modo che nasconde cosa fa, e sono tre righe.
+   */
+  async listOpenSessions(userId: string): Promise<readonly OpenSessionRecord[]> {
+    const vive = await this.#prisma.refreshToken.findMany({
+      where: { userId, revokedAt: null },
+      select: { familyId: true },
+    });
+    if (vive.length === 0) {
+      return [];
+    }
+
+    const nate = await this.#prisma.refreshToken.groupBy({
+      by: ["familyId"],
+      where: { userId, familyId: { in: vive.map((riga) => riga.familyId) } },
+      _min: { issuedAt: true },
+    });
+
+    return nate
+      .map((gruppo) => ({
+        familyId: gruppo.familyId,
+        // Il minimo di un gruppo non vuoto esiste sempre, ma il tipo di Prisma
+        // lo ammette nullable perche' `_min` su zero righe sarebbe null. Il
+        // gruppo viene dal `groupBy` stesso, quindi almeno una riga c'e'.
+        createdAt: gruppo._min.issuedAt ?? new Date(0),
+      }))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
   /**

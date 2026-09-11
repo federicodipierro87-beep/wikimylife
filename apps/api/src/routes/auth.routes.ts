@@ -118,6 +118,25 @@ export function createAuthRouter(deps: {
     res.status(200).json(body);
   });
 
+  /**
+   * `GET /sessions`, e sotto `requireAuth` soltanto.
+   *
+   * Fuori da `rateLimit` per la ragione gia' scritta per `/me`: non accetta
+   * nessun segreto, quindi non c'e' niente da indovinare a colpi di richieste, e
+   * non paga un argon2 per chiamata. Limitarla farebbe un solo danno vero —
+   * spegnere l'elenco proprio a chi ricarica la schermata mentre cerca di capire
+   * quale dispositivo scollegare.
+   *
+   * Convive con `POST /sessions/revoke` senza contendergliela: verbo diverso e
+   * percorso diverso. Vale la pena provarlo, perche' un giorno qualcuno
+   * scrivera' `router.get("/sessions/:id")` e il primo a rompersi sara' l'altro.
+   */
+  router.get("/sessions", deps.requireAuth, async (req, res) => {
+    const { userId, familyId } = authContext(req);
+    const body = await deps.authService.listSessions(userId, familyId);
+    res.status(200).json(body);
+  });
+
   router.get("/me", deps.requireAuth, async (req, res) => {
     const { userId } = authContext(req);
     const user = await deps.authService.me(userId);

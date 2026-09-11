@@ -752,6 +752,136 @@ describe("revokeOtherSessions", () => {
   });
 });
 
+/**
+ * L'elenco che da' un metro al numero di sopra.
+ *
+ * Ogni caso qui guarda un modo diverso in cui la lista puo' mentire, e tutti e
+ * cinque mentono in silenzio — non c'e' niente, nel guardare la schermata, che
+ * distingua un elenco giusto da uno che conta le sessioni chiuse o che mostra
+ * l'ultima rotazione al posto del login.
+ */
+describe("listSessions", () => {
+  it("elenca una riga per dispositivo, e ne marca una sola come questo", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    await harness.service.login({ email: EMAIL, password: PASSWORD });
+    await harness.service.login({ email: EMAIL, password: PASSWORD });
+
+    const { sessions } = await harness.service.listSessions(
+      telefono.user.id,
+      famigliaDi(harness, telefono),
+    );
+
+    expect(sessions).toHaveLength(3);
+    // Una sola, e non zero: un confronto sbagliato — il `familyId` contro
+    // l'`userId`, per dirne uno che compila — lascerebbe tutte le righe a
+    // `false`, e la schermata direbbe «tre dispositivi» senza che nessuno sia
+    // quello in mano. Chi legge premerebbe «scollega gli altri» credendo di
+    // chiuderne tre.
+    expect(sessions.filter((s) => s.current)).toHaveLength(1);
+    expect(sessions.filter((s) => !s.current)).toHaveLength(2);
+  });
+
+  it("la data e' quella del login, non quella dell'ultima rotazione", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const famiglia = famigliaDi(harness, telefono);
+
+    // Due giorni di uso quotidiano, ridotti a due rotazioni. La famiglia adesso
+    // ha tre righe: due revocate e una viva, e la viva e' di oggi.
+    harness.clock.advanceDays(1);
+    const primoGiro = await harness.service.refresh(telefono.tokens.refreshToken);
+    harness.clock.advanceDays(1);
+    await harness.service.refresh(primoGiro.tokens.refreshToken);
+
+    const { sessions } = await harness.service.listSessions(telefono.user.id, famiglia);
+
+    expect(sessions).toHaveLength(1);
+    // Prendere l'`issuedAt` della riga viva sarebbe la cosa naturale da
+    // scrivere, e darebbe «oggi» — cioe' l'ultimo accesso, che e' proprio il
+    // dato che il contratto ha deciso di non raccogliere. La distanza fra le
+    // due letture cresce con l'uso: piu' un dispositivo e' usato, piu' la data
+    // sbagliata lo fa sembrare nuovo.
+    expect(sessions[0]?.createdAt).toBe(T0.toISOString());
+  });
+
+  it("una sessione chiusa sparisce, e le altre restano", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const famiglia = famigliaDi(harness, telefono);
+    const portatile = await harness.service.login({ email: EMAIL, password: PASSWORD });
+
+    // Prima di chiudere ce n'erano due: senza questa riga il caso passerebbe
+    // anche se `listSessions` restituisse sempre la sola sessione corrente.
+    expect((await harness.service.listSessions(telefono.user.id, famiglia)).sessions).toHaveLength(2);
+
+    await harness.service.logout(portatile.tokens.refreshToken);
+
+    const { sessions } = await harness.service.listSessions(telefono.user.id, famiglia);
+    // Senza `revokedAt: null`, l'elenco conterrebbe ogni famiglia mai aperta da
+    // questo utente, e chi cerca un telefono perduto lo vedrebbe ancora li'
+    // dopo averlo scollegato.
+    expect(sessions).toEqual([{ createdAt: T0.toISOString(), current: true }]);
+  });
+
+  it("non mostra le sessioni di un altro utente", async () => {
+    const harness = build();
+    const mio = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    await harness.service.signup({ email: "altro@esempio.it", password: PASSWORD });
+    await harness.service.login({ email: "altro@esempio.it", password: PASSWORD });
+
+    const { sessions } = await harness.service.listSessions(
+      mio.user.id,
+      famigliaDi(harness, mio),
+    );
+
+    // Senza `userId` nella clausola sarebbero quattro, e due di quelle date
+    // direbbero a uno sconosciuto quando un altro si e' collegato.
+    expect(sessions).toEqual([{ createdAt: T0.toISOString(), current: true }]);
+  });
+
+  it("ordina dalla piu' recente, che e' quella che si riconosce", async () => {
+    const harness = build();
+    const vecchio = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    harness.clock.advanceDays(30);
+    await harness.service.login({ email: EMAIL, password: PASSWORD });
+    harness.clock.advanceDays(30);
+    await harness.service.login({ email: EMAIL, password: PASSWORD });
+
+    const { sessions } = await harness.service.listSessions(
+      vecchio.user.id,
+      famigliaDi(harness, vecchio),
+    );
+
+    // L'ordine non e' estetica: chi apre questa schermata cerca il dispositivo
+    // di cui si e' appena accorto, e quello e' l'ultimo arrivato. In fondo alla
+    // lista, dopo sei accessi vecchi, non lo trova.
+    const date = sessions.map((s) => s.createdAt);
+    expect(date).toEqual([...date].sort().reverse());
+    // E la piu' vecchia — quella di chi sta chiedendo — e' in fondo, non in
+    // cima: un ordine che mettesse per primo il chiamante passerebbe il
+    // controllo di sopra e sarebbe comunque sbagliato.
+    expect(sessions[2]).toEqual({ createdAt: T0.toISOString(), current: true });
+  });
+
+  it("non fa uscire il familyId: due campi, e nessun identificativo", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+
+    const { sessions } = await harness.service.listSessions(
+      telefono.user.id,
+      famigliaDi(harness, telefono),
+    );
+
+    // La porta lo restituisce, il servizio lo consuma per `current` e lo butta.
+    // Uno spread al posto della costruzione campo per campo lo farebbe uscire
+    // senza che niente smetta di funzionare, e da quel momento ogni apertura
+    // della schermata spedirebbe un identificativo di sessione a cui non
+    // corrisponde nessun gesto.
+    expect(Object.keys(sessions[0] ?? {}).sort()).toEqual(["createdAt", "current"]);
+  });
+});
+
 describe("me", () => {
   it("restituisce l'utente pubblico", async () => {
     const harness = build();

@@ -30,12 +30,14 @@ import {
   healthResponseSchema,
   logoutResponseSchema,
   meResponseSchema,
+  openSessionsResponseSchema,
   revokeOtherSessionsResponseSchema,
   type AuthSession,
   type ChangePasswordRequest,
   type HealthResponse,
   type LoginRequest,
   type MeResponse,
+  type OpenSessionsResponse,
   type PublicUser,
   type RevokeOtherSessionsRequest,
   type RevokeOtherSessionsResponse,
@@ -159,6 +161,16 @@ export interface ApiClient {
    * in quel caso non ha revocato niente.
    */
   revokeOtherSessions(input: RevokeOtherSessionsRequest): Promise<RevokeOtherSessionsResponse>;
+
+  /**
+   * I dispositivi collegati, con la sola data in cui lo sono diventati.
+   *
+   * Serve a dare un senso al numero che torna da `revokeOtherSessions`: «ne ho
+   * scollegate due» dice qualcosa solo a chi sapeva che ce n'erano tre. Non
+   * c'e' modo di chiuderne una sola — l'elenco si guarda, non si tocca — e la
+   * sola informazione per riga e' quando la sessione e' nata.
+   */
+  listSessions(): Promise<OpenSessionsResponse>;
   getAccessToken(): string | null;
   restoreSession(): Promise<PublicUser | null>;
 
@@ -545,6 +557,20 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         //
         // La rotazione resta dentro la stessa famiglia, che e' proprio quella
         // risparmiata: il token appena ruotato e' ancora buono dopo la revoca.
+        true,
+      );
+    },
+
+    listSessions(): Promise<OpenSessionsResponse> {
+      return send(
+        {
+          method: "GET",
+          path: "/api/auth/sessions",
+          schema: openSessionsResponseSchema,
+          auth: true,
+        },
+        // Con rotazione, e qui senza nemmeno il dubbio che ripetere faccia
+        // danno: e' una lettura.
         true,
       );
     },

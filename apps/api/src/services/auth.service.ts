@@ -2,6 +2,7 @@ import type {
   AuthSession,
   ChangePasswordRequest,
   LoginRequest,
+  OpenSessionsResponse,
   PublicUser,
   RevokeOtherSessionsRequest,
   RevokeOtherSessionsResponse,
@@ -42,6 +43,7 @@ export interface AuthService {
     familyId: string,
     input: RevokeOtherSessionsRequest,
   ): Promise<RevokeOtherSessionsResponse>;
+  listSessions(userId: string, familyId: string): Promise<OpenSessionsResponse>;
   me(userId: string): Promise<PublicUser>;
 }
 
@@ -338,6 +340,51 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       });
 
       return { revoked };
+    },
+
+    /**
+     * L'elenco dei dispositivi collegati, che da' un senso al numero di sopra.
+     *
+     * ## Perche' esiste
+     *
+     * «Ne ho scollegate due» significa qualcosa solo a chi sapeva che ce
+     * n'erano tre. Senza elenco, chi preme «scollega gli altri dispositivi»
+     * preme al buio e legge un numero che non puo' confrontare con niente: non
+     * sa se il telefono perso era fra quelli, non sa se ne era rimasto uno che
+     * non ricordava di aver aperto.
+     *
+     * ## Perche' non chiede la password
+     *
+     * Perche' non fa niente. `revokeOtherSessions` la chiede perche' risparmia
+     * la sessione di chi chiama, e senza verifica sarebbe l'arma perfetta per
+     * chi tiene in mano il telefono rubato. Qui non c'e' niente da impugnare: e'
+     * una lettura, e cio' che mostra — quante sessioni, e da quando — lo sa gia'
+     * chiunque abbia una sessione viva, perche' e' il proprio account.
+     *
+     * ## Perche' il familyId non esce
+     *
+     * La porta lo restituisce, questo metodo lo consuma per marcare `current` e
+     * lo butta. Farlo uscire vorrebbe dire spedire un identificativo di sessione
+     * a ogni apertura della schermata senza che ci sia un gesto che lo usi: il
+     * giorno in cui «chiudi questa sessione» esistera', il campo si aggiunge
+     * allora e non prima.
+     *
+     * ## Perche' non si controlla che l'elenco non sia vuoto
+     *
+     * Non puo' esserlo: si arriva qui attraverso `requireAuth`, che ha appena
+     * verificato che la famiglia di chi chiama e' viva. Una lista vuota
+     * significherebbe che quella verifica e questa lettura non sono d'accordo, e
+     * il posto dove accorgersene e' un test, non un ramo di codice che si
+     * inventa un messaggio per una situazione impossibile.
+     */
+    async listSessions(userId: string, familyId: string): Promise<OpenSessionsResponse> {
+      const aperte = await repo.listOpenSessions(userId);
+      return {
+        sessions: aperte.map((sessione) => ({
+          createdAt: sessione.createdAt.toISOString(),
+          current: sessione.familyId === familyId,
+        })),
+      };
     },
 
     async me(userId: string): Promise<PublicUser> {
