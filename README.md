@@ -1914,6 +1914,94 @@ e — il test che conta più degli altri — che un `X-Forwarded-For` inventato 
 compri un budget nuovo. Ogni test riparte da un server nuovo, perché i conteggi
 stanno in memoria di processo e `resetDatabase()` non li tocca.
 
+`client.e2e.test.ts` è il file che chiude la distanza fra le due metà della
+suite. Fino a lì i test web premevano i pulsanti davanti a un `ApiClient` finto e
+questi parlavano HTTP vero con un `fetch` scritto a mano in `helpers/server.ts`:
+fra le due c'era soltanto un tipo TypeScript, e un tipo non attraversa la rete.
+Il pezzo che nessuno eseguiva era proprio `packages/shared/src/api/client.ts` —
+le ottocento righe che compongono le intestazioni, ruotano i token su un `401`,
+validano le risposte con Zod e scrivono nel deposito sicuro. I suoi test unitari
+lo provano davanti a un `fetchImpl` finto, cioè provano la logica e non il
+contratto.
+
+Qui il client è quello vero e il server è quello vero, in-process. Ogni caso si
+costruisce il proprio client da una fabbrica che installa sempre un `fetchImpl`
+che non sostituisce niente: chiama `fetch` e registra ciò che passa. Registrare
+sempre, e non solo nel blocco che verifica le intestazioni, è la differenza fra
+provarle su una richiesta e provarle su tutte quelle che il file fa partire.
+
+Il `401` non si aspetta, si provoca: il minimo di `ACCESS_TOKEN_TTL_MIN` è un
+minuto, e un test che dorme un minuto è un test che qualcuno toglie. Si
+costruisce invece lo stato esatto in cui l'applicazione si trova dopo un riavvio
+del browser — refresh token nel deposito, memoria vuota — e si chiama una rotta
+autenticata. Il ramo che conta di più però è quello opposto, ed è quello che di
+solito manca: non tutti i `401` parlano della sessione. Su `/api/auth/password` e
+su `/api/auth/sessions/revoke` «credenziali non valide» significa «hai sbagliato
+a digitare», e il token con cui la richiesta è partita è vivo. Trattarlo come gli
+altri farebbe ruotare per niente e poi, al secondo rifiuto identico, svuoterebbe
+la sessione: butterebbe fuori dall'account proprio chi lo stava proteggendo. Il
+caso lo verifica contando le richieste registrate — zero verso
+`/api/auth/refresh` — invece di guardare solo l'errore che torna.
+
+Il giro della scheda è un `it` solo, lungo, e non dodici corti. Ogni passo dipende
+dallo stato che il precedente ha lasciato sul server: `retry` vuole una
+registrazione ancora in `BOZZA_AUDIO`, i byte si scaricano finché sono nel bucket,
+l'esecuzione si registra finché la scheda non è archiviata, la redazione si
+applica finché nessuno ha toccato il testo. Spezzarlo vorrebbe dire ricostruire
+quello stato con chiamate diverse da quelle che si stanno provando — cioè provare
+il ponte costruendo il ponte con qualcos'altro. I due vincoli d'ordine che
+fanno più male hanno anche il loro caso dal verso opposto: un'esecuzione su una
+scheda archiviata è un `409`, un `retry` su una registrazione già diventata
+scheda è un `404`. Senza quei due, «prima di archiviare» resterebbe un commento
+invece di un vincolo.
+
+Lì passano anche i due rami del client che nessun finto può esercitare davvero.
+`deleteRecording` e `deleteProcedureForever` non passano da `send()`: rispondono
+`204`, e `response.json()` su una risposta vuota lancia. Davanti a un finto il
+corpo vuoto lo decide il test; contro un server vero lo decide Express. E
+`getRecordingAudio` è l'unica risposta non-JSON di tutto il client — i byte che
+tornano si confrontano con quelli caricati, `0xff` e `0x80` compresi, che è il
+modo di accorgersi di chi li fa passare per testo.
+
+L'applicazione del CORS da lì **non** è verificabile, e il file lo dice invece di
+fingere: Node non manda `Origin`, quindi il middleware non scatta mai. Ciò che si
+prova è la compatibilità. Il preflight si fa a mano — è l'unico modo di farsi
+dire dal server cosa consente, invece di leggere la costante di `cors.ts` e
+confrontare il codice con sé stesso — e poi ogni intestazione registrata deve
+essere o CORS-safelisted o dentro l'insieme dichiarato. `content-type` non è
+safelisted, perché lo è solo con tre valori e `application/json` non è fra
+quelli. Accanto c'è il caso senza il quale quell'asserzione passerebbe anche
+contro un insieme che contiene tutto: `x-finto` non deve essere consentito. E il
+caricamento dell'audio ha il suo, dal verso in cui fa male: passando una
+`FormData` il client non deve scrivere il `Content-Type`, perché il boundary lo
+conosce solo il runtime che l'ha costruita — scriverlo a mano significherebbe un
+`400` su ogni registrazione, cioè sul gesto principale dell'applicazione.
+
+L'ultimo blocco è una guardia, e legge ciò che i cinque precedenti hanno
+attraversato. La fabbrica avvolge ogni metodo del client per segnarne il nome in
+un insieme; alla fine si confronta quell'insieme con `Object.keys` del client
+vero. Funziona perché `createApiClient` restituisce un oggetto letterale e non
+un'istanza di classe. `getAccessToken` è l'unico esente, perché è sincrono e non
+fa HTTP; tutto il resto deve essere passato di là dal ponte, e il fallimento
+nomina i metodi scoperti invece di contarli — chi lo legge è quasi sempre chi ha
+appena aggiunto il metodo e non sa ancora che questo file esiste. Accanto, come
+in `guards.test.ts`, il caso che verifica che la guardia stia guardando
+qualcosa: i metodi sono ventisette. Senza, un `Object.keys` che tornasse vuoto —
+per un refactoring del client da oggetto letterale a classe, che è una
+riscrittura plausibile — renderebbe la guardia verde per sempre, e nessuno se ne
+accorgerebbe perché i test verdi non si rileggono.
+
+Venti mutazioni su `client.ts`, venti cadute: l'`Authorization` tolta dal filo,
+il `Content-Type` tolto alle richieste JSON e aggiunto al multipart,
+un'intestazione che il server non ha mai dichiarato, il ritenta sul `401` spento,
+il refresh token scritto sotto la chiave sbagliata, l'access token conservato
+anche lui nel deposito, il `401` sul corpo trattato come un `401` sulla sessione
+— una volta in tutti e due i punti insieme e una volta per punto — la sessione
+morta dichiarata due volte, il `204` letto come se fosse JSON, i due parametri
+dello svuotamento del cestino, la cancellazione definitiva degradata ad
+archiviazione, le conferme della redazione perse per strada, la ricerca senza la
+parola cercata.
+
 `DATABASE_URL_TEST` non ha un valore di default, di proposito: i test fanno
 `TRUNCATE`, e un default che puntasse al database di sviluppo lo svuoterebbe in
 silenzio. Le cinque `S3_*_TEST` seguono la stessa regola per la stessa ragione, e
@@ -2756,17 +2844,25 @@ Non installate, e il perché:
   coprire: che il pulsante di registrazione sia davvero collegato al microfono
   non lo dice nessun test, perché `MediaRecorder` in un ambiente finto è un
   oggetto che finge. Lo dice solo premerlo su un telefono vero.
-- **Fra la schermata e il server non passa mai un byte.** I casi web premono i
-  pulsanti davanti a un `ApiClient` finto, quelli di integrazione parlano HTTP
-  vero senza nessuna schermata sopra, e le due metà si toccano solo attraverso
-  un tipo TypeScript. Basta a garantire che «È cambiata» mandi `CAMBIATA` e che
-  un `CAMBIATA` ricevuto riporti la scheda in `DA_RIVEDERE`; non basta a
-  garantire che quel `POST` parta davvero da quel browser. Tutto ciò che sta
-  fuori dai tipi resta scoperto — un `fetch` che non allega l'header, una CORS
-  che rifiuta, una risposta che il client vero decodifica diversamente dal
-  finto — e sono guasti che rompono l'applicazione intera lasciando verdi
-  entrambe le suite. Chiuderlo vorrebbe dire un browser pilotato, cioè una
-  terza infrastruttura di test; per ora il ponte è la compilazione.
+- **Il ponte arriva al client vero, e si ferma sotto la schermata.**
+  `client.e2e.test.ts` fa parlare l'`ApiClient` vero con il server vero, quindi
+  un `fetch` che non allega l'header o una risposta che il client decodifica
+  diversamente dal finto adesso si vedono. Ciò che resta scoperto è sopra e
+  intorno. **Sopra:** React, gli hook e la coda offline restano davanti a un
+  client finto, e che quel pulsante chiami *quel* metodo lo dice ancora soltanto
+  un tipo TypeScript; il service worker non è eseguito da nessun test. **Il
+  CORS:** dal Node dei test non parte mai un `Origin`, quindi il middleware non
+  scatta e ciò che si verifica è la dichiarazione — che ogni intestazione mandata
+  sia fra quelle consentite — non il rifiuto di un'origine estranea, che resta
+  materia di `cors.e2e.test.ts` e di `fetch` a mano. **Ai lati:** la metà
+  assistita della §9 non gira (il provider è spento, e la risposta dice
+  `NON_CONFIGURATA`), la metà semantica della ricerca non si distingue da quella
+  full-text perché gli embedding finti sono quasi ortogonali, il single-flight
+  della rotazione non è provato sotto concorrenza — due `401` in parallelo
+  potrebbero ancora bruciare due token senza che nulla fallisca — e i byte
+  dell'audio vengono da un `Blob` costruito a mano, non da `MediaRecorder`.
+  Chiudere il primo residuo vorrebbe dire un browser pilotato, cioè una terza
+  infrastruttura di test.
 - **I minuti che restano sono una stima, non una misura.** L'avviso sopra il
   pulsante di registrazione moltiplica lo spazio libero per una costante di byte
   al secondo decisa a tavolino, perché `MediaRecorder` non dichiara il bitrate

@@ -113,7 +113,7 @@ ventitré cadute.
 
 ---
 
-## Il giro in corso, tre quarti fatto
+## Il giro appena chiuso, quattro su quattro
 
 Quattro attività scelte dall'elenco dei difetti noti, una per commit.
 
@@ -122,7 +122,7 @@ Quattro attività scelte dall'elenco dei difetti noti, una per commit.
 | 1 | MinIO sotto la scopa: uno storage vero nei test d'integrazione | fatto, `8d5f608` |
 | 2 | svuotare il cestino in un gesto solo | fatto, `9fb2126` |
 | 3 | l'elenco delle sessioni aperte, con la sola data di nascita | fatto, `c9184c0` |
-| 4 | il ponte fra la schermata e il server | da fare, **e c'è una domanda** |
+| 4 | il ponte fra il client vero e il server vero | fatto, `HEAD` |
 
 ### 1 — fatto
 
@@ -202,11 +202,54 @@ non è aggiungere un caso: è che una mutazione possa toccare **più punti insie
 perché il difetto vero è dimenticare lo scope in tutti e due i posti. Vale ogni
 volta che la stessa precauzione è scritta due volte.
 
-### 4 — c'è una domanda aperta
+### 4 — fatto
 
-Prima di cominciare il quarto va chiesto all'utente se vuole un browser pilotato
-(Playwright, una dipendenza pesante) o un ponte più leggero: l'`ApiClient` vero
-contro il server HTTP vero, senza schermata.
+La domanda aperta è stata chiusa dall'utente: **niente Playwright**. Il ponte è
+l'`ApiClient` vero contro il server HTTP vero, in Node, senza schermata sopra —
+ampiezza «il giro intero più una guardia», e il CORS provato come dichiarazione e
+non come applicazione.
+
+Un file solo, `tests/integration/client.e2e.test.ts`, **29 casi** in sei
+blocchi: la sessione, la rotazione dopo un 401, il giro completo della scheda,
+le risposte senza corpo e il cestino, le intestazioni sul filo, la guardia.
+Niente altro toccato: né il client né il server.
+
+Stato all'ultimo commit: typecheck verde sui quattro passaggi, **959 test**
+unit + web su 44 file (invariati, com'era giusto), **367** d'integrazione su 14
+file, albero pulito.
+
+Le decisioni che il diff non racconta stanno nel README, nella sezione dei test.
+Qui restano le quattro cose che costano tempo se non si sanno:
+
+- **Il 401 non si aspetta, si provoca.** `ACCESS_TOKEN_TTL_MIN` ha un minimo di
+  un minuto (`apps/api/src/config/env.ts`), e un test che dorme un minuto è un
+  test che qualcuno toglie. Si costruisce invece un secondo client con il refresh
+  token dell'altro nel deposito e la memoria vuota: è lo stato esatto dopo un
+  riavvio del browser.
+- **`refresh()` non lo attraversa la rotazione automatica.** Il giro sul 401
+  chiama la funzione interna `rotate()`, non il metodo pubblico. Senza un caso
+  che lo chiami a mano, la guardia del blocco 6 lo segnala come scoperto — ed è
+  stato il primo fallimento vero del file.
+- **Una scheda nasce con `volteEseguita: 1`**, non zero: la §6 conta come prima
+  esecuzione il fatto stesso di averla raccontata. Dopo una `recordExecution` il
+  numero è due.
+- **`restoreProcedure` non esiste.** Ripescare dal cestino è
+  `updateProcedure(id, { status: "DA_RIVEDERE" })`, e il servizio non lo blocca
+  su una `ARCHIVIATA`.
+
+Venti mutazioni, venti cadute. Due valgono come metodo, e continuano il discorso
+del terzo:
+
+- `sbagliatoIlCorpo` è letto in due punti di `execute` (il ramo che ruota e
+  quello che svuota la sessione). Le mutazioni sono **tre**: una che spegne la
+  variabile e quindi tocca entrambi i punti insieme, e una per punto. Sono tutte
+  e tre cadute, quindi i due rami sono davvero pinzati separatamente — è la
+  verifica che il terzo giro suggeriva di fare.
+- La guardia «senza token conservato non si chiede niente al server» ha avuto
+  bisogno di una mutazione a **due sostituzioni**: il `return null` di
+  `restoreSession` e il `throw` di `rotate()` proteggono la stessa cosa, e
+  toglierne uno solo è una mutazione equivalente — l'altro fermerebbe comunque la
+  richiesta prima che parta.
 
 ---
 
@@ -215,11 +258,14 @@ contro il server HTTP vero, senza schermata.
 L'elenco intero è la sezione `## Cosa non c'è ancora, e si sa` del README, ed è
 la prima cosa da leggere per decidere cosa fare dopo. I tre più grossi:
 
-- **Fra la schermata e il server non passa mai un byte.** I test web premono i
-  pulsanti davanti a un `ApiClient` finto, quelli d'integrazione parlano HTTP
-  vero senza schermata sopra, e le due metà si toccano solo attraverso un tipo
-  TypeScript. Un `fetch` che non allega l'header o una CORS che rifiuta lasciano
-  verdi entrambe le suite.
+- **Il ponte arriva al client vero, e si ferma sotto la schermata.** Adesso
+  l'`ApiClient` vero parla con il server vero, ma sopra di lui React, gli hook e
+  la coda offline restano davanti a un finto, e il service worker non lo esegue
+  nessuno. Restano fuori anche: il rifiuto di un'origine estranea (da Node non
+  parte un `Origin`, quindi si prova la dichiarazione e non l'applicazione), la
+  metà assistita della §9, la metà semantica della ricerca, il single-flight
+  della rotazione sotto concorrenza, e i byte dell'audio, che vengono da un
+  `Blob` e non da `MediaRecorder`.
 - **Del dettaglio restano circa cinquecento righe senza casi** — campi stampati,
   sommario, trascrizione, player. È una scelta dichiarata (se spariscono si vede
   aprendo la pagina), non una dimenticanza.
