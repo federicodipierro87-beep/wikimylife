@@ -113,7 +113,7 @@ ventitré cadute.
 
 ---
 
-## Il giro in corso, a metà
+## Il giro in corso, tre quarti fatto
 
 Quattro attività scelte dall'elenco dei difetti noti, una per commit.
 
@@ -121,8 +121,8 @@ Quattro attività scelte dall'elenco dei difetti noti, una per commit.
 |---|---|---|
 | 1 | MinIO sotto la scopa: uno storage vero nei test d'integrazione | fatto, `8d5f608` |
 | 2 | svuotare il cestino in un gesto solo | fatto, `9fb2126` |
-| 3 | l'elenco delle sessioni aperte, con la sola data di nascita | da fare |
-| 4 | il ponte fra la schermata e il server | da fare |
+| 3 | l'elenco delle sessioni aperte, con la sola data di nascita | fatto, `c9184c0` |
+| 4 | il ponte fra la schermata e il server | da fare, **e c'è una domanda** |
 
 ### 1 — fatto
 
@@ -164,6 +164,43 @@ vuoto, e siccome `.svuota` ha un `border-top` disegnava una riga che separava
 il *pulsante* — che ha una sua condizione e spariva lo stesso. Il caso nuovo
 guarda il contenitore (`container.querySelector(".svuota")`), come già fa
 `pending.test.tsx`, e quella mutazione cade.
+
+### 3 — fatto
+
+`c9184c0`, «vedere quali dispositivi sono collegati, e da quando».
+`GET /api/auth/sessions` e l'elenco dentro la sezione «Scollega gli altri
+dispositivi», non in una sezione sua. Ventidue casi nuovi su quattro project:
+sei nel servizio, tre nel client, sette nella schermata, sei — poi sette, con
+l'ordine — contro Postgres.
+
+Stato all'ultimo commit: typecheck verde sui quattro passaggi, **959 test**
+unit + web su 44 file, **338** d'integrazione su 13 file, albero pulito.
+
+Le due decisioni prese con l'utente prima di scrivere, e che il diff non
+racconta: **solo l'elenco**, niente «chiudi questa sessione» per riga; e la
+**data di nascita** (`MIN(issuedAt)` su tutta la famiglia) e non l'`issuedAt`
+della riga viva, che sarebbe «ultimo accesso» sotto un altro nome. Entrambe
+stanno nel README, insieme alla ragione delle due interrogazioni nell'adattatore
+invece di una. Qui non si ripetono.
+
+Due cose emerse strada facendo, che vale la pena ricordare:
+
+- Il nome `session` era già occupato: `authSessionSchema` è la sessione di
+  login (utente + token). Il contratto nuovo si chiama `openSession*`, e la
+  porta restituisce `OpenSessionRecord`.
+- Il piano diceva di mettere i casi della rotta in `tests/unit/routes.test.ts`.
+  Quel file prova il router **a hash del web**, non le rotte Express — che
+  nessun test unitario tocca. I casi della rotta sono finiti
+  nell'integrazione, quelli di percorso e verbo in `apiClient.test.ts`.
+
+Ventiquattro mutazioni, ventiquattro cadute. **Una cosa da ricordare sul
+metodo**, per il prossimo `muta.py`: una mutazione è sopravvissuta al primo giro
+perché *equivalente*, non perché il test fosse debole. Lo `userId` è scritto in
+tutte e due le interrogazioni — quella che trova le famiglie vive e quella che
+ne calcola la nascita — e toglierlo da una sola non cambia il risultato. La cura
+non è aggiungere un caso: è che una mutazione possa toccare **più punti insieme**,
+perché il difetto vero è dimenticare lo scope in tutti e due i posti. Vale ogni
+volta che la stessa precauzione è scritta due volte.
 
 ### 4 — c'è una domanda aperta
 
