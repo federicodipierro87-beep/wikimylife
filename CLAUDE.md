@@ -253,6 +253,52 @@ del terzo:
 
 ---
 
+## Il giro nuovo, appena cominciato
+
+Quattro attività scelte dai difetti noti, più una correzione che viene prima di
+tutto. Una per commit, come sempre.
+
+| | | stato |
+|---|---|---|
+| 0 | due difetti noti sbagliati, riscritti | in corso |
+| 1 | `RecordScreen`: il gesto principale dell'app, senza nessun caso | da fare |
+| 2 | `ReviewScreen` e `ProcedureCard`, le altre due scoperte | da fare |
+| 3 | svuotare un cestino grosso senza incontrare il timeout di un proxy | da fare |
+| 4 | chiudere **una** sessione sola | da fare |
+
+### 0 — le due correzioni
+
+Scritte nel giro scorso, sbagliate tutte e due, trovate rileggendo prima di
+proporre il giro nuovo:
+
+- Il residuo del ponte diceva che «il single-flight della rotazione non è provato
+  sotto concorrenza». **Falso**: `tests/unit/apiClient.test.ts:292`, «due
+  richieste parallele condividono una sola rotazione», mette due `me()` in un
+  `Promise.all`, li fa fallire entrambi con `401` e conta una sola chiamata a
+  `refresh`. Il residuo vero è più piccolo: non è provato **contro un server
+  vero**, cioè contro uno che la rilevazione del riuso ce l'ha davvero.
+- «Di schermate ne sono provate sette». Sono **nove** su dodici: l'elenco non
+  citava `account.test.tsx` (30 casi) né `trash.test.tsx` (20), aggiunti nei due
+  giri scorsi. Le tre senza nessun caso sono `RecordScreen`, `ReviewScreen` e
+  `ProcedureCard` — ed è da lì che nascono le attività 1 e 2.
+
+È la seconda volta che scrivo un difetto noto falso, e la regola che lo vieta è
+già scritta qui sopra. Il modo per non farlo una terza volta non è ricordarsela:
+è che ogni frase della forma «non è provato che X» sia preceduta da un `grep`,
+sempre, anche quando sono sicuro.
+
+### 4 — una decisione che si ribalta, e va detto
+
+Un giro fa, sull'elenco delle sessioni, si è deciso **solo l'elenco, niente
+«chiudi questa sessione» per riga**. Adesso si fa il contrario, e la scelta è
+dell'utente. Il vincolo che resta dal ragionamento di allora: l'id di sessione
+non deve esistere nel contratto **prima** del gesto che lo consuma — un id che
+gira in ogni risposta senza che nessuno lo usi è solo un id che prima o poi
+finisce in un log. Quindi l'id, la rotta che revoca e il pulsante atterrano
+**insieme**, in un commit solo, su quattro project.
+
+---
+
 ## Cosa resta scoperto
 
 L'elenco intero è la sezione `## Cosa non c'è ancora, e si sa` del README, ed è
@@ -264,11 +310,15 @@ la prima cosa da leggere per decidere cosa fare dopo. I tre più grossi:
   nessuno. Restano fuori anche: il rifiuto di un'origine estranea (da Node non
   parte un `Origin`, quindi si prova la dichiarazione e non l'applicazione), la
   metà assistita della §9, la metà semantica della ricerca, il single-flight
-  della rotazione sotto concorrenza, e i byte dell'audio, che vengono da un
-  `Blob` e non da `MediaRecorder`.
-- **Del dettaglio restano circa cinquecento righe senza casi** — campi stampati,
-  sommario, trascrizione, player. È una scelta dichiarata (se spariscono si vede
-  aprendo la pagina), non una dimenticanza.
+  della rotazione **contro un server vero** (davanti a un `fetch` finto è
+  provato: `apiClient.test.ts`, «due richieste parallele condividono una sola
+  rotazione»), e i byte dell'audio, che vengono da un `Blob` e non da
+  `MediaRecorder`.
+- **Tre schermate su dodici non hanno nessun caso**: `RecordScreen` — il gesto
+  principale dell'app — `ReviewScreen` e `ProcedureCard`. E del dettaglio
+  restano circa cinquecento righe senza casi — campi stampati, sommario,
+  trascrizione, player: quella è una scelta dichiarata (se spariscono si vede
+  aprendo la pagina), le tre schermate no.
 - **La scopa ha un bucket vero sotto, ma quel bucket è MinIO.** Le differenze
   che restano fuori sono quelle fra MinIO e S3 vero: i 503 sotto carico, la
   coerenza eventuale, i limiti di richieste al secondo.

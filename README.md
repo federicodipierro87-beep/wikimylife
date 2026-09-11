@@ -2828,10 +2828,12 @@ Non installate, e il perché:
   (`[nome 1]`, `[nome 2]`) avrebbe conservato la struttura e insieme un dato in
   più — quante persone distinte comparivano — che è esattamente ciò che una
   scheda condivisa non deve dire.
-- **Di schermate ne sono provate sette, e non è la stessa cosa di sette
-  schermate provate.** Redazione, ingresso, registrazioni in sospeso, elenco,
-  ricerca, player dell'audio e dettaglio hanno i loro casi, scelti perché lì una
-  regressione non ha sintomi. Il resto no. Del dettaglio sono provati quattro
+- **Di schermate ne sono provate nove su dodici, e non è la stessa cosa di nove
+  schermate provate.** Account, redazione, ingresso, registrazioni in sospeso,
+  elenco, ricerca, cestino, player dell'audio e dettaglio hanno i loro casi,
+  scelti perché lì una regressione non ha sintomi. Le tre che non hanno **nessun
+  caso** sono `RecordScreen` — cioè il gesto principale dell'app —
+  `ReviewScreen` e `ProcedureCard`. Del dettaglio sono provati quattro
   punti su cinquecento righe — la voce che si butta, i tre esiti, le due porte
   verso altrove, i riferimenti che escono dall'app — e tutto ciò che sta in
   mezzo non ha nessun caso: i campi stampati, il sommario in cima, il blocco
@@ -2858,8 +2860,12 @@ Non installate, e il perché:
   assistita della §9 non gira (il provider è spento, e la risposta dice
   `NON_CONFIGURATA`), la metà semantica della ricerca non si distingue da quella
   full-text perché gli embedding finti sono quasi ortogonali, il single-flight
-  della rotazione non è provato sotto concorrenza — due `401` in parallelo
-  potrebbero ancora bruciare due token senza che nulla fallisca — e i byte
+  della rotazione è provato ma soltanto davanti a un `fetch` finto
+  (`tests/unit/apiClient.test.ts`, «due richieste parallele condividono una sola
+  rotazione»: due `me()` in `Promise.all`, entrambi `401`, e si conta una sola
+  chiamata a `refresh`) — che due `401` in parallelo non brucino due token
+  contro un server che la rilevazione del riuso ce l'ha per davvero non lo dice
+  nessuno — e i byte
   dell'audio vengono da un `Blob` costruito a mano, non da `MediaRecorder`.
   Chiudere il primo residuo vorrebbe dire un browser pilotato, cioè una terza
   infrastruttura di test.
