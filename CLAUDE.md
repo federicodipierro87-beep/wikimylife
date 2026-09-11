@@ -122,7 +122,7 @@ Quattro attività scelte dall'elenco dei difetti noti, una per commit.
 | 1 | MinIO sotto la scopa: uno storage vero nei test d'integrazione | fatto, `8d5f608` |
 | 2 | svuotare il cestino in un gesto solo | fatto, `9fb2126` |
 | 3 | l'elenco delle sessioni aperte, con la sola data di nascita | fatto, `c9184c0` |
-| 4 | il ponte fra il client vero e il server vero | fatto, `HEAD` |
+| 4 | il ponte fra il client vero e il server vero | fatto, `024ea02` |
 
 ### 1 — fatto
 
