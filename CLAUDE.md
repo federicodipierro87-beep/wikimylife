@@ -261,7 +261,7 @@ tutto. Una per commit, come sempre.
 | | | stato |
 |---|---|---|
 | 0 | due difetti noti sbagliati, riscritti | fatto, `36a6f8c` |
-| 1 | `RecordScreen`: il gesto principale dell'app, senza nessun caso | fatto, `HEAD` |
+| 1 | `RecordScreen`: il gesto principale dell'app, senza nessun caso | fatto, `dd84304` |
 | 2 | `ReviewScreen` e `ProcedureCard`, le altre due scoperte | da fare |
 | 3 | svuotare un cestino grosso senza incontrare il timeout di un proxy | da fare |
 | 4 | chiudere **una** sessione sola | da fare |
