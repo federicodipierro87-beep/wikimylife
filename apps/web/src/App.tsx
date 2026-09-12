@@ -174,8 +174,13 @@ function BarraBassa(): React.JSX.Element {
  *
  * `role="alert"` e non `status`: interrompere la lettura e' proporzionato,
  * perche' e' l'unico avviso dell'app che non aspetta.
+ *
+ * Esportato per poterlo montare da solo. Sta dentro `App` perche' deve
+ * comparire sopra qualunque schermata — l'audio si perde anche mentre si
+ * guarda un'altra pagina — ma le sue decisioni sono sue, e raggiungerle
+ * passando da `App` vorrebbe dire prima una sessione, un router e un client.
  */
-function NonSalvata(): React.JSX.Element | null {
+export function NonSalvata(): React.JSX.Element | null {
   const capture = useCapture();
   const reg = capture.nonSalvata;
   if (reg === null) {

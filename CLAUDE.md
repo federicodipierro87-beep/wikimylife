@@ -260,8 +260,8 @@ tutto. Una per commit, come sempre.
 
 | | | stato |
 |---|---|---|
-| 0 | due difetti noti sbagliati, riscritti | in corso |
-| 1 | `RecordScreen`: il gesto principale dell'app, senza nessun caso | da fare |
+| 0 | due difetti noti sbagliati, riscritti | fatto, `36a6f8c` |
+| 1 | `RecordScreen`: il gesto principale dell'app, senza nessun caso | fatto, `HEAD` |
 | 2 | `ReviewScreen` e `ProcedureCard`, le altre due scoperte | da fare |
 | 3 | svuotare un cestino grosso senza incontrare il timeout di un proxy | da fare |
 | 4 | chiudere **una** sessione sola | da fare |
@@ -286,6 +286,43 @@ proporre il giro nuovo:
 già scritta qui sopra. Il modo per non farlo una terza volta non è ricordarsela:
 è che ogni frase della forma «non è provato che X» sia preceduta da un `grep`,
 sempre, anche quando sono sicuro.
+
+### 1 — fatto
+
+`tests/web/record.test.tsx`, **ventuno casi** su `RecordScreen` e `NonSalvata`.
+Da **959 su 44 file** a **980 su 45**. Ventitré mutazioni, ventitré cadute.
+
+Il caso che vale da solo l'intero file: `premi()` fa `await capture.stop()` e
+**poi** `navigate({ name: "lista" })`, e quell'ordine è tutta la garanzia che
+un salvataggio fallito non mandi via l'utente dalla schermata dove c'è scritto
+come recuperare l'audio. Il caso non guarda un messaggio: guarda che dopo un
+`stop()` fallito `window.location.hash` sia rimasto dov'era.
+
+Tre cose sul metodo, che serviranno di nuovo nell'attività 2:
+
+- **Due esportazioni fatte per i test, e dichiarate come tali.**
+  `CaptureContext` (prima privato) e `NonSalvata` (prima interno a `App`).
+  L'alternativa era montare `CaptureProvider`, che costruisce da sé un
+  `MediaRecorder`, un GPS e un IndexedDB: tre finti di hardware per provare che
+  un pulsante cambia etichetta. Il commento sopra ciascuna esportazione dice
+  perché esiste, così nessuno la scambia per una porta aperta.
+- **`navigate()` si verifica leggendo `window.location.hash`**, non sostituendo
+  il modulo del router. Un finto direbbe che la schermata ha chiamato una
+  funzione; l'hash dice dove si è finiti. In `jsdom` funziona senza niente
+  intorno, basta un `beforeEach` che lo riporti a `#/registra` — senza, l'hash
+  lasciato dal caso prima fa passare per «non ha navigato» un caso che ha
+  navigato.
+- **Due montaggi nello stesso caso vogliono `within(container)`.** `screen`
+  cerca in tutto il documento, quindi un'asserzione di assenza fatta dopo il
+  secondo montaggio trova l'elemento del primo e passa al contrario. È successo
+  scrivendo il caso di «Annulla», ed è il tipo di errore che rende un test
+  verde e inutile.
+
+E una nota sul `muta.py`: una mutazione è stata **saltata** al primo giro perché
+la stringa `da` aveva due spazi di indentazione in più di quella vera. Saltata
+non è caduta, e contarla fra le cadute sarebbe stato un falso. Da qui l'indice
+opzionale sulla riga di comando (`python muta.py 20`), che rifà girare una
+mutazione sola invece di venti minuti di suite.
 
 ### 4 — una decisione che si ribalta, e va detto
 
@@ -314,8 +351,8 @@ la prima cosa da leggere per decidere cosa fare dopo. I tre più grossi:
   provato: `apiClient.test.ts`, «due richieste parallele condividono una sola
   rotazione»), e i byte dell'audio, che vengono da un `Blob` e non da
   `MediaRecorder`.
-- **Tre schermate su dodici non hanno nessun caso**: `RecordScreen` — il gesto
-  principale dell'app — `ReviewScreen` e `ProcedureCard`. E del dettaglio
+- **Due schermate su dodici non hanno nessun caso**: `ReviewScreen` — dove si
+  decide cosa fare di un duplicato sospetto — e `ProcedureCard`. E del dettaglio
   restano circa cinquecento righe senza casi — campi stampati, sommario,
   trascrizione, player: quella è una scelta dichiarata (se spariscono si vede
   aprendo la pagina), le tre schermate no.

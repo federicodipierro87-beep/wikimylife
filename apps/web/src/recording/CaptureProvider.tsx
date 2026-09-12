@@ -106,7 +106,20 @@ export interface Capture {
   scarta(): void;
 }
 
-const CaptureContext = createContext<Capture | null>(null);
+/**
+ * Esportato, e non solo attraverso `CaptureProvider`.
+ *
+ * Il provider costruisce da se' i tre adattatori (`useRef(new ...)`), e due di
+ * loro parlano con hardware che in `jsdom` non esiste: montarlo in un test
+ * vorrebbe dire un `MediaRecorder` finto, un GPS finto e un IndexedDB finto per
+ * provare che un pulsante cambia etichetta. Con il contesto esportato, chi prova
+ * una schermata le passa un `Capture` scritto a mano — che e' esattamente cio'
+ * che la schermata vede — e gli adattatori restano fuori dal discorso.
+ *
+ * Non e' una porta aperta all'applicazione: in `src` nessuno lo usa fuori di
+ * qui, perche' `useCapture()` e' piu' stretto e sbaglia prima.
+ */
+export const CaptureContext = createContext<Capture | null>(null);
 
 /**
  * Quanto spazio dice di avere il browser, o `null` se non lo dice.

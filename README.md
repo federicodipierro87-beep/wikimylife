@@ -1373,7 +1373,7 @@ sezione. Il worker non ha altri test perché il suo entry point finisce con un
 `await main()`: entrambe le decisioni stanno in un modulo a parte esattamente
 per poter essere provate.
 
-**web** monta otto fra schermate e pezzi di schermata in `jsdom` e ne prova le
+**web** monta undici fra schermate e pezzi di schermata in `jsdom` e ne prova le
 proprietà, non l'aspetto. Non è una copertura: è l'elenco dei posti dove una
 regressione non produce nessun sintomo visibile.
 
@@ -1615,14 +1615,74 @@ e vengono messe a mano: tengono l'elenco di ciò che hanno creato e revocato, ch
 è l'unico modo di dire che l'URL revocato è *quello* — chiamarla il numero
 giusto di volte sull'oggetto sbagliato passerebbe qualunque conteggio.
 
+Della registrazione, l'ordine di due righe. È la schermata più importante
+dell'app e quella con meno cose dentro, e per anni è rimasta senza un caso
+proprio perché *sembra* non decidere niente: un pulsante, un contatore, una
+frase. In realtà decide cinque cose, e la prima vale da sola l'intero file.
+`premi()` fa `await capture.stop()` e **poi** `navigate({ name: "lista" })`.
+Quell'ordine è tutta la garanzia: se il salvataggio fallisce, l'eccezione salta
+la navigazione e chi ha parlato resta qui, davanti all'avviso che spiega come
+recuperare l'audio. Spostare la navigazione in un `finally`, o metterla prima
+dell'`await` — che è come la si scrive quando si ottimizza la reattività —
+produce una schermata che passa ogni prova manuale, perché a mano il
+salvataggio riesce sempre, e che il giorno in cui il telefono è pieno porta
+l'utente alla lista con aria soddisfatta mentre dieci minuti di parlato stanno
+per essere raccolti dal garbage collector. Il caso non guarda un messaggio:
+guarda che dopo un `stop()` fallito l'hash sia rimasto dov'era.
+
+Le altre quattro sono l'avviso dello spazio e il microfono. L'avviso compare
+**prima** di premere e sparisce a microfono acceso, perché a quel punto l'unica
+cosa che può ottenere è far interrompere chi sta parlando: i due casi usano lo
+stesso `spazio` e cambiano solo il momento, che è l'unico modo di dire che è il
+momento a decidere. «Non lo so» non diventa «pieno» — Safari senza
+`navigator.storage`, un contesto non sicuro, una `estimate()` che ha lanciato
+sono tre modi di non sapere, e trasformarli in un avviso vorrebbe dire
+spaventare chi lo spazio ce l'ha, su un intero browser, per sempre. E «pieno»
+avvisa senza impedire: il caso verifica che il pulsante resti premibile e che
+premerlo accenda davvero il microfono, perché un `disabled` aggiunto per
+prudenza cancellerebbe la decisione scritta in `spazio.ts` — fra un avviso
+sbagliato e una registrazione mai fatta, la seconda è la perdita peggiore.
+Infine il microfono che manca: si dice, e non si mostra un pulsantone che non
+farebbe niente, che sarebbe la peggiore delle due schermate.
+
+Nello stesso file l'avviso dell'audio non salvato, che vive sopra ogni
+schermata e ha una decisione sola: quale delle tre uscite mostrare. «Riprova a
+salvare» c'è solo quando è mancato lo spazio, perché è l'unico caso in cui
+premerlo può cambiare qualcosa — se IndexedDB non c'è proprio, riprovare
+fallisce identico. Mostrarlo sempre non rompe niente: fa premere un pulsante
+che fallirà ogni volta, con un audio che vive solo finché la scheda resta
+aperta. I casi guardano i due versi, e poi che i tre pulsanti chiamino tre cose
+diverse: due pulsanti collegati allo stesso gesto sono il modo più silenzioso
+di perdere una registrazione, perché uno «Scarica» che scarta non lascia
+traccia. E che senza niente da salvare il riquadro **non esista** nel DOM — si
+guarda il contenitore e non i pulsanti, per la ragione imparata sul cestino: un
+riquadro vuoto con il suo bordo disegna una riga in cima all'applicazione che
+nessuno collega a una riga di codice.
+
+Per arrivarci, due cose sono esportate apposta. `CaptureContext`, perché
+`CaptureProvider` costruisce da sé un `MediaRecorder`, un GPS e un IndexedDB, e
+montarlo vorrebbe dire tre finti di hardware per provare che un pulsante cambia
+etichetta; con il contesto in mano il test passa alla schermata un `Capture`
+scritto a mano, che è esattamente ciò che la schermata vede. E `NonSalvata`,
+che sta dentro `App` perché deve comparire sopra qualunque pagina, ma le cui
+decisioni sono sue: raggiungerle passando da `App` avrebbe richiesto prima una
+sessione, un router e un client. Il finto della cattura lancia sui metodi non
+insegnati come quello dell'API, con una differenza che vale la pena sapere —
+`premi()` ha un `try/catch`, quindi un `stop()` non insegnato non fa esplodere
+il test: finisce nell'avviso rosso della schermata, cioè in uno degli stati che
+i casi verificano di proposito. Per questo il messaggio dice di chi è la colpa.
+Ventitré mutazioni provate su questo file, ventitré cadute.
+
 Il finto dell'API lancia su ogni metodo non insegnato, col proprio nome dentro:
 un finto che risponde a tutto con valori plausibili avrebbe fatto passare una
 schermata che chiama la rotta sbagliata. Il lancio è sincrono e non una promessa
 rifiutata, perché una promessa rifiutata diventerebbe un avviso rosso in pagina,
 cioè uno degli stati che questi test verificano di proposito.
 
-Le altre schermate restano senza test, ed è la ragione per cui `format.ts`,
-`routes.ts`, `uploader.ts`, `salvataggio.ts` e `spazio.ts` esistono come moduli
+Le due schermate che restano senza nessun caso — la revisione di un duplicato
+sospetto e la scheda dell'elenco — sono la prossima cosa da fare, e insieme a
+loro c'è la ragione per cui `format.ts`, `routes.ts`, `uploader.ts`,
+`salvataggio.ts` e `spazio.ts` esistono come moduli
 separati e privi di DOM: lì sta il resto di ciò che si può sbagliare in
 silenzio, e provarlo senza montare niente costa mille righe di test che girano
 in un secondo. `tsconfig.tests.json` continua a non caricare la libreria DOM —
@@ -2828,12 +2888,14 @@ Non installate, e il perché:
   (`[nome 1]`, `[nome 2]`) avrebbe conservato la struttura e insieme un dato in
   più — quante persone distinte comparivano — che è esattamente ciò che una
   scheda condivisa non deve dire.
-- **Di schermate ne sono provate nove su dodici, e non è la stessa cosa di nove
-  schermate provate.** Account, redazione, ingresso, registrazioni in sospeso,
-  elenco, ricerca, cestino, player dell'audio e dettaglio hanno i loro casi,
-  scelti perché lì una regressione non ha sintomi. Le tre che non hanno **nessun
-  caso** sono `RecordScreen` — cioè il gesto principale dell'app —
-  `ReviewScreen` e `ProcedureCard`. Del dettaglio sono provati quattro
+- **Di schermate ne sono provate dieci su dodici, e non è la stessa cosa di
+  dieci schermate provate.** Account, redazione, ingresso, registrazioni in
+  sospeso, elenco, ricerca, cestino, player dell'audio, registrazione e
+  dettaglio hanno i loro casi, scelti perché lì una regressione non ha sintomi.
+  Le due che non hanno **nessun caso** sono `ReviewScreen` — dove si decide
+  cosa fare di un duplicato sospetto, e l'unico punto dell'app in cui cancellare
+  una cosa ne crea un'altra — e `ProcedureCard`. Del dettaglio sono provati
+  quattro
   punti su cinquecento righe — la voce che si butta, i tre esiti, le due porte
   verso altrove, i riferimenti che escono dall'app — e tutto ciò che sta in
   mezzo non ha nessun caso: i campi stampati, il sommario in cima, il blocco
