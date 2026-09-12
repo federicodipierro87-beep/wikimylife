@@ -1373,7 +1373,7 @@ sezione. Il worker non ha altri test perché il suo entry point finisce con un
 `await main()`: entrambe le decisioni stanno in un modulo a parte esattamente
 per poter essere provate.
 
-**web** monta undici fra schermate e pezzi di schermata in `jsdom` e ne prova le
+**web** monta tredici fra schermate e pezzi di schermata in `jsdom` e ne prova le
 proprietà, non l'aspetto. Non è una copertura: è l'elenco dei posti dove una
 regressione non produce nessun sintomo visibile.
 
@@ -1673,15 +1673,63 @@ il test: finisce nell'avviso rosso della schermata, cioè in uno degli stati che
 i casi verificano di proposito. Per questo il messaggio dice di chi è la colpa.
 Ventitré mutazioni provate su questo file, ventitré cadute.
 
+Della revisione — che nonostante il nome non ha niente a che vedere con i
+duplicati: è la schermata che chiude una scheda `DA_RIVEDERE` — undici casi su
+venti guardano l'oggetto che finisce nel `PATCH`, e non ciò che si vede in
+pagina. È lì che stanno le decisioni. `steps` è una sostituzione e non
+un'aggiunta, quindi la nota facoltativa deve partire insieme a tutti i passi che
+c'erano già: mandare il solo passo nuovo cancella in silenzio tutto ciò che
+l'utente aveva raccontato, e la schermata dice «salvato». Il titolo entra nel
+corpo solo se è cambiato davvero, e un campo svuotato per sbaglio non diventa un
+`titolo: ""` — il titolo è il solo modo di ritrovare la scheda in elenco. Lo
+stato lo manda un pulsante e non l'altro, che è tutto ciò che distingue «segna
+come completa» da «lasciala da rivedere». E quando non c'è proprio niente da
+salvare, «lasciala da rivedere» non manda un `PATCH {}`, che sarebbe un 400 di
+validazione mostrato a chi ha appena premuto «non ho niente da aggiungere»; ma
+quella scorciatoia non deve valere per l'altro pulsante, o «completa» non
+segnerebbe niente proprio nel caso in cui è l'unica cosa da segnare.
+
+Gli altri nove casi: che le domande arrivino da **tutte** le registrazioni e non
+solo dalla prima — `_meta` non è una colonna della scheda, vive nell'estrazione,
+e una scheda nata da tre vocali ha tre incertezze diverse — che una
+registrazione ancora senza estrazione non zittisca le domande delle altre, e che
+una registrazione che non si carica fermi la schermata invece di aprire un
+modulo con metà dei suggerimenti: una revisione a cui manca metà
+dell'incertezza si presenta come una revisione completa, e chi la chiude con «Va
+bene così» non saprà mai cosa non gli è stato chiesto. Poi il verso opposto, che
+è quello che si dimentica: quando le domande ci sono, la riga asciutta dei campi
+incerti **non** compare anche lei. E infine il rifiuto del server: l'avviso
+appare e non si naviga, perché il passo appena scritto vive solo in quello
+`useState`; i tre pulsanti tornano premibili, perché senza il `finally` un
+errore lascerebbe la schermata da ricaricare; e mentre il `PATCH` è in volo sono
+spenti tutti e tre, perché due salvataggi identici sono due passi identici in
+coda alla scheda, e da quella schermata non si tolgono.
+
+Della riga che compare in elenco e in ricerca — il componente più piccolo con un
+file di test tutto suo — la ragione del file è che è la stessa riga in due
+schermate, quindi ogni suo difetto è un difetto in due posti. Il caso che conta è
+dove porta: l'id nell'hash è l'unico modo che l'utente ha di arrivare alla
+scheda, e mandare l'indice invece dell'id, o dimenticare la codifica, produce una
+riga che si preme, una pagina che si apre, e la scheda sbagliata. Accanto, le tre
+condizioni che decidono cosa mostrare: il contenitore dei bollini non esiste
+quando non c'è niente da segnalare — ha una spaziatura sua, e vuoto lascerebbe un
+buco in mezzo a ogni riga dell'elenco — la riga di mezzo salta i campi che mancano
+invece di scrivere `3 passi ·  ·  · · 2 mesi fa`, e «Dati sensibili» compare solo
+su chi ce li ha, perché un avviso di dati sensibili su ogni riga smette di voler
+dire qualcosa entro il secondo giorno. Ciò che i bollini e la riga di mezzo
+*scrivono* non si riprova qui: `badgesOf`, `formatDurata`, `formatCosto` e
+`formatQuando` sono funzioni pure e hanno il loro file fra i test unitari.
+Ventinove mutazioni provate su questi due file, ventinove cadute.
+
 Il finto dell'API lancia su ogni metodo non insegnato, col proprio nome dentro:
 un finto che risponde a tutto con valori plausibili avrebbe fatto passare una
 schermata che chiama la rotta sbagliata. Il lancio è sincrono e non una promessa
 rifiutata, perché una promessa rifiutata diventerebbe un avviso rosso in pagina,
 cioè uno degli stati che questi test verificano di proposito.
 
-Le due schermate che restano senza nessun caso — la revisione di un duplicato
-sospetto e la scheda dell'elenco — sono la prossima cosa da fare, e insieme a
-loro c'è la ragione per cui `format.ts`, `routes.ts`, `uploader.ts`,
+Nessuna schermata resta ormai senza casi, il che non vuol dire che siano provate
+— la differenza è scritta per esteso fra i difetti noti — e accanto a loro c'è
+la ragione per cui `format.ts`, `routes.ts`, `uploader.ts`,
 `salvataggio.ts` e `spazio.ts` esistono come moduli
 separati e privi di DOM: lì sta il resto di ciò che si può sbagliare in
 silenzio, e provarlo senza montare niente costa mille righe di test che girano
@@ -2888,13 +2936,11 @@ Non installate, e il perché:
   (`[nome 1]`, `[nome 2]`) avrebbe conservato la struttura e insieme un dato in
   più — quante persone distinte comparivano — che è esattamente ciò che una
   scheda condivisa non deve dire.
-- **Di schermate ne sono provate dieci su dodici, e non è la stessa cosa di
-  dieci schermate provate.** Account, redazione, ingresso, registrazioni in
-  sospeso, elenco, ricerca, cestino, player dell'audio, registrazione e
-  dettaglio hanno i loro casi, scelti perché lì una regressione non ha sintomi.
-  Le due che non hanno **nessun caso** sono `ReviewScreen` — dove si decide
-  cosa fare di un duplicato sospetto, e l'unico punto dell'app in cui cancellare
-  una cosa ne crea un'altra — e `ProcedureCard`. Del dettaglio sono provati
+- **Ogni schermata ha dei casi, e non è la stessa cosa di ogni schermata
+  provata.** I dodici file di `apps/web/src/screens` compaiono tutti in
+  `tests/web`, più `NonSalvata` che sta dentro `App.tsx`: da qui in poi il
+  debito non è più «quali schermate mancano» ma «quanto di ognuna è coperto», e
+  la risposta cambia molto da una all'altra. Del dettaglio sono provati
   quattro
   punti su cinquecento righe — la voce che si butta, i tre esiti, le due porte
   verso altrove, i riferimenti che escono dall'app — e tutto ciò che sta in

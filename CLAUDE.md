@@ -262,7 +262,7 @@ tutto. Una per commit, come sempre.
 |---|---|---|
 | 0 | due difetti noti sbagliati, riscritti | fatto, `36a6f8c` |
 | 1 | `RecordScreen`: il gesto principale dell'app, senza nessun caso | fatto, `dd84304` |
-| 2 | `ReviewScreen` e `ProcedureCard`, le altre due scoperte | da fare |
+| 2 | `ReviewScreen` e `ProcedureCard`, le altre due scoperte | fatto, HEAD |
 | 3 | svuotare un cestino grosso senza incontrare il timeout di un proxy | da fare |
 | 4 | chiudere **una** sessione sola | da fare |
 
@@ -324,6 +324,44 @@ non è caduta, e contarla fra le cadute sarebbe stato un falso. Da qui l'indice
 opzionale sulla riga di comando (`python muta.py 20`), che rifà girare una
 mutazione sola invece di venti minuti di suite.
 
+### 2 — fatto, e c'era un terzo difetto noto falso
+
+`tests/web/review.test.tsx` (**venti casi**) e `tests/web/card.test.tsx`
+(**nove**). Da **980 su 45 file** a **1009 su 47**. Ventinove mutazioni,
+ventinove cadute, zero saltate.
+
+**La cosa da ricordare prima di tutte.** Nel commit `36a6f8c` — cioè nel commit
+che correggeva due difetti noti falsi — ne ho scritto un terzo: «`ReviewScreen`,
+dove si decide cosa fare di un duplicato sospetto, e l'unico punto dell'app in
+cui cancellare una cosa ne crea un'altra». **Falso.** `ReviewScreen` è la
+revisione di una scheda `DA_RIVEDERE`: domande suggerite, titolo, un passo
+facoltativo in coda. `DUPLICATO_SOSPETTO` compare in tutto `apps/web/src` una
+volta sola, in `format.ts:213`, come etichetta di uno stato di registrazione.
+La frase veniva dal riassunto di un agente di ricerca e non l'ho verificata —
+tre righe sotto la regola che dice di verificare. La regola non basta scriverla:
+**il `grep` va fatto anche quando la fonte è un altro strumento**, perché un
+riassunto di seconda mano ha la stessa autorità di un ricordo. Corretta in
+README e qui.
+
+Sul contenuto: undici dei venti casi della revisione non guardano la pagina,
+guardano l'oggetto che finisce in `updateProcedure`. È lì che stanno le
+decisioni, e la più pericolosa è che `steps` sia una **sostituzione**: mandare
+il solo passo nuovo cancella tutti quelli che c'erano, e la schermata dice
+«salvato». Le ragioni per esteso stanno nel README, qui non si ripetono.
+
+Due cose sul metodo:
+
+- **`expect(null).not.toHaveProperty(...)` passa.** Due casi asserivano che un
+  campo *non* fosse nel corpo, e sarebbero rimasti verdi anche se il pulsante
+  non avesse chiamato il server affatto. La cura è una riga: `not.toBeNull()`
+  prima. Vale ogni volta che si asserisce l'**assenza** di qualcosa dentro un
+  valore raccolto da una callback.
+- **Le mutazioni possono toccare più punti insieme** — `.muta.json` accetta una
+  lista di sostituzioni per mutazione, più un conteggio atteso per ciascuna.
+  Serve per le mutazioni che altrimenti non compilerebbero (`<button>` →
+  `<div>` vuole anche il tag di chiusura) e per quelle ripetute (i tre
+  `disabled={attesa}` della revisione sono un `disabled={false}` solo).
+
 ### 4 — una decisione che si ribalta, e va detto
 
 Un giro fa, sull'elenco delle sessioni, si è deciso **solo l'elenco, niente
@@ -351,11 +389,12 @@ la prima cosa da leggere per decidere cosa fare dopo. I tre più grossi:
   provato: `apiClient.test.ts`, «due richieste parallele condividono una sola
   rotazione»), e i byte dell'audio, che vengono da un `Blob` e non da
   `MediaRecorder`.
-- **Due schermate su dodici non hanno nessun caso**: `ReviewScreen` — dove si
-  decide cosa fare di un duplicato sospetto — e `ProcedureCard`. E del dettaglio
-  restano circa cinquecento righe senza casi — campi stampati, sommario,
-  trascrizione, player: quella è una scelta dichiarata (se spariscono si vede
-  aprendo la pagina), le tre schermate no.
+- **Ogni schermata ha dei casi, nessuna è provata per intero.** Il debito non è
+  più «quali mancano» ma «quanto di ognuna è coperto»: del dettaglio restano
+  circa cinquecento righe senza casi — campi stampati, sommario, trascrizione,
+  player — e dell'elenco e della ricerca si prova cosa chiedono al server, non
+  che le schede compaiano. È una scelta dichiarata (quella roba, se sparisce, si
+  vede aprendo la pagina), ma «provata» e «funziona» restano due parole diverse.
 - **La scopa ha un bucket vero sotto, ma quel bucket è MinIO.** Le differenze
   che restano fuori sono quelle fra MinIO e S3 vero: i 503 sotto carico, la
   coerenza eventuale, i limiti di richieste al secondo.
