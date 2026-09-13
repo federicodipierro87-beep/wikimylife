@@ -606,13 +606,27 @@ describe("query string — nessun parametro si perde per strada", () => {
  * preme un pulsante rosso e riceve un 400. Da qui i casi: cosa parte, con
  * quale token, e cosa succede se cio' che torna non e' quel che dice il
  * contratto.
+ *
+ * ## Il metodo che chiama piu' volte
+ *
+ * Dietro quella firma senza argomenti non c'e' piu' una richiesta sola. Il
+ * server svuota al massimo `EMPTY_TRASH_BATCH_SIZE` schede per volta — perche'
+ * un cestino grosso, moltiplicato per i secondi che ogni scheda costa fra
+ * transazione e bucket, supera il timeout di qualunque proxy — e dice quante ne
+ * restano; il client ripete finche' non e' zero e somma cio' che ha portato via.
+ *
+ * E' l'unico metodo di questo client in cui una chiamata non corrisponde a una
+ * richiesta, ed e' percio' l'unico in cui si puo' sbagliare a fermarsi. I due
+ * errori sono opposti e costano cose diverse: fermarsi troppo presto lascia un
+ * cestino mezzo pieno dopo un gesto che prometteva di svuotarlo; non fermarsi
+ * mai inchioda la scheda su un ciclo che nessuno vede girare.
  */
 describe("svuotare il cestino", () => {
   const ROTTA = "DELETE /api/procedures?status=ARCHIVIATA&definitivo=1";
 
   it("scrive lui i due parametri, e sono quelli che il server pretende", async () => {
     const { fetchImpl, calls } = stubFetch({
-      [ROTTA]: () => ({ status: 200, payload: { cancellate: 3, saltate: 1 } }),
+      [ROTTA]: () => ({ status: 200, payload: { cancellate: 3, saltate: 1, rimaste: 0 } }),
     });
     const client = createApiClient({
       baseUrl: BASE,
@@ -620,7 +634,11 @@ describe("svuotare il cestino", () => {
       fetchImpl,
     });
 
-    await expect(client.emptyTrash()).resolves.toEqual({ cancellate: 3, saltate: 1 });
+    await expect(client.emptyTrash()).resolves.toEqual({
+      cancellate: 3,
+      saltate: 1,
+      rimaste: 0,
+    });
 
     const url = new URL(calls[0]?.url ?? "");
     expect(calls[0]?.method).toBe("DELETE");
@@ -640,7 +658,7 @@ describe("svuotare il cestino", () => {
   it("allega il token, che e' l'unica cosa che distingue il proprio cestino da quello di un altro", async () => {
     const { fetchImpl, calls } = stubFetch({
       "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
-      [ROTTA]: () => ({ status: 200, payload: { cancellate: 0, saltate: 0 } }),
+      [ROTTA]: () => ({ status: 200, payload: { cancellate: 0, saltate: 0, rimaste: 0 } }),
     });
     const client = createApiClient({
       baseUrl: BASE,
@@ -659,7 +677,7 @@ describe("svuotare il cestino", () => {
     // «undefined schede sono state ripristinate» — oppure, peggio, tacerebbe su
     // schede rimaste nel cestino facendole sembrare un guasto.
     const { fetchImpl } = stubFetch({
-      [ROTTA]: () => ({ status: 200, payload: { cancellate: 3 } }),
+      [ROTTA]: () => ({ status: 200, payload: { cancellate: 3, rimaste: 0 } }),
     });
     const client = createApiClient({
       baseUrl: BASE,
@@ -668,6 +686,189 @@ describe("svuotare il cestino", () => {
     });
 
     await expect(client.emptyTrash()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("una risposta senza «rimaste» non passa, ed e' il campo su cui gira il ciclo", async () => {
+    // Peggio degli altri due campi mancanti, perche' `rimaste` non serve solo a
+    // scrivere una frase: e' la condizione di uscita. Un `undefined` li' dentro
+    // non e' zero, e il confronto `rimaste === 0` sarebbe falso per sempre:
+    // cinquanta `DELETE` di fila su un cestino gia' vuoto. Meglio un errore.
+    const { fetchImpl } = stubFetch({
+      [ROTTA]: () => ({ status: 200, payload: { cancellate: 3, saltate: 0 } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(client.emptyTrash()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("con il cestino vuoto in una passata sola manda una richiesta sola", async () => {
+    // L'errore opposto di quello del caso dopo, e il piu' facile da scrivere
+    // per sbaglio: un ciclo che parte sempre da capo «per sicurezza» costa una
+    // `DELETE` in piu' su ogni svuotamento riuscito, e nei registri del server
+    // il pulsante rosso sembra premuto due volte da chi l'ha premuto una.
+    const { fetchImpl, calls } = stubFetch({
+      [ROTTA]: () => ({ status: 200, payload: { cancellate: 4, saltate: 0, rimaste: 0 } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await client.emptyTrash();
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it("ripete finche' il cestino non e' vuoto, e somma cio' che ha portato via", async () => {
+    // Tre passate, come le manderebbe un cestino da centoventi schede contro un
+    // tetto di cinquanta. Chi ha premuto il pulsante una volta deve leggere
+    // centoventi, non cinquanta: un client che restituisse l'ultima passata
+    // invece della somma direbbe un numero vero e senza senso.
+    const passate = [
+      { cancellate: 50, saltate: 0, rimaste: 70 },
+      { cancellate: 48, saltate: 2, rimaste: 20 },
+      { cancellate: 19, saltate: 1, rimaste: 0 },
+    ];
+    let quale = 0;
+    const { fetchImpl, calls } = stubFetch({
+      [ROTTA]: () => {
+        const payload = passate[quale] ?? passate[passate.length - 1];
+        quale += 1;
+        return { status: 200, payload };
+      },
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(client.emptyTrash()).resolves.toEqual({
+      cancellate: 117,
+      saltate: 3,
+      // `rimaste` e' l'ultimo valore e non la somma: gli altri due contano
+      // eventi, questo descrive uno stato, e sommare stati non vuol dire niente.
+      rimaste: 0,
+    });
+    expect(calls).toHaveLength(3);
+  });
+
+  it("una passata che non tocca niente ferma il ciclo, anche se il server dice che ne restano", async () => {
+    // Un server che risponde «ne restano venti» dopo aver cancellato zero e
+    // saltato zero si sta contraddicendo: se ce ne sono venti, una almeno
+    // doveva finire in uno dei due conti. Senza questa seconda uscita il client
+    // rifarebbe la stessa richiesta cinquanta volte e poi si arrenderebbe —
+    // cinquanta `DELETE` inutili al server, e un'attesa lunga a chi guarda.
+    const { fetchImpl, calls } = stubFetch({
+      [ROTTA]: () => ({ status: 200, payload: { cancellate: 0, saltate: 0, rimaste: 20 } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(client.emptyTrash()).resolves.toEqual({
+      cancellate: 0,
+      saltate: 0,
+      // E le venti restano scritte nella risposta: il cestino non e' vuoto, e
+      // dirlo e' l'unica cosa che distingue questo esito da uno svuotamento
+      // riuscito.
+      rimaste: 20,
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("una passata di sole saltate non conta come «non ho toccato niente»", async () => {
+    // Il caso che separa la condizione giusta da quella sbagliata. Un'uscita
+    // scritta `cancellate === 0` si fermerebbe qui, e lascerebbe nel cestino le
+    // schede della passata dopo: una passata in cui tutte e cinquanta erano
+    // state ripescate non ha cancellato niente, ma il cestino si e' comunque
+    // accorciato, e il giro successivo trova roba nuova.
+    const passate = [
+      { cancellate: 0, saltate: 50, rimaste: 3 },
+      { cancellate: 3, saltate: 0, rimaste: 0 },
+    ];
+    let quale = 0;
+    const { fetchImpl, calls } = stubFetch({
+      [ROTTA]: () => {
+        const payload = passate[quale] ?? passate[passate.length - 1];
+        quale += 1;
+        return { status: 200, payload };
+      },
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(client.emptyTrash()).resolves.toEqual({
+      cancellate: 3,
+      saltate: 50,
+      rimaste: 0,
+    });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("un server che dice sempre «ne restano» non fa girare il client per sempre", async () => {
+    // Il tetto. Non e' un limite pensato per l'utente — cinquanta giri per
+    // cinquanta schede sono duemilacinquecento — ma per il caso in cui il
+    // numero che guida il ciclo arriva da fuori e non scende mai. Senza, questo
+    // test non finirebbe, che e' esattamente cio' che succederebbe alla scheda.
+    const { fetchImpl, calls } = stubFetch({
+      [ROTTA]: () => ({ status: 200, payload: { cancellate: 1, saltate: 0, rimaste: 9 } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    const esito = await client.emptyTrash();
+
+    expect(calls).toHaveLength(50);
+    expect(esito.cancellate).toBe(50);
+    // E si arrende dicendo la verita': non «fatto», ma «ne restano nove».
+    expect(esito.rimaste).toBe(9);
+  });
+
+  it("il token viaggia su ogni passata, non solo sulla prima", async () => {
+    // Un `Authorization` allegato fuori dal ciclo — o una variabile letta una
+    // volta sola prima di entrarci — reggerebbe il primo giro e prenderebbe 401
+    // dal secondo, cioe' solo sui cestini grossi: il difetto che non si vede
+    // mai in prova e si vede sempre in mano a chi ha molte schede.
+    const passate = [
+      { cancellate: 50, saltate: 0, rimaste: 1 },
+      { cancellate: 1, saltate: 0, rimaste: 0 },
+    ];
+    let quale = 0;
+    const { fetchImpl, calls } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      [ROTTA]: () => {
+        const payload = passate[quale] ?? passate[passate.length - 1];
+        quale += 1;
+        return { status: 200, payload };
+      },
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+    await client.login({ email: "chi@esempio.it", password: "password-lunga-abbastanza" });
+
+    await client.emptyTrash();
+
+    expect(calls.slice(1).map((c) => c.authorization)).toEqual([
+      "Bearer access-1",
+      "Bearer access-1",
+    ]);
   });
 });
 

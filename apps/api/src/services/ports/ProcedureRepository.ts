@@ -276,13 +276,20 @@ export interface ProcedureRepository {
   deleteForUser(userId: string, id: string): Promise<DeleteProcedureOutcome>;
 
   /**
-   * Gli id di tutto cio' che sta nel cestino, per svuotarlo.
+   * Gli id di cio' che sta nel cestino, per svuotarlo, al massimo `take`.
    *
    * Solo gli id e non le righe: quello che segue e' una cancellazione, e
    * leggere titoli, passi e costi di schede che stanno per sparire sarebbe
-   * lavoro speso per niente. E senza paginazione, perche' «svuota» vuol dire
-   * tutto: un elenco tagliato produrrebbe uno svuotamento che lascia dentro
-   * qualcosa senza dirlo.
+   * lavoro speso per niente.
+   *
+   * Il `take` c'era una ragione per non metterlo, ed e' stata vera finche' non
+   * e' arrivato `countArchived`: un elenco tagliato produce uno svuotamento che
+   * lascia dentro qualcosa, e il difetto non e' il taglio ma il non dirlo. Ora
+   * il conto di cio' che resta torna nella stessa risposta, quindi il taglio e'
+   * diventato un modo di stare dentro il timeout di un proxy invece che un modo
+   * di mentire. Chi sceglie il numero e' il servizio, non questa porta: qui
+   * `take` e' un argomento perche' «quante ne stanno in una richiesta» e' una
+   * decisione del contratto, non del database.
    *
    * Non c'e' un `deleteAllArchivedForUser` che faccia tutto in una transazione,
    * ed e' una scelta. Le regole di cosa succede intorno a una scheda cancellata
@@ -294,7 +301,19 @@ export interface ProcedureRepository {
    * Il prezzo e' una transazione per scheda; il guadagno e' che le due strade
    * non possono divergere.
    */
-  listArchivedIds(userId: string): Promise<readonly string[]>;
+  listArchivedIds(userId: string, take: number): Promise<readonly string[]>;
+
+  /**
+   * Quante schede ci sono nel cestino adesso.
+   *
+   * Esiste per la risposta di `emptyTrash`, e si chiama **dopo** il giro di
+   * cancellazioni: e' il solo modo di dire a chi ha premuto «svuota» se il
+   * gesto e' finito o se ne serve un altro pezzo. Dedurlo da quanti id erano
+   * stati letti meno quanti ne sono andati darebbe la risposta sbagliata nel
+   * caso che conta — due schermate aperte, una che archivia mentre l'altra
+   * svuota — e direbbe «vuoto» a un cestino che non lo e'.
+   */
+  countArchived(userId: string): Promise<number>;
 
   addExecution(
     userId: string,

@@ -123,6 +123,24 @@ function queryString(params: Record<string, string | number | undefined>): strin
   return encoded === "" ? "" : `?${encoded}`;
 }
 
+/**
+ * Quante richieste al massimo puo' costare uno svuotamento del cestino.
+ *
+ * Cinquanta giri per `EMPTY_TRASH_BATCH_SIZE` schede l'uno sono duemilacinque-
+ * cento schede, cioe' un cestino piu' grande di quanto questa applicazione
+ * produca in anni. Il numero non e' li' per limitare l'utente: e' li' perche' un
+ * ciclo `while` guidato da un numero che arriva dalla rete e' un ciclo che un
+ * server sbagliato — o manomesso — puo' non far finire mai, e allora la scheda
+ * si inchioda e nessuno capisce perche'.
+ *
+ * La lezione viene da un posto preciso: nei test di mutazione della scopa, con
+ * la `delete` dello storage ridotta a un no-op, un ciclo senza tetto ha girato
+ * trentaquattro minuti prima di morire. Un tetto costa una riga e trasforma un
+ * blocco in un risultato brutto ma leggibile — `rimaste` dice la verita', e chi
+ * guarda vede che ne restano.
+ */
+const GIRI_DI_SVUOTAMENTO = 50;
+
 export interface ApiClient {
   health(): Promise<HealthResponse>;
   signup(input: SignupRequest): Promise<AuthSession>;
@@ -246,16 +264,31 @@ export interface ApiClient {
   /**
    * Lo stesso gesto, su tutto il cestino insieme.
    *
-   * Non e' una comodita' costruita sopra `deleteProcedureForever`: farla dal
-   * client vorrebbe dire una richiesta per scheda, e un cestino svuotato a
-   * meta' perche' la rete e' caduta alla dodicesima. Quali schede toccare lo
-   * decide il server, sulle schede archiviate *adesso* e non su un elenco letto
-   * prima.
+   * Non e' una comodita' costruita sopra `deleteProcedureForever`: quella
+   * sarebbe una richiesta per scheda, con il server che riceve mille `DELETE`
+   * su mille id scelti dal client e letti chissa' quando. Quali schede toccare
+   * lo decide il server, sulle schede archiviate *adesso*.
    *
-   * Torna quante ne ha cancellate e quante ne ha saltate. Una saltata e' una
-   * che nel frattempo qualcuno ha ripescato dal cestino: non e' un errore, ma
-   * senza quel numero un cestino non vuoto dopo lo svuotamento sembrerebbe un
-   * guasto.
+   * ## Piu' richieste, un gesto solo
+   *
+   * Questo metodo puo' fare piu' di un giro, ed e' la sola cosa da sapere per
+   * usarlo. Il server ne cancella al massimo `EMPTY_TRASH_BATCH_SIZE` per
+   * richiesta — oltre, il tempo di risposta supera il timeout di qualunque
+   * proxy — e dice quante ne restano; qui si ripete finche' non e' zero, e si
+   * sommano i conti. Chi chiama vede un gesto, che e' cio' che l'utente ha
+   * premuto.
+   *
+   * Il ciclo sta qui e non nella schermata per la regola che vale in tutto il
+   * progetto: nessuna regola di dominio nel frontend. «Quando lo svuotamento e'
+   * finito» e' una regola, e scritta in un componente React sarebbe una regola
+   * che vale solo per il web e che un secondo client dovrebbe riscrivere.
+   *
+   * Torna quante ne ha cancellate, quante ne ha saltate — una saltata e' una
+   * che nel frattempo qualcuno ha ripescato dal cestino, e non e' un errore — e
+   * quante ne restano. `rimaste` e' zero in tutti i casi normali; se non lo e',
+   * il ciclo si e' fermato contro il suo tetto o contro un server che dice cose
+   * incoerenti, e chi chiama ha davanti un cestino ancora pieno da mostrare
+   * invece di un «fatto» falso.
    */
   emptyTrash(): Promise<EmptyTrashResult>;
   /** §8: un esito `CAMBIATA` riporta la scheda in `DA_RIVEDERE`. */
@@ -769,21 +802,45 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       );
     },
 
-    emptyTrash(): Promise<EmptyTrashResult> {
-      return send(
-        {
-          method: "DELETE",
-          // I due parametri sono scritti qui e non ricevuti da chi chiama:
-          // sono l'unica coppia che questa rotta accetta, e prenderli in
-          // ingresso vorrebbe dire permettere a una schermata di comporre
-          // `?status=COMPLETA`. La firma senza argomenti e' il modo piu' breve
-          // di dire che di svuotamenti del cestino ce n'e' uno solo.
-          path: `/api/procedures${queryString({ status: "ARCHIVIATA", definitivo: "1" })}`,
-          schema: emptyTrashResultSchema,
-          auth: true,
-        },
-        true,
-      );
+    async emptyTrash(): Promise<EmptyTrashResult> {
+      let cancellate = 0;
+      let saltate = 0;
+      let rimaste = 0;
+
+      for (let giro = 0; giro < GIRI_DI_SVUOTAMENTO; giro += 1) {
+        const passata = await send(
+          {
+            method: "DELETE",
+            // I due parametri sono scritti qui e non ricevuti da chi chiama:
+            // sono l'unica coppia che questa rotta accetta, e prenderli in
+            // ingresso vorrebbe dire permettere a una schermata di comporre
+            // `?status=COMPLETA`. La firma senza argomenti e' il modo piu'
+            // breve di dire che di svuotamenti del cestino ce n'e' uno solo.
+            path: `/api/procedures${queryString({ status: "ARCHIVIATA", definitivo: "1" })}`,
+            schema: emptyTrashResultSchema,
+            auth: true,
+          },
+          true,
+        );
+
+        cancellate += passata.cancellate;
+        saltate += passata.saltate;
+        rimaste = passata.rimaste;
+
+        // Due uscite, e la seconda non e' ridondante. La prima e' il caso
+        // normale: il cestino e' vuoto. La seconda e' il server che dice «ne
+        // restano» dopo una passata in cui non ha toccato niente — cioe' una
+        // risposta che contraddice se' stessa, perche' se ci sono schede
+        // archiviate `listArchivedIds` ne trova almeno una. Senza questa
+        // riga quel server manda il client in un ciclo che non finisce, e
+        // l'unica cosa che lo ferma e' il tetto dei giri: cinquanta richieste
+        // inutili invece di una.
+        if (rimaste === 0 || passata.cancellate + passata.saltate === 0) {
+          break;
+        }
+      }
+
+      return { cancellate, saltate, rimaste };
     },
 
     recordExecution(id: string, body: CreateExecutionBodyInput): Promise<ProcedureDetail> {

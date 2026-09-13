@@ -1,5 +1,6 @@
 import {
   CardStatus,
+  EMPTY_TRASH_BATCH_SIZE,
   Outcome,
   RecordingStatus,
   Scope,
@@ -742,7 +743,7 @@ describe("DELETE /api/procedures?status=ARCHIVIATA&definitivo=1", () => {
   }
 
   /** Il corpo della risposta, che qui e' l'unica cosa che dice com'e' andata. */
-  function esito(body: unknown): { cancellate: number; saltate: number } {
+  function esito(body: unknown): { cancellate: number; saltate: number; rimaste: number } {
     return emptyTrashResultSchema.parse(body);
   }
 
@@ -762,7 +763,7 @@ describe("DELETE /api/procedures?status=ARCHIVIATA&definitivo=1", () => {
     const res = await call(server, "DELETE", SVUOTA, { accessToken: token });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(esito(res.body)).toEqual({ cancellate: 1, saltate: 0 });
+    expect(esito(res.body)).toEqual({ cancellate: 1, saltate: 0, rimaste: 0 });
     expect(await server.prisma.procedure.count({ where: { id: buttata.id } })).toBe(0);
     expect(await server.prisma.procedure.count({ where: { id: viva.id } })).toBe(1);
   });
@@ -780,7 +781,7 @@ describe("DELETE /api/procedures?status=ARCHIVIATA&definitivo=1", () => {
     // Uno solo, e non due. E' la sola rotta dell'app in cui una `where`
     // incompleta cancella l'archivio di uno sconosciuto senza nemmeno un id
     // sbagliato da cui accorgersene.
-    expect(esito(res.body)).toEqual({ cancellate: 1, saltate: 0 });
+    expect(esito(res.body)).toEqual({ cancellate: 1, saltate: 0, rimaste: 0 });
     expect(await server.prisma.procedure.count({ where: { id: sua.id } })).toBe(1);
     expect(await server.prisma.procedure.count({ where: { id: mia.id } })).toBe(0);
   });
@@ -799,7 +800,7 @@ describe("DELETE /api/procedures?status=ARCHIVIATA&definitivo=1", () => {
 
     const res = await call(server, "DELETE", SVUOTA, { accessToken: token });
 
-    expect(esito(res.body)).toEqual({ cancellate: 2, saltate: 0 });
+    expect(esito(res.body)).toEqual({ cancellate: 2, saltate: 0, rimaste: 0 });
     // La seconda scheda e' quella che conta: un ciclo che si fermasse dopo la
     // prima restituirebbe comunque due, perche' il conto lo tiene il servizio e
     // non il database.
@@ -821,7 +822,54 @@ describe("DELETE /api/procedures?status=ARCHIVIATA&definitivo=1", () => {
     // 200 con un corpo e non 204: e' l'unica risposta che permette a chi ha
     // premuto di distinguere «non c'era niente» da «e' andato tutto via».
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(esito(res.body)).toEqual({ cancellate: 0, saltate: 0 });
+    expect(esito(res.body)).toEqual({ cancellate: 0, saltate: 0, rimaste: 0 });
+  });
+
+  it("si ferma al tetto per richiesta, e la seconda chiamata finisce il lavoro", async () => {
+    const token = await signup();
+    const prima = await creaScheda(token, { titolo: "La prima del mucchio" });
+    await archivia(token, prima.id);
+    const { userId } = await server.prisma.procedure.findUniqueOrThrow({
+      where: { id: prima.id },
+      select: { userId: true },
+    });
+
+    // Le altre cinquantacinque entrano con una `createMany` invece che dalla
+    // pipeline. La regola di questo file — passare sempre dall'ingestione, per
+    // non scrivere a mano `searchText` e l'embedding — vale per i casi che
+    // leggono il contenuto di una scheda. Qui l'unica cosa che conta e' quante
+    // righe ci sono nel cestino, e cinquantacinque giri di trascrizione finta
+    // costerebbero minuti per provare un `take`.
+    await server.prisma.procedure.createMany({
+      data: Array.from({ length: EMPTY_TRASH_BATCH_SIZE + 5 }, (_, i) => ({
+        userId,
+        titolo: `Riempitivo ${String(i)}`,
+        status: CardStatus.ARCHIVIATA,
+      })),
+    });
+
+    const primaPassata = await call(server, "DELETE", SVUOTA, { accessToken: token });
+
+    // Il tetto e' la ragione per cui questa rotta non si inchioda su un cestino
+    // grosso: una scheda per volta significa una transazione e un giro di
+    // bucket a testa, e cinquantasei di fila superano il timeout di un proxy
+    // prima di arrivare in fondo. Il numero non e' arrotondato qui a mano: se
+    // `EMPTY_TRASH_BATCH_SIZE` cambia, questo caso lo segue.
+    expect(esito(primaPassata.body)).toEqual({
+      cancellate: EMPTY_TRASH_BATCH_SIZE,
+      saltate: 0,
+      rimaste: 6,
+    });
+    expect(await server.prisma.procedure.count({ where: { userId } })).toBe(6);
+
+    const seconda = await call(server, "DELETE", SVUOTA, { accessToken: token });
+
+    // La seconda passata e' la meta' che il `take` da solo non garantisce: se
+    // `listArchivedIds` prendesse le righe da un ordine instabile, o dalla coda
+    // invece che dalla testa, potrebbe ripresentare le stesse cinquanta e il
+    // cestino non si accorcerebbe mai.
+    expect(esito(seconda.body)).toEqual({ cancellate: 6, saltate: 0, rimaste: 0 });
+    expect(await server.prisma.procedure.count({ where: { userId } })).toBe(0);
   });
 
   it("«status=COMPLETA» e' un 400, e non uno svuotamento dell'archivio", async () => {

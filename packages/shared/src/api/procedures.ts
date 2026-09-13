@@ -385,7 +385,26 @@ export const emptyTrashQuerySchema = z
 export type EmptyTrashQuery = z.infer<typeof emptyTrashQuerySchema>;
 
 /**
- * Quante ne sono andate via, e quante sono rimaste.
+ * Quante schede al massimo tocca una sola richiesta di svuotamento.
+ *
+ * Il tetto c'e' perche' ogni scheda e' una transazione piu' una manciata di
+ * cancellazioni sul bucket, e un cestino da mille schede e' una richiesta che
+ * dura minuti. Nessun proxy la lascia finire: Railway, Netlify e qualunque
+ * altro reverse proxy davanti all'API chiudono la connessione molto prima, e il
+ * client riceve un errore di rete su uno svuotamento che sul server stava
+ * andando benissimo. E' il risultato peggiore possibile — l'utente legge «non
+ * e' andata», il cestino si e' svuotato a meta', e ripremere e' l'unica cosa
+ * che puo' fare senza sapere se serva.
+ *
+ * Cinquanta e non venti come `PROCEDURE_PAGE_SIZE`: li' il numero e' quanto ci
+ * sta su uno schermo, qui e' quanto ci sta dentro un timeout. Sono due domande
+ * diverse che per caso hanno risposte vicine, e legarle vorrebbe dire che un
+ * giorno allargare l'elenco allunga le richieste di cancellazione.
+ */
+export const EMPTY_TRASH_BATCH_SIZE = 50;
+
+/**
+ * Quante ne sono andate, quante ne ha saltate, e quante ne restano.
  *
  * `saltate` non e' un errore ed e' il motivo per cui questa rotta risponde 200
  * con un corpo invece di 204. Fra il momento in cui si legge l'elenco e quello
@@ -395,11 +414,27 @@ export type EmptyTrashQuery = z.infer<typeof emptyTrashQuerySchema>;
  *
  * Chi riceve `saltate > 0` ha davanti un cestino che dopo lo svuotamento non e'
  * vuoto. Senza questo numero sembrerebbe un guasto.
+ *
+ * `rimaste` e' il cestino **dopo** questa richiesta, ed e' cio' che rende il
+ * tetto qui sopra una cosa diversa da uno svuotamento incompleto: una richiesta
+ * ne tocca al massimo `EMPTY_TRASH_BATCH_SIZE`, quindi un cestino grosso vuole
+ * piu' richieste, e questo numero e' l'unico modo che il chiamante ha di sapere
+ * se ne serve un'altra. Senza, il tetto sarebbe esattamente il difetto che la
+ * vecchia versione di questo contratto si vietava: «un elenco tagliato produce
+ * uno svuotamento che lascia dentro qualcosa senza dirlo».
+ *
+ * Non coincide con `saltate`, e i due numeri non si sommano: una scheda saltata
+ * e' una che dal cestino e' uscita — qualcuno l'ha ripescata — quindi non
+ * rimane. Ed e' contato sul database invece che dedotto da `totale -
+ * cancellate`: fra la lettura degli id e la fine del giro si puo' archiviare
+ * altro, e un numero dedotto direbbe «zero» su un cestino che nel frattempo si
+ * e' riempito.
  */
 export const emptyTrashResultSchema = z
   .object({
     cancellate: z.number().int().min(0),
     saltate: z.number().int().min(0),
+    rimaste: z.number().int().min(0),
   })
   .strict();
 

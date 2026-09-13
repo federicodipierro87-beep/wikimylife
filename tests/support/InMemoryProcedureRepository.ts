@@ -259,12 +259,21 @@ export class InMemoryProcedureRepository implements ProcedureRepository {
    * cosi' come li ha creati il test, cioe' proprio l'ipotesi che Postgres senza
    * `orderBy` non garantisce.
    */
-  async listArchivedIds(userId: string): Promise<readonly string[]> {
+  async listArchivedIds(userId: string, take: number): Promise<readonly string[]> {
+    return this.#archiviate(userId)
+      .sort((a, b) => a.updatedAt.getTime() - b.updatedAt.getTime())
+      .map((row) => row.id)
+      .slice(0, take);
+  }
+
+  async countArchived(userId: string): Promise<number> {
+    return this.#archiviate(userId).length;
+  }
+
+  #archiviate(userId: string): ProcedureDetailRow[] {
     return [...this.#rows.values()]
       .filter((row) => this.#owners.get(row.id) === userId)
-      .filter((row) => row.status === CardStatus.ARCHIVIATA)
-      .sort((a, b) => a.updatedAt.getTime() - b.updatedAt.getTime())
-      .map((row) => row.id);
+      .filter((row) => row.status === CardStatus.ARCHIVIATA);
   }
 
   async addExecution(

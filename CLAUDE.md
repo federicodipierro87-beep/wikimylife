@@ -263,7 +263,7 @@ tutto. Una per commit, come sempre.
 | 0 | due difetti noti sbagliati, riscritti | fatto, `36a6f8c` |
 | 1 | `RecordScreen`: il gesto principale dell'app, senza nessun caso | fatto, `dd84304` |
 | 2 | `ReviewScreen` e `ProcedureCard`, le altre due scoperte | fatto, `a14d9c9` |
-| 3 | svuotare un cestino grosso senza incontrare il timeout di un proxy | da fare |
+| 3 | svuotare un cestino grosso senza incontrare il timeout di un proxy | fatto, hash nel commit dopo |
 | 4 | chiudere **una** sessione sola | da fare |
 
 ### 0 — le due correzioni
@@ -361,6 +361,48 @@ Due cose sul metodo:
   Serve per le mutazioni che altrimenti non compilerebbero (`<button>` →
   `<div>` vuole anche il tag di chiusura) e per quelle ripetute (i tre
   `disabled={attesa}` della revisione sono un `disabled={false}` solo).
+
+### 3 — fatto
+
+Il tetto e il ciclo. `EMPTY_TRASH_BATCH_SIZE = 50` nel contratto,
+`listArchivedIds(userId, take)` che porta il `take` fino alla `findMany`,
+`rimaste` nella risposta, e il ciclo dentro `ApiClient.emptyTrash()`. Quattordici
+casi nuovi su quattro project: quattro nel servizio, sette nel client, tre nella
+schermata, più due contro Postgres. Da **1009 su 47 file** a **1023 su 47**, e da
+**367** d'integrazione a **369**, sempre su 14 file.
+
+Le due decisioni prese con l'utente prima di scrivere:
+
+- **Il ciclo sta dentro `ApiClient.emptyTrash()`**, non nella schermata. Il
+  metodo resta senza argomenti e restituisce i totali sommati, quindi
+  `TrashScreen` cambia quasi niente — che è ciò che vuole il vincolo «nessuna
+  regola di dominio nel frontend». Prezzo dichiarato: mentre gira non c'è
+  avanzamento, e sta fra i difetti noti.
+- **Cinquanta per richiesta**, e deliberatamente **non** legato a
+  `PROCEDURE_PAGE_SIZE` (che è venti): lì il numero è quanto ci sta su uno
+  schermo, qui è quanto ci sta dentro un timeout. Due ragioni diverse non
+  condividono una costante.
+
+Le altre — `rimaste` da un `COUNT` fresco invece che da `ids.length - cancellate`,
+il tetto non esposto come parametro di query, le due uscite del ciclo — stanno nel
+README. Qui non si ripetono.
+
+Ventitré mutazioni, ventidue cadute. **Le due che sono sopravvissute al primo
+giro vanno ricordate, perché sono due cose diverse chiamate con lo stesso nome.**
+
+- `EMPTY_TRASH_BATCH_SIZE` portato da 50 a 1000 non faceva cadere niente: si
+  poteva rimettere il difetto che l'attività esiste per togliere. Sopravviveva
+  perché i casi usano la costante **simbolicamente** (`EMPTY_TRASH_BATCH_SIZE + 7`
+  schede, `cancellate` pari alla costante) — e va bene così, altrimenti cambiarla
+  vorrebbe dire riscrivere i test. Ma un test scritto così si muove insieme al
+  valore e non lo difende. La cura non è un `toBe(50)` tautologico: è una guardia
+  sull'**intervallo**, fra dieci e cento, con scritto accanto perché esistono i due
+  estremi. Vale ogni volta che una costante è un compromesso e non un dettaglio.
+- L'`orderBy: { updatedAt: "asc" }` di `listArchivedIds` girato in `"desc"`
+  sopravvive ancora, ed è **equivalente**: per lo svuotamento a più passate serve
+  solo che un ordine ci sia. Qui la cura è stata correggere il **commento**, che
+  diceva più di quanto fosse vero. Non si aggiunge un caso per uccidere una
+  mutazione che non descrive nessun difetto — la si dichiara.
 
 ### 4 — una decisione che si ribalta, e va detto
 

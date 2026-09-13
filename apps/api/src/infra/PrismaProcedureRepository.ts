@@ -417,14 +417,32 @@ export class PrismaProcedureRepository implements ProcedureRepository {
    * tempo, che e' l'ordine in cui l'utente ha deciso di buttarlo. Senza
    * `orderBy` Postgres non promette niente, e due passate sulla stessa tabella
    * potrebbero lasciare dentro due insiemi diversi.
+   *
+   * Da quando c'e' il `take` la clausola ha un secondo mestiere, e vale la pena
+   * dire con precisione qual e', perche' e' piu' piccolo di quello che sembra.
+   * Uno svuotamento grosso e' fatto di piu' richieste, e ognuna prende le prime
+   * `take`: serve che ogni passata morda da un'estremita' fissa, altrimenti la
+   * seconda potrebbe ripresentare le stesse righe e il cestino non si
+   * accorcerebbe mai. Ma per questo basta che un ordine ci sia — `desc`
+   * andrebbe uguale. La direzione la decide la prima ragione, quella dello
+   * svuotamento interrotto, e nessun test la distingue: girarla in `desc` non
+   * fa cadere niente, ed e' giusto cosi', perche' non cambia nessun risultato
+   * osservabile.
    */
-  async listArchivedIds(userId: string): Promise<readonly string[]> {
+  async listArchivedIds(userId: string, take: number): Promise<readonly string[]> {
     const righe = await this.#prisma.procedure.findMany({
       where: { userId, status: CardStatus.ARCHIVIATA },
       orderBy: { updatedAt: "asc" },
       select: { id: true },
+      take,
     });
     return righe.map((r) => r.id);
+  }
+
+  async countArchived(userId: string): Promise<number> {
+    return this.#prisma.procedure.count({
+      where: { userId, status: CardStatus.ARCHIVIATA },
+    });
   }
 
   async addExecution(

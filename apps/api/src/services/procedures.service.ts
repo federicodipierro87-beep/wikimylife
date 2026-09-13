@@ -1,5 +1,6 @@
 import {
   CardStatus,
+  EMPTY_TRASH_BATCH_SIZE,
   Outcome,
   Scope,
   Visibility,
@@ -463,9 +464,25 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
      * come un'unica transazione su un insieme sarebbe piu' veloce e avrebbe una
      * seconda copia delle regole, che e' il modo in cui due strade cominciano a
      * divergere. Il ragionamento intero sta su `listArchivedIds`.
+     *
+     * ## Perche' non le svuota tutte
+     *
+     * Una scheda per volta e' una transazione per volta, piu' le cancellazioni
+     * sul bucket: un cestino grosso e' una richiesta che dura minuti, e nessun
+     * proxy la lascia finire. `EMPTY_TRASH_BATCH_SIZE` e' il tetto, e `rimaste`
+     * e' cio' che impedisce al tetto di diventare una bugia — chi chiama sa se
+     * il gesto e' finito. Il giro lo rifa' il client, e sta li' e non qui per
+     * la stessa ragione per cui sta qui il tetto: una funzione del servizio che
+     * cicli finche' non e' vuoto e' di nuovo una richiesta che dura minuti, col
+     * tetto scritto in un posto dove non protegge da niente.
+     *
+     * `rimaste` si conta alla fine e non si deduce: `ids.length - cancellate`
+     * direbbe zero anche a un cestino che nel frattempo qualcun altro ha
+     * riempito, e direbbe zero soprattutto quando il tetto ha tagliato l'elenco
+     * — cioe' proprio nel caso per cui questo numero esiste.
      */
     async emptyTrash(userId: string): Promise<EmptyTrashResult> {
-      const ids = await repo.listArchivedIds(userId);
+      const ids = await repo.listArchivedIds(userId, EMPTY_TRASH_BATCH_SIZE);
 
       let cancellate = 0;
       let saltate = 0;
@@ -485,7 +502,7 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
         await togliDalBucket(esito.audioUrls);
       }
 
-      return { cancellate, saltate };
+      return { cancellate, saltate, rimaste: await repo.countArchived(userId) };
     },
 
     async addExecution(

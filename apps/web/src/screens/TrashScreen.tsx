@@ -262,14 +262,22 @@ function schede(n: number): string {
 }
 
 /**
- * I tre esiti possibili detti in italiano.
+ * Gli esiti possibili detti in italiano.
  *
  * Zero cancellate e zero saltate non e' un guasto: e' il cestino che qualcuno ha
  * gia' svuotato altrove fra il caricamento della pagina e il tocco. Dirlo
- * «cancellate 0 schede» sarebbe vero e illeggibile.
+ * «cancellate 0 schede» sarebbe vero e illeggibile. Ma vale solo se il cestino
+ * adesso e' davvero vuoto: zero e zero con qualcosa ancora dentro non e' un
+ * cestino gia' svuotato, e' uno svuotamento che non e' partito.
+ *
+ * L'ultima frase — quante ne restano — nei casi normali non compare mai, perche'
+ * `emptyTrash` ripete finche' non e' zero. Compare quando quel ciclo si e'
+ * fermato contro il suo tetto, ed e' li' per non dire «fatto» a chi ha davanti
+ * un cestino ancora pieno: fra un messaggio brutto e uno falso, il secondo e'
+ * quello che fa premere di nuovo senza sapere perche'.
  */
 function esitoDelloSvuotamento(esito: EmptyTrashResult): string {
-  if (esito.cancellate === 0 && esito.saltate === 0) {
+  if (esito.cancellate === 0 && esito.saltate === 0 && esito.rimaste === 0) {
     return "Il cestino era gia' vuoto.";
   }
 
@@ -278,16 +286,19 @@ function esitoDelloSvuotamento(esito: EmptyTrashResult): string {
       ? "1 scheda cancellata per sempre."
       : `${String(esito.cancellate)} schede cancellate per sempre.`;
 
-  if (esito.saltate === 0) {
-    return via;
-  }
+  const ripescate =
+    esito.saltate === 0
+      ? ""
+      : esito.saltate === 1
+        ? " 1 scheda e' stata ripristinata mentre si cancellava, e non e' stata toccata."
+        : ` ${String(esito.saltate)} schede sono state ripristinate mentre si cancellava, e non sono state toccate.`;
 
-  const rimaste =
-    esito.saltate === 1
-      ? "1 scheda e' stata ripristinata mentre si cancellava, e non e' stata toccata."
-      : `${String(esito.saltate)} schede sono state ripristinate mentre si cancellava, e non sono state toccate.`;
+  const restano =
+    esito.rimaste === 0
+      ? ""
+      : ` Nel cestino ${esito.rimaste === 1 ? "resta 1 scheda" : `restano ${String(esito.rimaste)} schede`}: premi di nuovo per continuare.`;
 
-  return `${via} ${rimaste}`;
+  return `${via}${ripescate}${restano}`;
 }
 
 function VoceCestinata({

@@ -291,7 +291,7 @@ describe("TrashScreen: svuotare tutto", () => {
   }
 
   const andataBene = (): Promise<EmptyTrashResult> =>
-    Promise.resolve({ cancellate: 2, saltate: 0 });
+    Promise.resolve({ cancellate: 2, saltate: 0, rimaste: 0 });
 
   it("il primo tocco apre la domanda, e al server non parte niente", async () => {
     const { client, svuotamenti } = clienteSvuotabile(andataBene);
@@ -368,9 +368,13 @@ describe("TrashScreen: svuotare tutto", () => {
     // scheda ripescata e' ancora li', e accanto al messaggio c'e' di nuovo il
     // pulsante grigio — ma non quello rosso, che era la domanda di prima e ha
     // avuto la sua risposta.
-    const { client } = clienteSvuotabile(() => Promise.resolve({ cancellate: 1, saltate: 1 }), 2, [
-      unaVoce({ id: "proc-2", titolo: "Disdetta della palestra", status: CardStatus.ARCHIVIATA }),
-    ]);
+    // `rimaste: 0` e non 1: la scheda ripescata e' uscita dal cestino, ed e'
+    // percio' contata fra le `saltate` e non fra quelle che restano da buttare.
+    const { client } = clienteSvuotabile(
+      () => Promise.resolve({ cancellate: 1, saltate: 1, rimaste: 0 }),
+      2,
+      [unaVoce({ id: "proc-2", titolo: "Disdetta della palestra", status: CardStatus.ARCHIVIATA })],
+    );
 
     montaConApi(client, <TrashScreen />);
     await screen.findByText("Cambio di residenza");
@@ -391,7 +395,7 @@ describe("TrashScreen: svuotare tutto", () => {
 
   it("al plurale le conta al plurale, tutte e due", async () => {
     const { client } = clienteSvuotabile(() =>
-      Promise.resolve({ cancellate: 3, saltate: 2 }),
+      Promise.resolve({ cancellate: 3, saltate: 2, rimaste: 0 }),
     );
 
     montaConApi(client, <TrashScreen />);
@@ -408,7 +412,7 @@ describe("TrashScreen: svuotare tutto", () => {
 
   it("un cestino svuotato altrove non e' un guasto, ed e' detto senza numeri", async () => {
     const { client } = clienteSvuotabile(() =>
-      Promise.resolve({ cancellate: 0, saltate: 0 }),
+      Promise.resolve({ cancellate: 0, saltate: 0, rimaste: 0 }),
     );
 
     montaConApi(client, <TrashScreen />);
@@ -422,6 +426,80 @@ describe("TrashScreen: svuotare tutto", () => {
     // la stessa cosa. «0 schede cancellate per sempre» sarebbe vero e
     // illeggibile.
     expect((await screen.findByRole("status")).textContent).toBe("Il cestino era gia' vuoto.");
+  });
+
+  it("zero e zero con qualcosa ancora dentro non e' un cestino gia' vuoto", async () => {
+    // Le stesse due cifre del caso sopra, e il messaggio opposto. La differenza
+    // e' la terza: il server dice che ne restano tre, quindi non e' successo
+    // niente perche' non c'era niente da fare — e' uno svuotamento che non e'
+    // partito. «Il cestino era gia' vuoto» qui sarebbe la bugia piu' costosa di
+    // questa schermata, perche' chi legge smette di guardare.
+    const { client } = clienteSvuotabile(
+      () => Promise.resolve({ cancellate: 0, saltate: 0, rimaste: 3 }),
+      3,
+      [unaVoce({ id: "proc-9", titolo: "Rinnovo del passaporto", status: CardStatus.ARCHIVIATA })],
+    );
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Cancella per sempre 3 schede" }));
+
+    expect((await screen.findByRole("status")).textContent).toBe(
+      "0 schede cancellate per sempre. Nel cestino restano 3 schede: premi di nuovo per continuare.",
+    );
+  });
+
+  it("se il ciclo si e' fermato contro il tetto lo dice, e rimette il pulsante grigio", async () => {
+    // Il caso per cui `rimaste` esiste. `emptyTrash()` ripete da sola finche' il
+    // cestino non e' vuoto, quindi un esito con `rimaste` maggiore di zero vuol
+    // dire che si e' arresa: o il tetto dei giri, o un server che non fa
+    // scendere il numero. Chi ha premuto deve poter premere ancora, e sapere
+    // perche'.
+    const { client } = clienteSvuotabile(
+      () => Promise.resolve({ cancellate: 2500, saltate: 0, rimaste: 12 }),
+      2512,
+      [unaVoce({ id: "proc-9", titolo: "Rinnovo del passaporto", status: CardStatus.ARCHIVIATA })],
+    );
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Cancella per sempre 2512 schede" }));
+
+    expect((await screen.findByRole("status")).textContent).toBe(
+      "2500 schede cancellate per sempre. Nel cestino restano 12 schede: premi di nuovo per continuare.",
+    );
+    expect(screen.getByRole("button", { name: "Svuota il cestino" })).toBeTruthy();
+    // Ma non il rosso: quella domanda ha gia' avuto la sua risposta, e il numero
+    // che ci sarebbe scritto sopra non e' piu' quello di prima.
+    expect(screen.queryByRole("button", { name: /^Cancella per sempre/ })).toBeNull();
+  });
+
+  it("con una scheda rimasta non dice «restano 1 schede»", async () => {
+    const { client } = clienteSvuotabile(
+      () => Promise.resolve({ cancellate: 1, saltate: 0, rimaste: 1 }),
+      2,
+      [unaVoce({ id: "proc-9", titolo: "Rinnovo del passaporto", status: CardStatus.ARCHIVIATA })],
+    );
+
+    montaConApi(client, <TrashScreen />);
+    await screen.findByText("Cambio di residenza");
+    const utente = userEvent.setup();
+
+    await utente.click(screen.getByRole("button", { name: "Svuota il cestino" }));
+    await utente.click(screen.getByRole("button", { name: "Cancella per sempre 2 schede" }));
+
+    // Tre plurali in una frase sola, e questo e' il terzo: il verbo cambia
+    // insieme al numero — «resta» e non «restano» — e un solo `String(n)` in
+    // mezzo alla frase li mancherebbe tutti e due.
+    expect((await screen.findByRole("status")).textContent).toBe(
+      "1 scheda cancellata per sempre. Nel cestino resta 1 scheda: premi di nuovo per continuare.",
+    );
   });
 
   it("«Annulla» richiude la domanda senza aver svuotato niente", async () => {
@@ -473,7 +551,7 @@ describe("TrashScreen: svuotare tutto", () => {
           ? Promise.reject(
               new ApiError({ code: "INTERNAL_ERROR", message: "Il server non risponde.", status: 500 }),
             )
-          : Promise.resolve({ cancellate: 2, saltate: 0 });
+          : Promise.resolve({ cancellate: 2, saltate: 0, rimaste: 0 });
       },
     });
 
@@ -522,13 +600,13 @@ describe("TrashScreen: svuotare tutto", () => {
     await utente.click(rosso);
     expect(chiamate).toBe(1);
 
-    sblocca({ cancellate: 2, saltate: 0 });
+    sblocca({ cancellate: 2, saltate: 0, rimaste: 0 });
     expect(await screen.findByRole("status")).toBeTruthy();
   });
 
   it("dopo aver svuotato torna alla prima pagina, e la chiede una volta sola", async () => {
     const { client, richieste } = clienteSvuotabile(
-      () => Promise.resolve({ cancellate: 34, saltate: 0 }),
+      () => Promise.resolve({ cancellate: 34, saltate: 0, rimaste: 0 }),
       34,
     );
 

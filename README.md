@@ -237,7 +237,7 @@ GET    /api/procedures/:id             scheda completa con tutte le relazioni
 PATCH  /api/procedures/:id             modifica manuale
 DELETE /api/procedures/:id             soft delete → ARCHIVIATA
      ?definitivo=1                     cancellazione vera, solo dal cestino
-DELETE /api/procedures                 svuota il cestino, e conta
+DELETE /api/procedures                 svuota il cestino, max 50 per volta
      ?status=ARCHIVIATA&definitivo=1   obbligatori tutti e due, alla lettera
 POST   /api/procedures/:id/executions  registra un'esecuzione (§8)
 GET    /api/search?q=                  ricerca ibrida (§7), paginata con offset
@@ -298,9 +298,30 @@ uniche cause possibili sono una cancellazione o un ripristino arrivati nel
 frattempo da un'altra schermata aperta — e nessuna delle due è uno sbaglio di chi
 ha premuto «svuota». Farne un `409` fermerebbe uno svuotamento quasi riuscito
 senza dire quante ne erano già andate. La risposta è `200` con
-`{ cancellate, saltate }` e non un `204` proprio perché quei due numeri sono
-l'unica cosa che chi ha premuto non poteva sapere prima: che il cestino sia
-adesso vuoto lo dava per scontato.
+`{ cancellate, saltate, rimaste }` e non un `204` proprio perché quei numeri sono
+l'unica cosa che chi ha premuto non poteva sapere prima.
+
+**E ne porta via al massimo cinquanta per richiesta.** Una scheda per volta è la
+scelta giusta per tutte le ragioni dette sopra, ma ha un prezzo che cresce con il
+cestino: ogni scheda è una transazione più un giro sul bucket, e un cestino da
+mille supera in scioltezza il timeout di qualunque proxy messo davanti al server.
+A quel punto la connessione cade a metà, chi ha premuto non riceve nessun numero,
+e ricaricando trova un cestino misteriosamente più corto. `EMPTY_TRASH_BATCH_SIZE`
+taglia l'elenco a cinquanta, e la risposta aggiunge `rimaste`.
+
+`rimaste` è il cestino **dopo** questa richiesta, e viene da un `COUNT` fatto alla
+fine, non da `quante ne avevo meno quante ne ho cancellate`. La differenza si vede
+in un caso solo, ed è il caso che questa rotta incontra davvero: una scheda
+ripescata da un'altra schermata conta fra le `saltate` ma è *uscita* dal cestino,
+quindi la sottrazione direbbe «ne resta una» e manderebbe chi legge a premere di
+nuovo su un cestino vuoto. I due numeri non si sovrappongono mai.
+
+Il taglio non compare nell'URL: non c'è nessun `?limit=`. La query resta quella
+di prima, due parametri e due valori letterali, perché renderla componibile
+significherebbe riaprire la porta a `?status=COMPLETA` che la riga precedente ha
+appena chiuso. Chi svuota un cestino grosso manda la stessa richiesta più volte —
+e a farlo è `ApiClient.emptyTrash()`, non la schermata, che di tutto questo non sa
+niente.
 
 **Gli array si sostituiscono in blocco.** Una `PATCH` con `steps` cancella i
 passi e li riscrive, rinumerati `1..n` — il client manda lo stato finale, non un
@@ -786,8 +807,30 @@ zero si torna alla prima, perché la pagina tre di un cestino vuoto è una scher
 vuota che sembra un guasto. E l'esito non è mai «fatto»: sono `cancellate` e
 `saltate`, al singolare o al plurale a seconda del numero, con una seconda frase
 solo quando qualcosa è rimasto — «1 scheda è stata ripristinata nel frattempo».
-Zero e zero diventano «Il cestino era già vuoto», che è l'unica cosa vera da dire
-a chi ha premuto un pulsante che non ha cancellato niente.
+
+**Un cestino grosso non è affare di questa schermata.** Il server ne porta via
+cinquanta per richiesta, e chi ripete la chiamata finché non è finita è
+`ApiClient.emptyTrash()`, che accumula i totali e ne restituisce uno solo: il
+pulsante manda un gesto e riceve un numero, esattamente come prima. Metterlo qui
+sarebbe stato più breve di una decina di righe, e avrebbe messo nel frontend una
+regola di dominio — quando è finito uno svuotamento — che nessun'altra schermata
+avrebbe modo di rispettare. Il prezzo dichiarato è che durante uno svuotamento
+lungo non si può mostrare un avanzamento: fra la prima e l'ultima richiesta il
+pulsante dice «Cancello…» e basta.
+
+Resta perciò un terzo numero, `rimaste`, che nei casi normali non compare mai —
+il ciclo si ferma proprio quando arriva a zero. Compare quando quel ciclo si è
+arreso: cinquanta giri sono il suo tetto, e oltre quello la frase diventa «Nel
+cestino restano 12 schede: premi di nuovo per continuare». È brutta apposta.
+L'alternativa era dire «fatto» a chi ha davanti un cestino ancora pieno, e fra un
+messaggio brutto e uno falso il secondo è quello che fa premere di nuovo senza
+sapere perché.
+
+Zero, zero e zero diventano «Il cestino era già vuoto», che è l'unica cosa vera da
+dire a chi ha premuto un pulsante che non ha cancellato niente. Tutti e tre e non
+i primi due: zero cancellate e zero saltate con qualcosa ancora dentro non è un
+cestino già svuotato, è uno svuotamento che non è partito, e chiamarlo nello
+stesso modo sarebbe la bugia più cara di questa schermata.
 
 ### Il service worker fa una cosa sola
 
@@ -1286,7 +1329,16 @@ costo riguarda le due sole rotte con una query string: i parametri mandati si
 confrontano con le chiavi dello schema, non con un URL scritto a mano. La query
 si costruisce elencando i campi uno per uno, e `offset` era stato aggiunto al
 contratto della ricerca e dimenticato lì — premere «Successive» ricaricava la
-prima pagina, e niente falliva da nessuna parte. Della Fase 2: la validazione della §5 caso per caso
+prima pagina, e niente falliva da nessuna parte. Sempre del client, `emptyTrash()`
+è l'unico metodo in cui una chiamata non è una richiesta, e quindi l'unico in cui
+si può sbagliare a fermarsi: i casi guardano le due uscite del ciclo prese una
+per volta (togliere quella sul cestino vuoto e togliere quella sulla passata che
+non tocca niente devono far cadere cose diverse), che una passata di sole
+`saltate` **non** conti come «non ho toccato niente» — fermarsi lì lascerebbe il
+cestino mezzo pieno — che i totali si sommino invece di essere l'ultima passata,
+che il tetto dei cinquanta giri esista davvero, e che il token viaggi su ogni
+richiesta e non solo sulla prima, che è il difetto che si vedrebbe soltanto in
+mano a chi ha molte schede. Della Fase 2: la validazione della §5 caso per caso
 (JSON malformato, ordine non contiguo, confidenza bassa, importi negativi,
 `NOTA_SEMPLICE`), il prompt confrontato carattere per carattere con la specifica,
 e la pipeline con un repository in memoria — compreso il duplicato rilevato. Della
@@ -1578,6 +1630,15 @@ il messaggio compaia, che un secondo tentativo cancelli l'errore del primo invec
 di lasciarlo lì a contraddire l'esito appena arrivato, e che il rosso sia spento
 mentre la richiesta è in volo — è il pulsante da cui si perdono trentaquattro
 schede, e premerlo due volte non deve poter partire due volte.
+
+Da quando c'è il tetto, tre casi in più, e sono i tre in cui `rimaste` cambia una
+frase. Il primo è l'unico che separa due messaggi opposti a partire dagli stessi
+due numeri: zero cancellate e zero saltate con tre ancora nel cestino **non** è
+«era già vuoto». Il secondo è il ciclo che si è arreso — «restano 12 schede: premi
+di nuovo per continuare», con il pulsante grigio che torna e quello rosso che no,
+perché quella domanda ha già avuto la sua risposta. Il terzo è il singolare, che
+qui cambia anche il verbo: «resta 1 scheda» e non «restano 1 schede», due rami di
+due ternari annidati che un solo `String(n)` mancherebbe entrambi.
 
 Della ricerca, quante volte parte. Ogni ricerca calcola un embedding, cioè una
 chiamata a pagamento verso OpenAI, e i 300 ms di silenzio fra l'ultimo tasto e
@@ -1871,11 +1932,51 @@ dentro gli utenti sono chiavi di una `Map` che il test ha scritto. I casi sono
 quindi quattro: che le vive restino, che il cestino dell'altro utente non venga
 sfiorato — contato riga per riga da Postgres, non dalla risposta — che figli,
 vocali e byte nel bucket spariscano per *ognuna* delle schede e non solo per la
-prima, e che un cestino vuoto risponda `200` con due zeri. Accanto, i quattro
+prima, e che un cestino vuoto risponda `200` con tre zeri. Accanto, i quattro
 modi di scrivere male la richiesta, che sono `400` e devono lasciare tutto dov'è:
 `status=COMPLETA`, `definitivo=0`, i parametri assenti, e `DELETE
 /api/procedures/` con l'id vuoto — quest'ultimo è il motivo per cui i parametri
 esistono, e senza un caso che lo fissi nessuno saprebbe più perché.
+
+Il tetto per richiesta ha lì il suo caso, ed è l'unico posto in cui si vede
+lavorare il `take` che arriva fino alla `findMany`. Un cestino di
+`EMPTY_TRASH_BATCH_SIZE + 6` schede risponde alla prima chiamata con
+`cancellate` pari al tetto e `rimaste: 6`, alla seconda con `6` e `rimaste: 0`.
+In memoria questo caso passerebbe anche con il `take` buttato via prima di
+arrivare a Prisma, perché il repository finto taglia la lista da sé. Quelle
+schede si scrivono con una `createMany` diretta invece di passare dalla pipeline
+— che è la regola di quel file — e il commento accanto lo giustifica: qui si
+contano righe e non contenuti, e cinquantasei ingestioni vere sarebbero un
+minuto di attesa per provare un `LIMIT`.
+
+Le mutazioni provate sul tetto e sul ciclo sono ventitré, distribuite su quattro
+pacchetti: dieci sul client (ognuna delle due uscite del ciclo tolta da sola, il
+ciclo ridotto a una passata sola, il ciclo senza tetto, i totali che smettono di
+sommarsi, `rimaste` sommato invece che sostituito, l'uscita che guarda solo le
+`cancellate`), due sul contratto, tre sul servizio, quattro sull'adattatore
+Prisma e quattro sulla schermata. Ventidue cadono. Delle due che sopravvissero al
+primo giro vale la pena dire cosa è successo, perché sono due casi diversi e
+hanno richiesto due cure diverse.
+
+La prima era un difetto vero: `EMPTY_TRASH_BATCH_SIZE` portato da cinquanta a
+mille non faceva cadere niente, cioè si poteva rimettere esattamente il problema
+che questo lavoro esiste per togliere. Sopravviveva perché ogni caso sul tetto usa
+la costante **simbolicamente** — `EMPTY_TRASH_BATCH_SIZE + 6` schede, `cancellate`
+pari alla costante — e questo è giusto, altrimenti cambiarla vorrebbe dire
+riscrivere i test. Ma un test scritto così non difende il *valore*: si muove
+insieme a lui. La cura non è incollare un `toBe(50)`, che sarebbe una tautologia
+da aggiornare a ogni ripensamento, ma una guardia sull'intervallo — fra dieci e
+cento — con scritto accanto perché esistono i due estremi: sopra, il timeout del
+proxy che è la ragione di tutto il lavoro; sotto, un numero di andate e ritorni
+che costerebbe più del problema.
+
+La seconda sopravvive ancora, ed è **equivalente**: l'`orderBy: { updatedAt:
+"asc" }` di `listArchivedIds` girato in `"desc"` non cambia nessun risultato
+osservabile. Per lo svuotamento a più passate serve solo che un ordine ci sia,
+perché la seconda richiesta non ripresenti le stesse righe; la direzione la decide
+un'altra ragione, e nessun test la distingue. Il commento sopra quella riga
+diceva più di quanto fosse vero, ed è quello che è stato corretto: non si è
+aggiunto un caso per far cadere una mutazione che non descrive nessun difetto.
 
 **La scopa ha un file suo, e nasce da un buco che era scritto qui sotto.**
 `storageSweep.test.ts` prova trenta casi in memoria: le tre regole, le pagine, i
@@ -2070,6 +2171,19 @@ corpo vuoto lo decide il test; contro un server vero lo decide Express. E
 `getRecordingAudio` è l'unica risposta non-JSON di tutto il client — i byte che
 tornano si confrontano con quelli caricati, `0xff` e `0x80` compresi, che è il
 modo di accorgersi di chi li fa passare per testo.
+
+E c'è il solo caso di tutta la suite in cui due costanti di due pacchetti diversi
+si trovano faccia a faccia. `emptyTrash()` è l'unico metodo del client in cui una
+chiamata non è una richiesta: ripete finché il cestino non è vuoto, e il numero di
+schede che ogni passata porta via lo decide `EMPTY_TRASH_BATCH_SIZE` dentro il
+servizio, mentre il numero di passate che il client accetta di fare lo decide
+`GIRI_DI_SVUOTAMENTO` dentro il client. Nessun test unitario può metterle una
+contro l'altra, perché ognuna delle due metà vede solo la propria. Qui un cestino
+di `EMPTY_TRASH_BATCH_SIZE + 6` schede se ne va con una chiamata sola, e la
+risposta dice `cancellate: EMPTY_TRASH_BATCH_SIZE + 6` e `rimaste: 0`: se le due
+costanti smettessero di andare d'accordo — un tetto alzato oltre ciò che il
+servizio restituisce, un ciclo che esce troppo presto — questo è il caso che lo
+direbbe, e sarebbe l'unico.
 
 L'applicazione del CORS da lì **non** è verificabile, e il file lo dice invece di
 fingere: Node non manda `Origin`, quindi il middleware non scatta mai. Ciò che si
@@ -3047,17 +3161,19 @@ Non installate, e il perché:
   comando che qualcuno deve lanciare. La promessa che il pulsante fa a chi la
   legge è più forte di quella che il sistema mantiene, e la differenza si misura
   in giorni.
-- **Svuotare un cestino grosso è una richiesta sola, e lunga.** Il «svuota tutto»
-  adesso c'è, ma non ha nessun tetto al numero di schede — e non ce l'ha apposta,
-  perché un tetto farebbe di «svuota» una promessa che il pulsante non mantiene,
-  lasciando chi ha premuto a ripremere senza sapere quante volte ancora. Il
-  prezzo è che le cancellazioni sono in fila, una per scheda, ognuna con la sua
-  transazione e le sue chiamate al bucket: con qualche centinaio di archiviate
-  quella `DELETE` resta aperta abbastanza da incontrare il timeout di un proxy, e
-  allora il browser non riceve nessun conto pur avendo il server cancellato quasi
-  tutto. Premere di nuovo riprende da dove era rimasto, ed è l'unica consolazione:
-  il pulsante dice «Cancello…» e non quante ne mancano, perché finché la risposta
-  non arriva non c'è niente che glielo dica.
+- **Svuotare un cestino grosso adesso finisce, ma non si vede finire.** Il tetto
+  di cinquanta per richiesta e il ciclo dentro `ApiClient.emptyTrash()` hanno
+  tolto il timeout: ogni `DELETE` dura al più quanto cinquanta schede, e chi ha
+  premuto riceve un conto solo e completo. Restano due residui. Il primo è che
+  fra la prima e l'ultima richiesta non c'è nessun avanzamento — il pulsante dice
+  «Cancello…» e nient'altro, perché il ciclo sta sotto l'interfaccia e non ha modo
+  di raccontarsi mentre gira; su duemila schede sono decine di richieste dietro
+  una schermata che sembra ferma. Il secondo è che quel ciclo non riprende da
+  solo: se la rete cade alla decima passata, le prime nove sono andate e le altre
+  no, e chi guarda ritrova un cestino accorciato senza nessun messaggio che dica
+  perché. Un'interruzione, insomma, adesso è più probabile di prima — sono tante
+  richieste invece di una — e continua a costare esattamente quanto prima, cioè un
+  altro tocco sul pulsante.
 - **Il sospetto duplicato torna in coda, e la coda spende.** Cancellata la scheda
   a cui somigliava, quel vocale riparte da `BOZZA_AUDIO` con `nextAttemptAt`
   azzerato: alla passata successiva il worker rifà la trascrizione e

@@ -2,6 +2,7 @@ import {
   ApiError,
   AUTH_STORAGE_KEYS,
   CardStatus,
+  EMPTY_TRASH_BATCH_SIZE,
   ErrorCode,
   Outcome,
   RecordingStatus,
@@ -726,7 +727,7 @@ describe("il ponte: le risposte senza corpo e il cestino", () => {
     // La rotta esiste da due attivita' e il client vero non l'aveva mai
     // chiamata: i due parametri di query li scrive lui, e sbagliarne uno e' un
     // 400 che nessuna schermata potrebbe correggere.
-    expect(conto).toEqual({ cancellate: 1, saltate: 0 });
+    expect(conto).toEqual({ cancellate: 1, saltate: 0, rimaste: 0 });
     expect(await codiceDelRifiuto(client.getProcedure(daButtare))).toBe(ErrorCode.NOT_FOUND);
     // E l'altra e' ancora li'. La meta' che conta davvero: uno svuotamento che
     // prendesse tutte le schede invece delle sole archiviate passerebbe la riga
@@ -734,10 +735,49 @@ describe("il ponte: le risposte senza corpo e il cestino", () => {
     expect((await client.getProcedure(daTenere)).id).toBe(daTenere);
   });
 
-  it("un cestino vuoto risponde due zeri, e non un errore", async () => {
+  it("un cestino vuoto risponde tre zeri, e non un errore", async () => {
     const { client } = await iscritto();
 
-    expect(await client.emptyTrash()).toEqual({ cancellate: 0, saltate: 0 });
+    expect(await client.emptyTrash()).toEqual({ cancellate: 0, saltate: 0, rimaste: 0 });
+  });
+
+  it("un cestino piu' grande del tetto se ne va lo stesso, in piu' richieste", async () => {
+    // Il caso per cui il ciclo dentro `emptyTrash()` esiste, e l'unico posto in
+    // cui si vede girare contro il tetto vero invece che contro un numero
+    // inventato da uno stub. Da una parte `EMPTY_TRASH_BATCH_SIZE` taglia
+    // l'elenco nel servizio, dall'altra il client conta i giri: sono due
+    // costanti diverse in due pacchetti diversi, e questo e' l'unico test che
+    // le mette una di fronte all'altra.
+    llm.enqueue(buildExtractionContract({ titolo: "Disdire l'abbonamento del treno" }));
+    const { client } = await iscritto();
+
+    await client.createRecording({ audio: audioFinto(), metadata: METADATI });
+    const esito = await server.composition.ingestionService.processNext();
+    const idScheda = esito?.kind === "ESTRATTO" ? esito.procedureId : "";
+    await client.archiveProcedure(idScheda);
+    const { userId } = await server.prisma.procedure.findUniqueOrThrow({
+      where: { id: idScheda },
+      select: { userId: true },
+    });
+
+    // Le altre entrano con una `createMany`: qui non si sta provando cosa c'e'
+    // dentro una scheda, ma quante richieste costa portarne via tante, e farle
+    // passare tutte dall'ingestione costerebbe minuti per contare fino a due.
+    await server.prisma.procedure.createMany({
+      data: Array.from({ length: EMPTY_TRASH_BATCH_SIZE + 5 }, (_, i) => ({
+        userId,
+        titolo: `Riempitivo ${String(i)}`,
+        status: CardStatus.ARCHIVIATA,
+      })),
+    });
+
+    const conto = await client.emptyTrash();
+
+    // Cinquantasei, e non cinquanta: chi ha premuto il pulsante una volta legge
+    // un numero solo, e quel numero e' tutto il cestino. Il fatto che siano
+    // state due `DELETE` non deve uscire da `emptyTrash()`.
+    expect(conto).toEqual({ cancellate: EMPTY_TRASH_BATCH_SIZE + 6, saltate: 0, rimaste: 0 });
+    expect(await server.prisma.procedure.count({ where: { userId } })).toBe(0);
   });
 
   it("cancellare per sempre una scheda viva e' un 409, e la lascia dov'e'", async () => {

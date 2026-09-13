@@ -1,5 +1,6 @@
 import {
   CardStatus,
+  EMPTY_TRASH_BATCH_SIZE,
   Outcome,
   Scope,
   Severity,
@@ -79,8 +80,8 @@ class StorageSenzaCancellazione extends FakeStorageProvider {
 class RepoConSorpresa extends InMemoryProcedureRepository {
   sorpresa: (repo: InMemoryProcedureRepository) => Promise<void> | void = () => {};
 
-  override async listArchivedIds(userId: string): Promise<readonly string[]> {
-    const ids = await super.listArchivedIds(userId);
+  override async listArchivedIds(userId: string, take: number): Promise<readonly string[]> {
+    const ids = await super.listArchivedIds(userId, take);
     await this.sorpresa(this);
     return ids;
   }
@@ -600,7 +601,11 @@ describe("emptyTrash", () => {
     // porterebbe via insieme alle altre.
     h.repo.seed({ userId: USER, id: "ripescata-ieri", status: CardStatus.DA_RIVEDERE });
 
-    await expect(h.service.emptyTrash(USER)).resolves.toEqual({ cancellate: 2, saltate: 0 });
+    await expect(h.service.emptyTrash(USER)).resolves.toEqual({
+      cancellate: 2,
+      saltate: 0,
+      rimaste: 0,
+    });
 
     expect(h.repo.esiste("buttata-1")).toBe(false);
     expect(h.repo.esiste("buttata-2")).toBe(false);
@@ -614,7 +619,14 @@ describe("emptyTrash", () => {
 
     // Uno `userId` dimenticato nella `where` non darebbe nessun errore: darebbe
     // un due al posto di un uno, e il cestino di un estraneo vuoto.
-    await expect(h.service.emptyTrash(USER)).resolves.toEqual({ cancellate: 1, saltate: 0 });
+    await expect(h.service.emptyTrash(USER)).resolves.toEqual({
+      cancellate: 1,
+      saltate: 0,
+      // Zero anche qui, e non uno: `rimaste` e' il cestino di chi ha premuto.
+      // Se contasse tutte le righe `ARCHIVIATA` della tabella, la scheda
+      // dell'altro utente si affaccerebbe nella risposta di questo.
+      rimaste: 0,
+    });
     expect(h.repo.esiste("mia")).toBe(false);
     expect(h.repo.esiste("sua")).toBe(true);
   });
@@ -624,7 +636,11 @@ describe("emptyTrash", () => {
 
     // Zero non e' un guasto e non e' un errore: e' un cestino gia' vuoto, e chi
     // riceve la risposta ha bisogno di poterlo dire con quelle parole.
-    await expect(h.service.emptyTrash(USER)).resolves.toEqual({ cancellate: 0, saltate: 0 });
+    await expect(h.service.emptyTrash(USER)).resolves.toEqual({
+      cancellate: 0,
+      saltate: 0,
+      rimaste: 0,
+    });
   });
 
   it("toglie dal bucket i vocali di ogni scheda cancellata, e nient'altro", async () => {
@@ -652,7 +668,15 @@ describe("emptyTrash", () => {
       r.seed({ userId: USER, id: "ripescata", status: CardStatus.DA_RIVEDERE });
     };
 
-    await expect(service.emptyTrash(USER)).resolves.toEqual({ cancellate: 1, saltate: 1 });
+    // `saltate: 1` e `rimaste: 0` nella stessa risposta, e non si contraddicono:
+    // la scheda saltata e' stata saltata proprio perche' era uscita dal cestino.
+    // Un `rimaste` calcolato come «quante ne avevo meno quante ne ho cancellate»
+    // direbbe uno, e chi legge premerebbe di nuovo su un cestino vuoto.
+    await expect(service.emptyTrash(USER)).resolves.toEqual({
+      cancellate: 1,
+      saltate: 1,
+      rimaste: 0,
+    });
 
     // La scheda e' uscita dal cestino un istante prima: cancellarla comunque
     // vorrebbe dire che «Ripristina» non protegge da «Svuota».
@@ -673,7 +697,11 @@ describe("emptyTrash", () => {
     // «Non c'e' piu'» e' il risultato che si stava chiedendo. Farne un 404
     // interromperebbe lo svuotamento sulla prima scheda, e «ultima» resterebbe
     // dentro per un motivo che nessuno saprebbe leggere nella risposta.
-    await expect(service.emptyTrash(USER)).resolves.toEqual({ cancellate: 1, saltate: 1 });
+    await expect(service.emptyTrash(USER)).resolves.toEqual({
+      cancellate: 1,
+      saltate: 1,
+      rimaste: 0,
+    });
     expect(repo.esiste("ultima")).toBe(false);
   });
 
@@ -687,7 +715,11 @@ describe("emptyTrash", () => {
     repo.seed({ userId: USER, id: "prima", status: CardStatus.ARCHIVIATA, audioUrls: ["a.webm"] });
     repo.seed({ userId: USER, id: "seconda", status: CardStatus.ARCHIVIATA, audioUrls: ["b.webm"] });
 
-    await expect(service.emptyTrash(USER)).resolves.toEqual({ cancellate: 2, saltate: 0 });
+    await expect(service.emptyTrash(USER)).resolves.toEqual({
+      cancellate: 2,
+      saltate: 0,
+      rimaste: 0,
+    });
 
     // Le righe sono sparite entrambe: i byte stanno fuori dalla transazione, e
     // un bucket irraggiungibile non e' una ragione per lasciare in piedi schede
@@ -698,6 +730,86 @@ describe("emptyTrash", () => {
     // seconda chiave non sarebbe nemmeno provata, e la scopa la ritroverebbe
     // senza che nessun registro l'avesse mai nominata.
     expect([...orfani].sort()).toEqual(["a.webm", "b.webm"]);
+  });
+
+  /**
+   * Il tetto per richiesta, e cio' che dice a chi ha chiamato.
+   *
+   * Il servizio non svuota il cestino: ne svuota un pezzo, e dice quanto resta.
+   * E' la meta' server dello stesso gesto, e la sola che sa quanto costa —
+   * ogni scheda e' una transazione piu' un giro di `delete` sul bucket, e un
+   * cestino da mille schede supera il timeout di qualunque proxy prima di
+   * arrivare in fondo.
+   *
+   * I casi qui sotto guardano il taglio da tutt'e due i lati: che ci sia quando
+   * serve, e che non ci sia quando non serve. Un tetto applicato sempre — per
+   * esempio uno `slice` scritto prima del controllo — spezzerebbe in due
+   * richieste anche un cestino da tre schede, e nessuno se ne accorgerebbe
+   * guardando il risultato finale, che sarebbe lo stesso.
+   */
+  it("il tetto e' un numero piccolo, ed e' l'unica cosa che deve essere", () => {
+    // Gli altri casi di questo gruppo usano `EMPTY_TRASH_BATCH_SIZE` invece di
+    // scrivere cinquanta, e quindi seguono la costante ovunque vada: portarla a
+    // mille non li farebbe cadere. E' voluto — un test che ripete un letterale
+    // prova solo che due righe dicono la stessa cosa — ma lascia scoperta
+    // proprio la decisione per cui questo tetto esiste.
+    //
+    // Il limite superiore e' il timeout: ogni scheda costa una transazione piu'
+    // un giro sul bucket, e sopra il centinaio una richiesta sola torna a
+    // durare piu' di quanto un proxy davanti al server sia disposto ad
+    // aspettare. Quello inferiore e' l'opposto: un tetto di cinque
+    // trasformerebbe un cestino normale in dieci richieste, e la somma delle
+    // latenze costerebbe piu' del problema che si sta evitando.
+    expect(EMPTY_TRASH_BATCH_SIZE).toBeGreaterThanOrEqual(10);
+    expect(EMPTY_TRASH_BATCH_SIZE).toBeLessThanOrEqual(100);
+  });
+
+  it("ne porta via al massimo quante ne sta il tetto, e dice quante ne restano", async () => {
+    const quante = EMPTY_TRASH_BATCH_SIZE + 7;
+    for (let i = 0; i < quante; i += 1) {
+      h.repo.seed({ userId: USER, id: `buttata-${String(i)}`, status: CardStatus.ARCHIVIATA });
+    }
+
+    await expect(h.service.emptyTrash(USER)).resolves.toEqual({
+      cancellate: EMPTY_TRASH_BATCH_SIZE,
+      saltate: 0,
+      // Sette, e non zero: senza questo numero chi ha chiamato crederebbe di
+      // aver svuotato il cestino, e le sette resterebbero dentro in silenzio.
+      rimaste: 7,
+    });
+  });
+
+  it("un cestino piu' piccolo del tetto se ne va tutto in una volta", async () => {
+    // L'errore opposto: un taglio applicato a prescindere costerebbe una
+    // seconda richiesta su ogni svuotamento normale — e nei registri del
+    // server il pulsante rosso sembrerebbe premuto due volte.
+    h.repo.seed({ userId: USER, id: "una", status: CardStatus.ARCHIVIATA });
+    h.repo.seed({ userId: USER, id: "due", status: CardStatus.ARCHIVIATA });
+    h.repo.seed({ userId: USER, id: "tre", status: CardStatus.ARCHIVIATA });
+
+    await expect(h.service.emptyTrash(USER)).resolves.toEqual({
+      cancellate: 3,
+      saltate: 0,
+      rimaste: 0,
+    });
+  });
+
+  it("due passate di fila arrivano in fondo, e la seconda morde da dove si era fermata", async () => {
+    // Questo e' cio' che il client fa per davvero. Serve perche' il tetto da
+    // solo non basta: se `listArchivedIds` prendesse le schede da un ordine che
+    // cambia a ogni chiamata — o dalla coda invece che dalla testa — ogni
+    // passata potrebbe ripescare le stesse, e il cestino non si accorcerebbe
+    // mai. Il ciclo del client girerebbe cinquanta volte e si arrenderebbe.
+    const quante = EMPTY_TRASH_BATCH_SIZE + 7;
+    for (let i = 0; i < quante; i += 1) {
+      h.repo.seed({ userId: USER, id: `buttata-${String(i)}`, status: CardStatus.ARCHIVIATA });
+    }
+
+    const prima = await h.service.emptyTrash(USER);
+    const seconda = await h.service.emptyTrash(USER);
+
+    expect(prima.rimaste).toBe(7);
+    expect(seconda).toEqual({ cancellate: 7, saltate: 0, rimaste: 0 });
   });
 });
 
