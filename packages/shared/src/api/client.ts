@@ -32,6 +32,7 @@ import {
   meResponseSchema,
   openSessionsResponseSchema,
   revokeOtherSessionsResponseSchema,
+  revokeSessionResponseSchema,
   type AuthSession,
   type ChangePasswordRequest,
   type HealthResponse,
@@ -41,6 +42,8 @@ import {
   type PublicUser,
   type RevokeOtherSessionsRequest,
   type RevokeOtherSessionsResponse,
+  type RevokeSessionRequest,
+  type RevokeSessionResponse,
   type SignupRequest,
 } from "./schemas.js";
 
@@ -181,12 +184,32 @@ export interface ApiClient {
   revokeOtherSessions(input: RevokeOtherSessionsRequest): Promise<RevokeOtherSessionsResponse>;
 
   /**
-   * I dispositivi collegati, con la sola data in cui lo sono diventati.
+   * Chiude una sessione sola, quella il cui `id` viene dall'elenco.
    *
-   * Serve a dare un senso al numero che torna da `revokeOtherSessions`: «ne ho
-   * scollegate due» dice qualcosa solo a chi sapeva che ce n'erano tre. Non
-   * c'e' modo di chiuderne una sola — l'elenco si guarda, non si tocca — e la
-   * sola informazione per riga e' quando la sessione e' nata.
+   * Chiede la password come il gesto di sopra, e per la stessa ragione: farlo
+   * tre volte di fila invece che in un tocco non e' una difesa, quindi il campo
+   * che protegge «scollega gli altri» deve proteggere anche questo.
+   *
+   * Risponde `{ revoked: 0 }` se quella sessione era gia' chiusa — due schede
+   * aperte sullo stesso account e lo stesso pulsante premuto due volte — e non
+   * un errore: il risultato voluto c'e' comunque. Zero e' anche cio' che torna
+   * se l'id e' di un'altra persona, e non un 404 che confermerebbe l'esistenza
+   * di una sessione altrui.
+   *
+   * Fallisce con `INVALID_CREDENTIALS` se la password non e' quella giusta, e
+   * con `CONFLICT` se l'id e' quello della sessione da cui si sta chiamando:
+   * chiudere la propria e' il logout, e passa da `logout()`.
+   */
+  revokeSession(input: RevokeSessionRequest): Promise<RevokeSessionResponse>;
+
+  /**
+   * I dispositivi collegati, con la data in cui lo sono diventati e un id.
+   *
+   * Serve a dare un senso al numero che torna da `revokeOtherSessions` — «ne ho
+   * scollegate due» dice qualcosa solo a chi sapeva che ce n'erano tre — e a
+   * dare a `revokeSession` la riga su cui lavorare. L'`id` e' li' per il secondo
+   * motivo e solo per quello: e' arrivato nel contratto insieme al gesto che lo
+   * consuma, non prima.
    */
   listSessions(): Promise<OpenSessionsResponse>;
   getAccessToken(): string | null;
@@ -590,6 +613,24 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         //
         // La rotazione resta dentro la stessa famiglia, che e' proprio quella
         // risparmiata: il token appena ruotato e' ancora buono dopo la revoca.
+        true,
+      );
+    },
+
+    revokeSession(input: RevokeSessionRequest): Promise<RevokeSessionResponse> {
+      return send(
+        {
+          method: "POST",
+          path: "/api/auth/sessions/revoke-one",
+          body: input,
+          schema: revokeSessionResponseSchema,
+          auth: true,
+        },
+        // Con rotazione, e qui il ragionamento di `revokeOtherSessions` regge
+        // ancora meglio: ripetere dopo un 401 di `requireAuth` non rischia di
+        // chiudere due sessioni, perche' la prima chiamata non e' arrivata al
+        // gestore. E anche se fosse arrivata, la seconda troverebbe la famiglia
+        // gia' revocata e risponderebbe zero — che e' vero.
         true,
       );
     },

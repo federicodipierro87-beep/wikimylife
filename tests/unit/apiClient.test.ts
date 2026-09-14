@@ -875,11 +875,13 @@ describe("svuotare il cestino", () => {
 /**
  * L'elenco dei dispositivi collegati.
  *
- * Due rotte vicine si contendono la stessa parola: `GET /api/auth/sessions`
- * legge, `POST /api/auth/sessions/revoke` chiude. Sbagliare percorso qui non
- * produce un errore di compilazione — sono entrambe stringhe — e il danno non e'
- * simmetrico: chiedere la lista alla rotta sbagliata scollegherebbe dei
- * dispositivi all'apertura di una schermata.
+ * Tre rotte vicine si contendono la stessa parola: `GET /api/auth/sessions`
+ * legge, `POST /api/auth/sessions/revoke` chiude tutte le altre,
+ * `POST /api/auth/sessions/revoke-one` ne chiude una. Sbagliare percorso qui non
+ * produce un errore di compilazione — sono tutte e tre stringhe — e il danno non
+ * e' simmetrico: chiedere la lista alla rotta sbagliata scollegherebbe dei
+ * dispositivi all'apertura di una schermata, e chiuderne una con il percorso
+ * dell'altra le chiuderebbe tutte.
  */
 describe("elenco delle sessioni", () => {
   const ROTTA = "GET /api/auth/sessions";
@@ -891,8 +893,8 @@ describe("elenco delle sessioni", () => {
         status: 200,
         payload: {
           sessions: [
-            { createdAt: "2026-04-01T10:00:00.000Z", current: true },
-            { createdAt: "2026-03-01T10:00:00.000Z", current: false },
+            { id: "fam-questo", createdAt: "2026-04-01T10:00:00.000Z", current: true },
+            { id: "fam-altro", createdAt: "2026-03-01T10:00:00.000Z", current: false },
           ],
         },
       }),
@@ -907,6 +909,11 @@ describe("elenco delle sessioni", () => {
     const { sessions } = await client.listSessions();
 
     expect(sessions).toHaveLength(2);
+    // Gli id arrivano fino a chi chiama, e nell'ordine in cui il server li ha
+    // messi. Sono l'argomento di `revokeSession`: uno schema che li lasciasse
+    // cadere — o un `.transform` che li rimescolasse — farebbe premere alla
+    // schermata il pulsante di una riga e chiudere il dispositivo di un'altra.
+    expect(sessions.map((s) => s.id)).toEqual(["fam-questo", "fam-altro"]);
     // GET e non POST: un verbo sbagliato su `/sessions` non troverebbe nessuna
     // rotta e darebbe un 404, ma un percorso sbagliato con il verbo giusto — un
     // `/sessions/revoke` copiato dal metodo accanto — troverebbe eccome.
@@ -918,6 +925,27 @@ describe("elenco delle sessioni", () => {
     expect(calls[1]?.authorization).toBe("Bearer access-1");
   });
 
+  it("una riga senza «id» non passa per una sessione", async () => {
+    // Il campo mancante diventerebbe `undefined`, e la schermata costruirebbe
+    // pulsanti che spediscono `sessionId: undefined` — cioe' un corpo che il
+    // server rifiuta con VALIDATION_FAILED, un rosso incomprensibile su ogni
+    // riga. Meglio fermarsi qui, dove il messaggio dice «risposta non conforme»
+    // e punta al contratto.
+    const { fetchImpl } = stubFetch({
+      [ROTTA]: () => ({
+        status: 200,
+        payload: { sessions: [{ createdAt: "2026-04-01T10:00:00.000Z", current: true }] },
+      }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(client.listSessions()).rejects.toBeInstanceOf(ApiError);
+  });
+
   it("una riga senza «current» non passa per una sessione", async () => {
     // Il campo mancante diventerebbe `undefined`, cioe' falso: la schermata non
     // marcherebbe nessuna riga come «questo dispositivo», e chi legge
@@ -925,7 +953,7 @@ describe("elenco delle sessioni", () => {
     const { fetchImpl } = stubFetch({
       [ROTTA]: () => ({
         status: 200,
-        payload: { sessions: [{ createdAt: "2026-04-01T10:00:00.000Z" }] },
+        payload: { sessions: [{ id: "fam-questo", createdAt: "2026-04-01T10:00:00.000Z" }] },
       }),
     });
     const client = createApiClient({
@@ -952,5 +980,112 @@ describe("elenco delle sessioni", () => {
     });
 
     await expect(client.listSessions()).resolves.toEqual({ sessions: [] });
+  });
+});
+
+/**
+ * Chiuderne una sola.
+ *
+ * Il metodo e' quasi tutto percorso e corpo — non c'e' niente da calcolare — ed
+ * e' proprio per questo che va pinzato qui: gli unici modi di sbagliarlo sono
+ * mandare la richiesta a `/sessions/revoke`, che chiude tutto, o dimenticare uno
+ * dei due campi, che il server rifiuta senza dire quale schermata ha sbagliato.
+ */
+describe("chiudere una sessione sola", () => {
+  const ROTTA = "POST /api/auth/sessions/revoke-one";
+
+  it("manda id e password al percorso che ne chiude una, non a quello che le chiude tutte", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      [ROTTA]: () => ({ status: 200, payload: { revoked: 1 } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+    await client.login({ email: "chi@esempio.it", password: "password-lunga-abbastanza" });
+
+    const esito = await client.revokeSession({
+      sessionId: "fam-altro",
+      currentPassword: "password-lunga-abbastanza",
+    });
+
+    expect(esito).toEqual({ revoked: 1 });
+    expect(calls[1]?.method).toBe("POST");
+    // Il suffisso per intero. `/sessions/revoke` e' un prefisso di
+    // `/sessions/revoke-one`, quindi un confronto fatto con `startsWith`
+    // altrove — o una riga copiata e accorciata qui — passerebbe di qua e
+    // chiuderebbe ogni altro dispositivo dell'utente.
+    expect(new URL(calls[1]?.url ?? "").pathname).toBe("/api/auth/sessions/revoke-one");
+    // I due campi, e con i nomi che il contratto si aspetta: `sessionId` e non
+    // `id`, `currentPassword` e non `password`.
+    expect(calls[1]?.body).toEqual({
+      sessionId: "fam-altro",
+      currentPassword: "password-lunga-abbastanza",
+    });
+    // Autenticata: senza il token il server non saprebbe di chi e' la famiglia
+    // da chiudere, e la password da sola non glielo direbbe.
+    expect(calls[1]?.authorization).toBe("Bearer access-1");
+  });
+
+  it("uno zero e' una risposta, non un errore", async () => {
+    // La riga era gia' chiusa, oppure non era di chi chiede. Il client non ci
+    // mette del suo: non alza, non trasforma lo zero in un rifiuto, e lascia
+    // decidere alla schermata cosa dirne — che e' l'unica che sa che l'utente
+    // aveva appena premuto un pulsante.
+    const { fetchImpl } = stubFetch({
+      [ROTTA]: () => ({ status: 200, payload: { revoked: 0 } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(
+      client.revokeSession({ sessionId: "fam-sparita", currentPassword: "x" }),
+    ).resolves.toEqual({ revoked: 0 });
+  });
+
+  it("il CONFLICT della propria sessione arriva come ApiError, con il suo codice", async () => {
+    // E' la risposta che il server da' a chi chiede di chiudere la sessione da
+    // cui sta chiedendo. Il client non la traduce e non la nasconde: il codice
+    // serve alla schermata per distinguere «hai premuto la riga sbagliata» da
+    // «la password non e' quella».
+    const { fetchImpl } = stubFetch({
+      [ROTTA]: () => ({
+        status: 409,
+        payload: { error: { code: "CONFLICT", message: "Questa e' la sessione da cui chiedi" } },
+      }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(
+      client.revokeSession({ sessionId: "fam-questo", currentPassword: "x" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("una risposta con un campo in piu' non passa", async () => {
+    // Lo schema e' `.strict()` di la', e qui si vede il perche': un server che
+    // aggiungesse `familyId` alla risposta rimanderebbe indietro l'id che ha
+    // appena chiuso, e la schermata se lo ritroverebbe fra le mani senza sapere
+    // che farne. Meglio che il ponte si rompa subito.
+    const { fetchImpl } = stubFetch({
+      [ROTTA]: () => ({ status: 200, payload: { revoked: 1, familyId: "fam-altro" } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(
+      client.revokeSession({ sessionId: "fam-altro", currentPassword: "x" }),
+    ).rejects.toBeInstanceOf(ApiError);
   });
 });

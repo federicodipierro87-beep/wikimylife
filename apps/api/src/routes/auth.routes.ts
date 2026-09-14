@@ -4,6 +4,7 @@ import {
   logoutRequestSchema,
   refreshRequestSchema,
   revokeOtherSessionsRequestSchema,
+  revokeSessionRequestSchema,
   signupRequestSchema,
   type LogoutResponse,
   type MeResponse,
@@ -29,11 +30,12 @@ export function createAuthRouter(deps: {
    *
    * Le prime tre — `/signup`, `/login`, `/refresh` — accettano un segreto da
    * chi non e' ancora nessuno, e sono il bersaglio ovvio. `/password` e
-   * `/sessions/revoke` sono dietro `requireAuth` e si limitano lo stesso, per
-   * due ragioni che si sommano: sono i due posti in cui chi ha rubato un access
-   * token puo' indovinare la password online, e ogni tentativo costa un argon2
-   * alla CPU dell'API — due, su `/password`, che verifica e poi calcola —
-   * quindi martellarle costa a chi risponde piu' che a chi martella.
+   * `/sessions/revoke` e `/sessions/revoke-one` sono dietro `requireAuth` e si
+   * limitano lo stesso, per due ragioni che si sommano: sono i posti in cui chi
+   * ha rubato un access token puo' indovinare la password online, e ogni
+   * tentativo costa un argon2 alla CPU dell'API — due, su `/password`, che
+   * verifica e poi calcola — quindi martellarle costa a chi risponde piu' che a
+   * chi martella.
    *
    * Le finestre non si mescolano: la chiave del limitatore contiene la rotta,
    * quindi un cambio password non consuma i tentativi di `/login` e nessuno dei
@@ -119,6 +121,35 @@ export function createAuthRouter(deps: {
   });
 
   /**
+   * `POST /sessions/revoke-one`, con l'id nel corpo e non nel percorso.
+   *
+   * ## Perche' non `POST /sessions/:id/revoke`
+   *
+   * Perche' la chiave del limitatore e' costruita su `req.path`, che e' il
+   * percorso *concreto* della richiesta e non lo schema della rotta
+   * (`rateLimit.ts`). Con l'id nel percorso, ogni id aprirebbe un secchiello
+   * nuovo: questa rotta accetta una password, e diventerebbe un oracolo senza
+   * limite, perche' basta cambiare l'UUID a ogni tentativo per non incontrare
+   * mai il 429. `DELETE /sessions/:id` cade per la stessa ragione, piu' quella
+   * gia' scritta su `/sessions/revoke` a proposito dei corpi sulle DELETE.
+   *
+   * ## Perche' non e' `/sessions/revoke` con un campo facoltativo
+   *
+   * Perche' sarebbe un campo *assente* a decidere se il gesto ne chiude una o
+   * tutte, e un corpo malformato sceglierebbe il ramo piu' distruttivo.
+   *
+   * `-one` e non `-single` o `/one`: il percorso deve leggersi accanto a
+   * `/sessions/revoke` e dire in che cosa differisce, perche' i due si
+   * scambiano di posto in un copia-incolla senza che niente smetta di compilare.
+   */
+  router.post("/sessions/revoke-one", deps.rateLimit, deps.requireAuth, async (req, res) => {
+    const { userId, familyId } = authContext(req);
+    const input = parseBody(revokeSessionRequestSchema, req.body);
+    const body = await deps.authService.revokeSession(userId, familyId, input);
+    res.status(200).json(body);
+  });
+
+  /**
    * `GET /sessions`, e sotto `requireAuth` soltanto.
    *
    * Fuori da `rateLimit` per la ragione gia' scritta per `/me`: non accetta
@@ -127,9 +158,13 @@ export function createAuthRouter(deps: {
    * spegnere l'elenco proprio a chi ricarica la schermata mentre cerca di capire
    * quale dispositivo scollegare.
    *
-   * Convive con `POST /sessions/revoke` senza contendergliela: verbo diverso e
-   * percorso diverso. Vale la pena provarlo, perche' un giorno qualcuno
-   * scrivera' `router.get("/sessions/:id")` e il primo a rompersi sara' l'altro.
+   * Convive con le altre due sotto `/sessions` senza contendergliele: verbo
+   * diverso e percorsi diversi, tutti e tre letterali. E' anche il motivo per
+   * cui l'id di `revoke-one` sta nel corpo: il commento di questa rotta
+   * avvisava che «un giorno qualcuno scrivera' `router.get("/sessions/:id")` e
+   * il primo a rompersi sara' l'altro», e con l'id nel corpo quel giorno non
+   * arriva. Il caso che prova le tre combinazioni sbagliate sta
+   * nell'integrazione, ed e' cresciuto insieme alle rotte.
    */
   router.get("/sessions", deps.requireAuth, async (req, res) => {
     const { userId, familyId } = authContext(req);

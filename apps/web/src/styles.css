@@ -582,6 +582,17 @@ button:focus-visible {
   font-size: 0.8rem;
 }
 
+/* Spinto a destra, lontano dalla data che lo riguarda meno di quanto sembri.
+   Il `margin-left: auto` e non una colonna: le righe sono due tipi diversi —
+   quella di questo dispositivo finisce con una parola, le altre con un pulsante
+   — e una griglia imporrebbe a tutte la larghezza della piu' larga, lasciando
+   una colonna vuota accanto all'unica riga che non si puo' premere. */
+.dispositivo__chiudi {
+  margin-left: auto;
+  font-size: 0.8rem;
+  padding: 0.15rem 0.4rem;
+}
+
 .lista-puntata {
   margin: 0;
   padding-left: 1.1rem;

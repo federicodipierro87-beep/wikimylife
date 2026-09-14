@@ -144,13 +144,26 @@ export const revokeOtherSessionsResponseSchema = z
  * altro nome. La nascita e' il minimo sulla famiglia, e distingue «il telefono
  * di ieri» da «quello di due anni fa» senza dire nient'altro.
  *
- * Non c'e' un identificativo, perche' non c'e' un gesto che lo consumi: si
- * scollegano tutti gli altri insieme, e per quello basta sapere quale e'
- * `current`. Un id di sessione spedito senza che serva e' un id di sessione che
- * prima o poi finisce in un log.
+ * ## Perche' l'`id` compare solo adesso
+ *
+ * Fino al commit che ha aggiunto `revokeSessionRequestSchema` questo schema
+ * aveva due campi, e il commento diceva che il terzo non c'era «perche' non
+ * c'e' un gesto che lo consumi»: si scollegavano tutti gli altri insieme, e per
+ * quello bastava sapere quale fosse `current`. Un id spedito senza che serva e'
+ * un id che prima o poi finisce in un log — e a quel punto e' un identificativo
+ * di sessione lasciato in giro per niente.
+ *
+ * Adesso il gesto c'e', e l'id e' arrivato nello stesso commit che lo consuma.
+ * La regola che resta e' quella, non il numero dei campi: un identificativo si
+ * aggiunge al contratto insieme alla cosa che lo usa, mai prima. E' un
+ * `familyId`, cioe' un dispositivo e non un token — la catena di rotazioni non
+ * cambia nome quando ruota, quindi l'id di una riga di questo elenco resta
+ * valido finche' quella sessione e' viva.
  */
 export const openSessionSchema = z
   .object({
+    /** Il `familyId`: quello che `revokeSession` accetta come `sessionId`. */
+    id: z.string(),
     /** ISO, come tutte le date del contratto. */
     createdAt: z.string(),
     /** Quella da cui arriva la richiesta: l'unica che «scollega gli altri» risparmia. */
@@ -161,6 +174,66 @@ export const openSessionSchema = z
 export const openSessionsResponseSchema = z
   .object({
     sessions: z.array(openSessionSchema),
+  })
+  .strict();
+
+/**
+ * «Chiudi questa riga», una sola.
+ *
+ * ## Perche' l'id sta nel corpo e non nel percorso
+ *
+ * La rotta e' `POST /api/auth/sessions/revoke-one`, e non
+ * `POST /sessions/:id/revoke` ne' `DELETE /sessions/:id`. La ragione e' il
+ * limitatore: la chiave di un secchiello e' costruita sul percorso concreto
+ * della richiesta, non sullo schema della rotta. Con l'id nel percorso ogni id
+ * diverso aprirebbe un secchiello nuovo, e una rotta che accetta una password
+ * diventerebbe un oracolo senza limite — basta cambiare l'UUID a ogni tentativo
+ * per non incontrare mai il 429.
+ *
+ * ## Perche' non e' `revokeOtherSessions` con un campo in piu'
+ *
+ * Perche' un `sessionId` facoltativo farebbe decidere a un campo *assente* se
+ * il gesto ne chiude una o tutte, e un corpo malformato sceglierebbe il ramo
+ * piu' distruttivo. Due gesti con due conseguenze cosi' diverse hanno due
+ * schemi e due rotte.
+ *
+ * ## Perche' chiede la password anche per una sola
+ *
+ * Per la ragione di `revokeOtherSessions`, che qui non si indebolisce: senza,
+ * chi ha in mano il telefono rubato chiude le altre una per una e ottiene
+ * esattamente cio' che il campo dell'altro gesto esiste per impedire. Farlo in
+ * tre tocchi invece che in uno non e' una difesa.
+ *
+ * `min(1).max(256)` come in `login` e in `revokeOtherSessions`, e per il motivo
+ * gia' scritto li': si sta verificando una password che esiste gia', non
+ * accettandone una nuova.
+ */
+export const revokeSessionRequestSchema = z
+  .object({
+    /** L'`id` di una riga di `openSessionsResponseSchema`, cioe' un `familyId`. */
+    sessionId: z.string().min(1),
+    currentPassword: z.string().min(1).max(256),
+  })
+  .strict();
+
+/**
+ * Quante ne sono cadute: zero o uno, e il tetto non e' nello schema.
+ *
+ * Zero e' la risposta a «l'avevo gia' chiusa», e non un 404: due schede aperte
+ * sullo stesso account, si preme lo stesso pulsante due volte, e la seconda
+ * volta il risultato voluto c'e' gia'. Un errore direbbe «e' andata male» a chi
+ * ha ottenuto cio' che chiedeva.
+ *
+ * Nessun `.max(1)`, pur essendo uno il massimo vero. Un tetto qui vive nel
+ * client, e il suo unico effetto possibile e' rifiutare come non conforme la
+ * risposta di un'operazione riuscita: il server avrebbe chiuso la sessione e
+ * l'utente leggerebbe un errore di validazione. L'invariante «una richiesta
+ * chiude al massimo una famiglia» si difende con un test sul servizio, dove
+ * fallire costa un test rosso e non un utente confuso.
+ */
+export const revokeSessionResponseSchema = z
+  .object({
+    revoked: z.number().int().nonnegative(),
   })
   .strict();
 
@@ -226,6 +299,8 @@ export type RevokeOtherSessionsRequest = z.infer<typeof revokeOtherSessionsReque
 export type RevokeOtherSessionsResponse = z.infer<typeof revokeOtherSessionsResponseSchema>;
 export type OpenSession = z.infer<typeof openSessionSchema>;
 export type OpenSessionsResponse = z.infer<typeof openSessionsResponseSchema>;
+export type RevokeSessionRequest = z.infer<typeof revokeSessionRequestSchema>;
+export type RevokeSessionResponse = z.infer<typeof revokeSessionResponseSchema>;
 export type RefreshRequest = z.infer<typeof refreshRequestSchema>;
 export type LogoutRequest = z.infer<typeof logoutRequestSchema>;
 export type PublicUser = z.infer<typeof publicUserSchema>;

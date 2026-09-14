@@ -64,7 +64,22 @@ type Esito =
 type EsitoRevoca =
   | { readonly kind: "niente" }
   | { readonly kind: "errore"; readonly messaggio: string }
-  | { readonly kind: "fatto"; readonly quante: number };
+  | { readonly kind: "fatto"; readonly quante: number }
+  /**
+   * Una sola, scelta nell'elenco.
+   *
+   * Un ramo suo e non `fatto` con `quante: 1`: quella frase dice «un altro
+   * dispositivo e' stato scollegato», che qui sarebbe vera e insufficiente —
+   * gli altri due sono ancora nella lista sopra, e chi legge non saprebbe se il
+   * gesto ha preso la riga che aveva premuto o una a caso. E `quante: 0`
+   * direbbe «non c'era nessun altro dispositivo collegato», che nel caso di una
+   * riga gia' chiusa e' semplicemente falso.
+   *
+   * Il numero c'e' lo stesso perche' lo zero qui ha un significato suo: «quella
+   * sessione era gia' chiusa», che succede davvero con due schede aperte sullo
+   * stesso account.
+   */
+  | { readonly kind: "chiusa"; readonly quante: number };
 
 export function AccountScreen(): React.JSX.Element {
   const apiClient = useApi();
@@ -272,15 +287,53 @@ function ScollegaAltri(): React.JSX.Element {
   const [esito, setEsito] = useState<EsitoRevoca>({ kind: "niente" });
 
   /**
+   * Quale riga sta partendo, non «una riga sta partendo».
+   *
+   * Un booleano condiviso spegnerebbe tutti e tre i pulsanti, e chi guarda non
+   * saprebbe quale ha premuto — che e' l'unica cosa che vorrebbe sapere in un
+   * elenco di date tutte uguali. Con l'id dentro, solo la riga premuta cambia
+   * etichetta, e le altre restano vive: e' anche la ragione per cui la chiave
+   * della lista deve essere l'id e non la posizione.
+   */
+  const [inVolo, setInVolo] = useState<string | null>(null);
+
+  /**
    * L'elenco vive qui e non in una sezione sua.
    *
-   * Da solo non servirebbe a niente: e' una lista di date che non si possono
-   * toccare. Accanto al pulsante serve a due cose — dire quanti dispositivi ci
-   * sono *prima* di premere, e dare un metro al numero che torna dopo, perche'
-   * «ne ho scollegate due» significa qualcosa solo a chi sapeva che ce n'erano
-   * tre.
+   * Serve a tre cose, e nessuna delle tre funziona lontano dal modulo: dire
+   * quanti dispositivi ci sono *prima* di premere; dare un metro al numero che
+   * torna dopo, perche' «ne ho scollegate due» significa qualcosa solo a chi
+   * sapeva che ce n'erano tre; e ospitare i pulsanti che ne chiudono uno solo,
+   * che consumano la password scritta nel campo qui sotto.
    */
   const elenco = useAsync(() => apiClient.listSessions(), [apiClient]);
+
+  /**
+   * Una sola, quella premuta.
+   *
+   * Svuota il campo come fa `invia`, e per la stessa ragione piu' una: dopo il
+   * primo gesto tutti i pulsanti tornano spenti, quindi un secondo clic
+   * distratto sulla riga accanto non parte da solo. Chi vuole chiuderne due
+   * riscrive la password, ed e' voluto — sono due decisioni diverse.
+   */
+  async function chiudiUna(sessionId: string): Promise<void> {
+    setInVolo(sessionId);
+    setEsito({ kind: "niente" });
+    try {
+      const { revoked } = await apiClient.revokeSession({
+        sessionId,
+        currentPassword: password,
+      });
+      setPassword("");
+      setEsito({ kind: "chiusa", quante: revoked });
+      elenco.ricarica();
+    } catch (error: unknown) {
+      // Come sopra: niente `ricarica` quando non e' stato revocato niente.
+      setEsito({ kind: "errore", messaggio: messaggioDi(error) });
+    } finally {
+      setInVolo(null);
+    }
+  }
 
   async function invia(event: React.FormEvent): Promise<void> {
     event.preventDefault();
@@ -318,13 +371,31 @@ function ScollegaAltri(): React.JSX.Element {
         con la stessa password di adesso, che non cambia.
       </p>
 
-      <Dispositivi stato={elenco.stato} />
-
+      {/* L'elenco sta *dentro* il modulo, e non gli fa da didascalia sopra.
+          Ogni riga ha un pulsante che manda al server la password scritta nel
+          campo qui sotto: sono lo stesso gesto in due pezzi, e separarli
+          vorrebbe dire un campo password fuori da qualunque form — che i
+          gestori di password trattano peggio, e che rende `type="button"` sui
+          pulsanti di riga una precauzione senza effetto invece della cosa che
+          impedisce a un clic sulla riga di far partire «scollega gli altri». */}
       <form
         onSubmit={(e) => {
           void invia(e);
         }}
       >
+        <Dispositivi
+          stato={elenco.stato}
+          // Spenti finche' il campo e' vuoto, con la stessa disciplina del
+          // pulsante in fondo: senza password la richiesta partirebbe per
+          // tornare indietro con un VALIDATION_FAILED, cioe' un errore rosso al
+          // posto di un pulsante che si vede non essere ancora pronto.
+          puoiChiudere={password !== ""}
+          inVolo={inVolo}
+          onChiudi={(id) => {
+            void chiudiUna(id);
+          }}
+        />
+
         <label className="campo">
           <span>La tua password</span>
           <input
@@ -362,6 +433,20 @@ function ScollegaAltri(): React.JSX.Element {
           </p>
         )}
 
+        {esito.kind === "chiusa" && (
+          // Lo zero non e' un errore e non e' un successo pieno: e' «quella
+          // riga era gia' chiusa», che capita davvero con due schede aperte
+          // sullo stesso account e con l'elenco vecchio di qualche minuto.
+          // Dirlo com'e' evita la sola cosa peggiore delle due, cioe' far
+          // credere di aver appena chiuso un dispositivo che era gia' andato —
+          // e a chi ha perso un telefono quel dettaglio cambia la giornata.
+          <p className="avviso avviso--fatto" role="status">
+            {esito.quante === 0
+              ? "Quel dispositivo era gia' scollegato."
+              : "Il dispositivo e' stato scollegato."}
+          </p>
+        )}
+
         <button type="submit" className="bottone" disabled={attesa}>
           {attesa ? "Un attimo…" : "Scollega gli altri"}
         </button>
@@ -389,8 +474,26 @@ function ScollegaAltri(): React.JSX.Element {
  * riusciti a contarli. Un `role="alert"` rosso accanto a un modulo intatto
  * farebbe credere che il gesto sia diventato impossibile, e chi ha appena perso
  * un telefono smetterebbe di provarci.
+ *
+ * ## Perche' sulla riga di questo dispositivo non c'e' nessun pulsante
+ *
+ * Perche' chiudere la propria sessione e' uscire, e uscire sta dieci righe piu'
+ * giu' nella stessa schermata, con il suo nome e la sua frase. Un secondo
+ * pulsante che fa la stessa cosa con un'altra etichetta e' un modo per premerlo
+ * credendo di premere l'altro. Il server la rifiuta comunque con un 409 — quella
+ * e' la difesa contro un client che sbaglia, non la ragione per cui qui manca.
  */
-function Dispositivi({ stato }: { stato: Async<OpenSessionsResponse> }): React.JSX.Element {
+function Dispositivi({
+  stato,
+  puoiChiudere,
+  inVolo,
+  onChiudi,
+}: {
+  stato: Async<OpenSessionsResponse>;
+  puoiChiudere: boolean;
+  inVolo: string | null;
+  onChiudi: (sessionId: string) => void;
+}): React.JSX.Element {
   if (stato.kind === "attesa") {
     return <p className="muto">Conto i dispositivi collegati…</p>;
   }
@@ -404,18 +507,46 @@ function Dispositivi({ stato }: { stato: Async<OpenSessionsResponse> }): React.J
   return (
     <>
       <ul className="dispositivi">
-        {sessioni.map((sessione, indice) => (
-          // La chiave e' la posizione perche' non c'e' altro: il server manda
-          // due campi e nessun identificativo, di proposito — non esiste un
-          // gesto che ne prenda uno solo. Va bene proprio per quel motivo: la
-          // lista non si riordina e non si modifica a pezzi, si ricarica intera.
-          <li key={indice} className="dispositivo">
-            <span>
-              Collegato {formatQuando(sessione.createdAt) ?? "in un momento che non so leggere"}
-            </span>
-            {sessione.current && <span className="dispositivo__questo">questo dispositivo</span>}
-          </li>
-        ))}
+        {sessioni.map((sessione) => {
+          const quando = formatQuando(sessione.createdAt) ?? "in un momento che non so leggere";
+          return (
+            // La chiave e' l'id, e da quando i pulsanti esistono non e' piu' una
+            // formalita'. Con la posizione, React riusa l'elemento della riga
+            // sparita per quella che le scivola sotto: il pulsante che aveva il
+            // fuoco resta a fuoco e adesso scollega un altro dispositivo, e
+            // premere due volte di seguito — la cosa piu' naturale del mondo
+            // quando si sta ripulendo un elenco — chiude una riga che nessuno
+            // aveva guardato.
+            <li key={sessione.id} className="dispositivo">
+              <span>Collegato {quando}</span>
+              {sessione.current ? (
+                <span className="dispositivo__questo">questo dispositivo</span>
+              ) : (
+                <button
+                  // `type="button"` e non il predefinito: qui dentro c'e' un
+                  // `<form>`, e un pulsante senza tipo e' un submit. Premere
+                  // «Scollega» su una riga farebbe partire «scollega gli altri»,
+                  // cioe' il piu' distruttivo dei due gesti al posto del piu'
+                  // piccolo, con la password gia' scritta nel campo.
+                  type="button"
+                  className="bottone bottone--piatto dispositivo__chiudi"
+                  disabled={!puoiChiudere || inVolo === sessione.id}
+                  // Tre pulsanti «Scollega» identici uno sotto l'altro non si
+                  // distinguono leggendoli a voce. Il nome accessibile ripete la
+                  // data della riga, ed e' l'unica cosa che le distingue.
+                  // L'`aria-label` vince sul contenuto, quindi resta lo stesso
+                  // anche mentre l'etichetta visibile dice «Un attimo».
+                  aria-label={`Scollega il dispositivo collegato ${quando}`}
+                  onClick={() => {
+                    onChiudi(sessione.id);
+                  }}
+                >
+                  {inVolo === sessione.id ? "Un attimo…" : "Scollega"}
+                </button>
+              )}
+            </li>
+          );
+        })}
       </ul>
       <p className="muto">
         Di ognuno so soltanto da quando e&apos; collegato: non tengo traccia

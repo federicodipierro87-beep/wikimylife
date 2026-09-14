@@ -157,6 +157,41 @@ export interface AuthRepository extends FamilyRegistry {
   }): Promise<number>;
 
   /**
+   * Revoca una famiglia sola, ma solo se e' di quell'utente.
+   *
+   * ## Perche' non e' `revokeFamily` con un parametro in piu'
+   *
+   * Perche' `revokeFamily(familyId, revokedAt)` — due righe piu' su — non ha
+   * lo `userId`, e non lo ha per un motivo: i suoi due chiamanti partono da una
+   * riga gia' letta dal database e gia' attribuita a qualcuno. La reuse
+   * detection ha in mano il token riusato, il logout ha in mano il token che gli
+   * e' stato consegnato: in entrambi i casi la famiglia non e' un dato che
+   * arriva da fuori, e' una conseguenza di cio' che si e' appena letto.
+   *
+   * Qui il `familyId` arriva dal corpo di una richiesta HTTP, cioe' da
+   * chiunque. Raggiungere `revokeFamily` con quel valore vorrebbe dire «revoca
+   * la sessione di chiunque, se ne indovini l'id»: un `familyId` e' un UUID e
+   * non si indovina a caso, ma e' anche un identificativo che passa per i log,
+   * per le risposte e per la memoria di un browser, e una rotta che lo accetta
+   * senza controllare a chi appartiene e' una rotta che trasforma un id
+   * trapelato in una disconnessione altrui.
+   *
+   * Chi legge questo file trovera' due metodi quasi uguali e sara' tentato di
+   * cancellarne uno. Non si possono unire: uno e' sicuro *perche'* non ha lo
+   * `userId`, l'altro e' sicuro *perche'* ce l'ha.
+   *
+   * Restituisce quante righe ha revocato: zero se la famiglia era gia' chiusa,
+   * zero se non e' di quell'utente, e zero se non esiste. I tre casi si
+   * confondono di proposito — distinguerli direbbe a chi tira a indovinare se
+   * l'id esiste.
+   */
+  revokeFamilyOfUser(input: {
+    readonly userId: string;
+    readonly familyId: string;
+    readonly revokedAt: Date;
+  }): Promise<number>;
+
+  /**
    * Sostituisce la password e chiude ogni sessione dell'utente, insieme.
    *
    * ## Perche' e' un metodo solo

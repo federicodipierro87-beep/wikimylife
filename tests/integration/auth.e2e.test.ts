@@ -982,7 +982,10 @@ describe("elenco delle sessioni aperte", () => {
     const telefono = await signup();
     await login();
     await login();
-    expect((await elenco(telefono.accessToken)).sessions).toHaveLength(3);
+    const prima = await elenco(telefono.accessToken);
+    expect(prima.sessions).toHaveLength(3);
+    const mia = prima.sessions.find((s) => s.current)?.id;
+    expect(mia).toBeDefined();
 
     await call(server, "POST", "/api/auth/sessions/revoke", {
       accessToken: telefono.accessToken,
@@ -994,7 +997,14 @@ describe("elenco delle sessioni aperte", () => {
     // crescerebbe a ogni revoca invece di accorciarsi, cioe' direbbe l'opposto
     // di quello che e' appena successo.
     const { sessions } = await elenco(telefono.accessToken);
-    expect(sessions).toEqual([{ createdAt: sessions[0]?.createdAt ?? "", current: true }]);
+    // E la riga superstite e' *la stessa* di prima, riconosciuta dal suo id e
+    // non dedotta dal fatto che sia l'unica rimasta: un id ricalcolato a ogni
+    // lettura — un indice, o un valore casuale — passerebbe ogni altro caso di
+    // questo file e farebbe premere alla schermata il pulsante di un
+    // dispositivo che nel frattempo ha cambiato numero.
+    expect(sessions).toEqual([
+      { id: mia, createdAt: sessions[0]?.createdAt ?? "", current: true },
+    ]);
   });
 
   it("non mostra le sessioni di un altro utente", async () => {
@@ -1017,31 +1027,302 @@ describe("elenco delle sessioni aperte", () => {
     expect(errorCode(res.body)).toBe("UNAUTHORIZED");
   });
 
-  it("le due rotte sotto /sessions non si contendono il percorso", async () => {
+  it("le tre rotte sotto /sessions non si contendono il percorso", async () => {
     const telefono = await signup();
     await login();
+    await login();
 
-    // Il verbo giusto sul percorso giusto: entrambe rispondono, e rispondono
+    // Il verbo giusto sul percorso giusto: tutte e tre rispondono, e rispondono
     // cose diverse.
-    expect((await elenco(telefono.accessToken)).sessions).toHaveLength(2);
+    const tre = await elenco(telefono.accessToken);
+    expect(tre.sessions).toHaveLength(3);
+    const unaAltrui = tre.sessions.find((s) => !s.current)?.id ?? "";
+
+    const unaSola = await call(server, "POST", "/api/auth/sessions/revoke-one", {
+      accessToken: telefono.accessToken,
+      body: { sessionId: unaAltrui, currentPassword: PASSWORD },
+    });
+    expect(unaSola.body).toEqual({ revoked: 1 });
+
     const revoca = await call(server, "POST", "/api/auth/sessions/revoke", {
       accessToken: telefono.accessToken,
       body: { currentPassword: PASSWORD },
     });
+    // Una sola: delle tre ne restavano due, e questa ha chiuso l'altra. Il
+    // numero e' anche la prova che le due POST sono finite su gestori diversi —
+    // se `revoke-one` fosse caduta su `revoke`, qui ne resterebbe zero.
     expect(revoca.body).toEqual({ revoked: 1 });
 
-    // E le due combinazioni sbagliate non trovano niente. La piu' pericolosa e'
-    // la prima: se `GET /sessions` fosse scritta come `/sessions/:qualcosa`,
+    // E le combinazioni sbagliate non trovano niente. La piu' pericolosa e' la
+    // prima: se `GET /sessions` fosse scritta come `/sessions/:qualcosa`,
     // leggere l'elenco potrebbe finire su un gestore che revoca.
     const getSuRevoke = await call(server, "GET", "/api/auth/sessions/revoke", {
       accessToken: telefono.accessToken,
     });
     expect(getSuRevoke.status).toBe(404);
+    const getSuRevokeOne = await call(server, "GET", "/api/auth/sessions/revoke-one", {
+      accessToken: telefono.accessToken,
+    });
+    expect(getSuRevokeOne.status).toBe(404);
     const postSuSessions = await call(server, "POST", "/api/auth/sessions", {
       accessToken: telefono.accessToken,
       body: {},
     });
     expect(postSuSessions.status).toBe(404);
+    // `/sessions/revoke` e' un prefisso di `/sessions/revoke-one`, e questa e' la
+    // terza combinazione che il commento di `auth.routes.ts` prometteva di
+    // provare: un id nel percorso non trova nessun gestore, che e' il motivo per
+    // cui sta nel corpo.
+    const idNelPercorso = await call(server, "POST", `/api/auth/sessions/${unaAltrui}/revoke`, {
+      accessToken: telefono.accessToken,
+      body: { currentPassword: PASSWORD },
+    });
+    expect(idNelPercorso.status).toBe(404);
+  });
+});
+
+/**
+ * Chiuderne una sola, contro Postgres vero.
+ *
+ * Quello che qui si prova e che il repository in memoria non puo' provare e' il
+ * `WHERE` a tre parti dell'`updateMany`. Il doppio in memoria lo ricopia a mano
+ * con tre condizioni in un `if` — di proposito, perche' altrimenti i casi
+ * unitari passerebbero anche togliendo lo `userId` dalla query — ma «ricopiato a
+ * mano» e' esattamente cio' che puo' divergere. Qui la clausola e' quella vera,
+ * e il `count` che torna e' quello che Postgres ha contato.
+ *
+ * La seconda cosa e' che i refresh token chiusi qui sono token veri: il caso non
+ * legge una colonna per dire che la sessione e' morta, la usa.
+ */
+describe("chiudere una sessione sola", () => {
+  async function login(): Promise<AuthSession> {
+    const res = await call(server, "POST", "/api/auth/login", {
+      body: { email: EMAIL, password: PASSWORD },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return authSessionSchema.parse(res.body);
+  }
+
+  async function elenco(accessToken: string): Promise<OpenSessionsResponse> {
+    const res = await call(server, "GET", "/api/auth/sessions", { accessToken });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return openSessionsResponseSchema.parse(res.body);
+  }
+
+  async function chiudi(
+    accessToken: string,
+    body: unknown,
+  ): Promise<{ status: number; body: unknown }> {
+    return call(server, "POST", "/api/auth/sessions/revoke-one", { accessToken, body });
+  }
+
+  /** L'id della riga che *non* e' quella da cui si sta chiedendo. */
+  async function altrui(accessToken: string): Promise<string> {
+    const { sessions } = await elenco(accessToken);
+    const riga = sessions.find((s) => !s.current);
+    if (riga === undefined) {
+      throw new Error("Il caso presuppone almeno due dispositivi collegati.");
+    }
+    return riga.id;
+  }
+
+  it("chiude il dispositivo scelto, e lascia vivo quello da cui si chiede", async () => {
+    const telefono = await signup();
+    const portatile = await login();
+
+    const res = await chiudi(telefono.accessToken, {
+      sessionId: await altrui(telefono.accessToken),
+      currentPassword: PASSWORD,
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ revoked: 1 });
+
+    // Il token del portatile non vale piu', e lo dice usandolo: una colonna
+    // aggiornata che non fermasse davvero la rotazione sarebbe un pulsante che
+    // sembra funzionare e non scollega niente. `TOKEN_REUSED` e non
+    // `UNAUTHORIZED` perche' la riga esiste ancora, revocata, ed e' quello che
+    // la reuse detection vede.
+    const morto = await refresh(portatile.tokens.refreshToken);
+    expect(morto.status).toBe(401);
+    expect(errorCode(morto.body)).toBe("TOKEN_REUSED");
+
+    // E il proprio si': senza il `familyId` nella clausola verrebbero chiusi
+    // tutti e due, e chi scollega un dispositivo si troverebbe fuori senza
+    // capire perche'.
+    expect((await refresh(telefono.refreshToken)).status).toBe(200);
+  });
+
+  it("l'elenco si accorcia di quella riga, e delle altre non tocca nessuna", async () => {
+    const telefono = await signup();
+    await login();
+    await login();
+    const chiusa = await altrui(telefono.accessToken);
+
+    await chiudi(telefono.accessToken, { sessionId: chiusa, currentPassword: PASSWORD });
+
+    const { sessions } = await elenco(telefono.accessToken);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.map((s) => s.id)).not.toContain(chiusa);
+    // E il giro si chiude: l'id e' stato letto da una risposta, speso su una
+    // rotta, e la risposta dopo lo conferma sparito. E' l'unica catena che prova
+    // che l'`id` del contratto e il `familyId` del database sono la stessa cosa.
+    expect(sessions.filter((s) => s.current)).toHaveLength(1);
+  });
+
+  it("non chiude la sessione di un altro utente, e risponde zero", async () => {
+    const mio = await signup();
+    const altro = await signup("altra@wikimylife.test");
+    const sueSessioni = await elenco(altro.accessToken);
+    const sua = sueSessioni.sessions[0]?.id ?? "";
+
+    const res = await chiudi(mio.accessToken, { sessionId: sua, currentPassword: PASSWORD });
+
+    // Zero e non 404: la risposta e' identica per un id altrui, uno gia' chiuso
+    // e uno inventato, e distinguerli direbbe a chi prova quali esistono.
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ revoked: 0 });
+    // La difesa vera e' lo `userId` nel `WHERE`, e questa riga la prova: senza,
+    // il `familyId` da solo basterebbe a chiudere la sessione di chiunque.
+    expect((await refresh(altro.refreshToken)).status).toBe(200);
+    expect((await elenco(altro.accessToken)).sessions).toHaveLength(1);
+  });
+
+  it("rifiuta la propria sessione con un 409, e la lascia viva", async () => {
+    const telefono = await signup();
+    await login();
+    const mia = (await elenco(telefono.accessToken)).sessions.find((s) => s.current)?.id ?? "";
+
+    const res = await chiudi(telefono.accessToken, {
+      sessionId: mia,
+      currentPassword: PASSWORD,
+    });
+
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("CONFLICT");
+    // Lasciar passare direbbe `revoked: 1` su una sessione che quella stessa
+    // risposta ha ucciso: il client lo scoprirebbe alla richiesta dopo, con una
+    // rotazione fallita su un token morto per mano sua.
+    expect((await refresh(telefono.refreshToken)).status).toBe(200);
+  });
+
+  it("con la password sbagliata non chiude niente, e non dice di chi e' la riga", async () => {
+    const telefono = await signup();
+    const portatile = await login();
+    const sua = await altrui(telefono.accessToken);
+    const mia = (await elenco(telefono.accessToken)).sessions.find((s) => s.current)?.id ?? "";
+
+    const res = await chiudi(telefono.accessToken, {
+      sessionId: sua,
+      currentPassword: "non-e-questa",
+    });
+    expect(res.status).toBe(401);
+    expect(errorCode(res.body)).toBe("INVALID_CREDENTIALS");
+    expect((await refresh(portatile.tokens.refreshToken)).status).toBe(200);
+
+    // E la stessa risposta sulla propria riga, dove senza la verifica davanti
+    // arriverebbe un 409. Sono i due codici che rendono il controllo un oracolo:
+    // con l'ordine invertito, chi ha rubato un access token prova gli id
+    // dell'elenco con una password qualunque e impara quale dispositivo ha in
+    // mano il proprietario — senza mai sapere la password.
+    const suDiSe = await chiudi(telefono.accessToken, {
+      sessionId: mia,
+      currentPassword: "non-e-questa",
+    });
+    expect(suDiSe.status).toBe(401);
+    expect(errorCode(suDiSe.body)).toBe("INVALID_CREDENTIALS");
+  });
+
+  it("premuto due volte sulla stessa riga risponde zero, non un errore", async () => {
+    const telefono = await signup();
+    await login();
+    const chiusa = await altrui(telefono.accessToken);
+
+    const prima = await chiudi(telefono.accessToken, {
+      sessionId: chiusa,
+      currentPassword: PASSWORD,
+    });
+    expect(prima.body).toEqual({ revoked: 1 });
+
+    // Due schede aperte sullo stesso account, lo stesso pulsante premuto due
+    // volte. Senza `revokedAt: null` nella clausola la seconda riconterebbe la
+    // riga gia' morta e risponderebbe uno, riscrivendole sopra la data della
+    // revoca: il numero mentirebbe e la storia della sessione si perderebbe.
+    const seconda = await chiudi(telefono.accessToken, {
+      sessionId: chiusa,
+      currentPassword: PASSWORD,
+    });
+    expect(seconda.status).toBe(200);
+    expect(seconda.body).toEqual({ revoked: 0 });
+  });
+
+  it("senza access token non chiude niente", async () => {
+    const telefono = await signup();
+    const portatile = await login();
+    const sua = await altrui(telefono.accessToken);
+
+    const res = await call(server, "POST", "/api/auth/sessions/revoke-one", {
+      body: { sessionId: sua, currentPassword: PASSWORD },
+    });
+
+    // La password da sola non basta: senza il token il server non saprebbe
+    // nemmeno di chi verificarla, e la rotta diventerebbe «chiudi la sessione di
+    // chiunque, se ne indovini l'id».
+    expect(res.status).toBe(401);
+    expect(errorCode(res.body)).toBe("UNAUTHORIZED");
+    expect((await refresh(portatile.tokens.refreshToken)).status).toBe(200);
+  });
+
+  it("rifiuta un corpo monco, un id vuoto e un campo in piu'", async () => {
+    const telefono = await signup();
+    await login();
+    const sua = await altrui(telefono.accessToken);
+
+    for (const corpo of [
+      // Senza id: con uno schema permissivo diventerebbe `undefined`, e il
+      // servizio confronterebbe `undefined` con il proprio `familyId` — cioe'
+      // andrebbe dritto all'`updateMany` con una famiglia che non esiste.
+      { currentPassword: PASSWORD },
+      // Senza password: e' la difesa che questa rotta condivide con «scollega
+      // gli altri», e senza il `min(1)` una stringa vuota arriverebbe fino
+      // all'argon2.
+      { sessionId: sua },
+      { sessionId: "", currentPassword: PASSWORD },
+      { sessionId: sua, currentPassword: "" },
+      // `.strict()`: un `userId` mandato dal client verrebbe ignorato in
+      // silenzio da uno schema permissivo, e chi lo ha scritto crederebbe di
+      // poter scegliere di chi chiudere le sessioni.
+      { sessionId: sua, currentPassword: PASSWORD, userId: "quello-che-dico-io" },
+    ]) {
+      const res = await chiudi(telefono.accessToken, corpo);
+      expect(res.status, JSON.stringify(corpo)).toBe(400);
+      expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
+    }
+
+    // E l'opposto: il corpo giusto passa, quindi il ciclo di sopra non sta
+    // provando che questa rotta rifiuta tutto.
+    const buono = await chiudi(telefono.accessToken, {
+      sessionId: sua,
+      currentPassword: PASSWORD,
+    });
+    expect(buono.status).toBe(200);
+  });
+
+  it("non cambia la password, e non tocca le altre famiglie", async () => {
+    const telefono = await signup();
+    const portatile = await login();
+    // Il tablet e' il piu' recente, quindi e' la prima riga non corrente
+    // dell'elenco: e' quello che questo caso chiude.
+    await login();
+    const tablet = await altrui(telefono.accessToken);
+
+    await chiudi(telefono.accessToken, { sessionId: tablet, currentPassword: PASSWORD });
+
+    // Le due cose che distinguono questa rotta dalle sue due vicine: non e'
+    // `changePassword` con un altro nome, e non e' `revoke` con un argomento in
+    // piu'. La terza sessione e' viva, e la password e' ancora quella.
+    expect((await refresh(portatile.tokens.refreshToken)).status).toBe(200);
+    expect((await login()).tokens).toBeDefined();
   });
 });
 

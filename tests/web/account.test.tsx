@@ -117,7 +117,7 @@ function collegato(risposte: Partial<ApiClient> = {}): ApiClient {
   return creaClienteFinto({
     restoreSession: () => Promise.resolve(unaSessione().user),
     listSessions: () =>
-      Promise.resolve({ sessions: [{ createdAt: ADESSO, current: true }] }),
+      Promise.resolve({ sessions: [{ id: "fam-questo", createdAt: ADESSO, current: true }] }),
     ...risposte,
   });
 }
@@ -585,15 +585,17 @@ describe("AccountScreen: l'elenco dei dispositivi collegati", () => {
   const TRE_GIORNI_FA = new Date(Date.now() - 3 * 86_400_000).toISOString();
   const SETTANTA_GIORNI_FA = new Date(Date.now() - 70 * 86_400_000).toISOString();
 
-  function conElenco(sessions: readonly { createdAt: string; current: boolean }[]): ApiClient {
+  function conElenco(
+    sessions: readonly { id: string; createdAt: string; current: boolean }[],
+  ): ApiClient {
     return collegato({ listSessions: () => Promise.resolve({ sessions: [...sessions] }) });
   }
 
   it("mostra una riga per dispositivo, con da quando e' collegato", async () => {
     await montaAccount(
       conElenco([
-        { createdAt: TRE_GIORNI_FA, current: true },
-        { createdAt: SETTANTA_GIORNI_FA, current: false },
+        { id: "fam-questo", createdAt: TRE_GIORNI_FA, current: true },
+        { id: "fam-vecchio", createdAt: SETTANTA_GIORNI_FA, current: false },
       ]),
     );
 
@@ -609,8 +611,8 @@ describe("AccountScreen: l'elenco dei dispositivi collegati", () => {
   it("marca il dispositivo in mano, e marca solo quello", async () => {
     await montaAccount(
       conElenco([
-        { createdAt: TRE_GIORNI_FA, current: false },
-        { createdAt: SETTANTA_GIORNI_FA, current: true },
+        { id: "fam-vecchio", createdAt: TRE_GIORNI_FA, current: false },
+        { id: "fam-questo", createdAt: SETTANTA_GIORNI_FA, current: true },
       ]),
     );
 
@@ -625,7 +627,9 @@ describe("AccountScreen: l'elenco dei dispositivi collegati", () => {
   });
 
   it("un solo dispositivo non e' un caso speciale: la riga c'e' lo stesso", async () => {
-    await montaAccount(conElenco([{ createdAt: TRE_GIORNI_FA, current: true }]));
+    await montaAccount(
+      conElenco([{ id: "fam-questo", createdAt: TRE_GIORNI_FA, current: true }]),
+    );
 
     const righe = await screen.findAllByRole("listitem");
     expect(righe).toHaveLength(1);
@@ -671,14 +675,14 @@ describe("AccountScreen: l'elenco dei dispositivi collegati", () => {
   });
 
   it("dopo una revoca riuscita la lista si accorcia, invece di restare quella di prima", async () => {
-    const risposte: { sessions: { createdAt: string; current: boolean }[] }[] = [
+    const risposte: { sessions: { id: string; createdAt: string; current: boolean }[] }[] = [
       {
         sessions: [
-          { createdAt: TRE_GIORNI_FA, current: true },
-          { createdAt: SETTANTA_GIORNI_FA, current: false },
+          { id: "fam-questo", createdAt: TRE_GIORNI_FA, current: true },
+          { id: "fam-vecchio", createdAt: SETTANTA_GIORNI_FA, current: false },
         ],
       },
-      { sessions: [{ createdAt: TRE_GIORNI_FA, current: true }] },
+      { sessions: [{ id: "fam-questo", createdAt: TRE_GIORNI_FA, current: true }] },
     ];
     let giro = 0;
     await montaAccount(
@@ -713,7 +717,9 @@ describe("AccountScreen: l'elenco dei dispositivi collegati", () => {
       collegato({
         listSessions: () => {
           letture += 1;
-          return Promise.resolve({ sessions: [{ createdAt: TRE_GIORNI_FA, current: true }] });
+          return Promise.resolve({
+            sessions: [{ id: "fam-questo", createdAt: TRE_GIORNI_FA, current: true }],
+          });
         },
         revokeOtherSessions: () =>
           Promise.reject(
@@ -738,6 +744,341 @@ describe("AccountScreen: l'elenco dei dispositivi collegati", () => {
     // costerebbe una richiesta per ogni password digitata male.
     expect(letture).toBe(1);
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+});
+
+/**
+ * Chiudere un dispositivo solo, scegliendolo dall'elenco.
+ *
+ * E' l'unico posto dell'applicazione in cui l'utente preme un pulsante fra piu'
+ * pulsanti identici e ne esce un gesto irreversibile. Tutto il resto di questa
+ * schermata ha un pulsante per sezione, e sbagliare significa premere il gesto
+ * accanto — che si legge. Qui i pulsanti sono tre, dicono tutti «Scollega», e
+ * l'unica cosa che li distingue e' la riga su cui stanno: ogni caso qui sotto
+ * guarda un modo diverso in cui quella corrispondenza puo' rompersi senza che
+ * niente a schermo lo dica.
+ */
+describe("AccountScreen: chiudere un dispositivo solo", () => {
+  const TRE_GIORNI_FA = new Date(Date.now() - 3 * 86_400_000).toISOString();
+  const VENTI_GIORNI_FA = new Date(Date.now() - 20 * 86_400_000).toISOString();
+  const SETTANTA_GIORNI_FA = new Date(Date.now() - 70 * 86_400_000).toISOString();
+
+  /**
+   * Quattro righe, e tre di loro scollegabili.
+   *
+   * Tre e non due: con due pulsanti, «si e' spento quello premuto» e «si e'
+   * spento quello *non* premuto» hanno lo stesso aspetto se si guarda solo il
+   * conto, e la riga di mezzo e' anche l'unica posizione che distingue una
+   * scelta per id da una scelta per posizione.
+   */
+  const QUATTRO = [
+    { id: "fam-questo", createdAt: ADESSO, current: true },
+    { id: "fam-a", createdAt: TRE_GIORNI_FA, current: false },
+    { id: "fam-b", createdAt: VENTI_GIORNI_FA, current: false },
+    { id: "fam-c", createdAt: SETTANTA_GIORNI_FA, current: false },
+  ] as const;
+
+  const NOME_A = "Scollega il dispositivo collegato 3 giorni fa";
+  const NOME_B = "Scollega il dispositivo collegato 2 settimane fa";
+  const NOME_C = "Scollega il dispositivo collegato 2 mesi fa";
+
+  /** L'elenco fisso di sopra, piu' cio' che il caso vuole insegnare. */
+  function conQuattro(risposte: Partial<ApiClient> = {}): ApiClient {
+    return collegato({
+      listSessions: () => Promise.resolve({ sessions: [...QUATTRO] }),
+      ...risposte,
+    });
+  }
+
+  /** Scrive la password, che e' cio' che accende i pulsanti delle righe. */
+  async function pronto(): Promise<ReturnType<typeof userEvent.setup>> {
+    const utente = userEvent.setup();
+    await screen.findAllByRole("listitem");
+    await utente.type(campo("La tua password"), "quella-che-so");
+    return utente;
+  }
+
+  it("ogni riga ha il suo pulsante, tranne quella del dispositivo in mano", async () => {
+    await montaAccount(conQuattro());
+
+    const righe = await screen.findAllByRole("listitem");
+    expect(righe).toHaveLength(4);
+    // Tre e non quattro. Un pulsante sulla riga corrente sarebbe un secondo
+    // «Esci» con un'altra etichetta, premuto per sbaglio da chi crede di stare
+    // chiudendo il telefono che ha perso.
+    expect(screen.getAllByRole("button", { name: /^Scollega il dispositivo/ })).toHaveLength(3);
+    expect(righe[0]?.querySelector("button")).toBeNull();
+    // E l'opposto: le altre tre ce l'hanno davvero, quindi il caso non passa
+    // per un elenco che non ha pulsanti affatto.
+    expect(righe[1]?.querySelector("button")).not.toBeNull();
+    expect(righe[2]?.querySelector("button")).not.toBeNull();
+    expect(righe[3]?.querySelector("button")).not.toBeNull();
+  });
+
+  it("i pulsanti sono spenti finche' il campo e' vuoto, e si accendono appena si scrive", async () => {
+    await montaAccount(conQuattro());
+    await screen.findAllByRole("listitem");
+
+    // Spenti: la richiesta senza password partirebbe per tornare indietro con
+    // un VALIDATION_FAILED, cioe' un rosso su un gesto che non era ancora
+    // pronto a partire.
+    expect(bottone(NOME_A).disabled).toBe(true);
+
+    const utente = userEvent.setup();
+    await utente.type(campo("La tua password"), "q");
+
+    // E accesi, che e' l'altra meta': un pulsante spento per sempre non e' una
+    // precauzione, e' un gesto che non esiste.
+    await waitFor(() => {
+      expect(bottone(NOME_A).disabled).toBe(false);
+    });
+    expect(bottone(NOME_B).disabled).toBe(false);
+    expect(bottone(NOME_C).disabled).toBe(false);
+  });
+
+  it("manda l'id di quella riga, e non quello della prima", async () => {
+    const invii: unknown[] = [];
+    await montaAccount(
+      conQuattro({
+        revokeSession: (input) => {
+          invii.push(input);
+          return Promise.resolve({ revoked: 1 });
+        },
+      }),
+    );
+
+    const utente = await pronto();
+    await utente.click(bottone(NOME_B));
+
+    // `fam-b` e non `fam-a`: prendere l'id dalla prima riga, o dalla riga
+    // corrente, e' il difetto che una prova a mano non vede — si preme, un
+    // dispositivo sparisce, e sembra andata bene.
+    await waitFor(() => {
+      expect(invii).toEqual([{ sessionId: "fam-b", currentPassword: "quella-che-so" }]);
+    });
+  });
+
+  it("solo la riga premuta si spegne: le altre due restano premibili", async () => {
+    let risolvi: (esito: { revoked: number }) => void = () => undefined;
+    await montaAccount(
+      conQuattro({
+        revokeSession: () =>
+          new Promise((r) => {
+            risolvi = r;
+          }),
+      }),
+    );
+
+    const utente = await pronto();
+    await utente.click(bottone(NOME_B));
+
+    // Un booleano condiviso spegnerebbe tutti e tre, e chi guarda non saprebbe
+    // piu' quale ha premuto: tre righe grigie identiche, e un gesto in corso su
+    // una di loro.
+    await waitFor(() => {
+      expect(bottone(NOME_B).disabled).toBe(true);
+    });
+    expect(bottone(NOME_A).disabled).toBe(false);
+    expect(bottone(NOME_C).disabled).toBe(false);
+    // E l'etichetta visibile cambia solo su quella, perche' e' l'unica cosa che
+    // dice dove sta succedendo qualcosa.
+    expect(screen.getAllByText("Un attimo…")).toHaveLength(1);
+
+    risolvi({ revoked: 1 });
+    await waitFor(() => {
+      expect(screen.queryByText("Un attimo…")).toBeNull();
+    });
+  });
+
+  it("il nome del pulsante in volo nomina ancora il suo dispositivo", async () => {
+    let risolvi: (esito: { revoked: number }) => void = () => undefined;
+    await montaAccount(
+      conQuattro({
+        revokeSession: () =>
+          new Promise((r) => {
+            risolvi = r;
+          }),
+      }),
+    );
+
+    const utente = await pronto();
+    await utente.click(bottone(NOME_B));
+
+    // Il nome accessibile e' un `aria-label`, quindi vince sul contenuto e resta
+    // lo stesso mentre l'etichetta visibile dice «Un attimo». Senza, chi legge a
+    // voce sentirebbe sparire il dispositivo dall'elenco e comparire un pulsante
+    // «Un attimo» senza padrone, nel momento in cui gli serve sapere su quale
+    // riga sta agendo.
+    await waitFor(() => {
+      expect(bottone(NOME_B).textContent).toBe("Un attimo…");
+    });
+    risolvi({ revoked: 1 });
+  });
+
+  it("la riga chiusa viene smontata, non riciclata per quella che le scivola sotto", async () => {
+    const risposte = [
+      { sessions: [...QUATTRO] },
+      { sessions: QUATTRO.filter((s) => s.id !== "fam-b") },
+    ];
+    let giro = 0;
+    await montaAccount(
+      conQuattro({
+        listSessions: () => {
+          const risposta = risposte[Math.min(giro, risposte.length - 1)];
+          giro += 1;
+          return Promise.resolve(risposta ?? { sessions: [] });
+        },
+        revokeSession: () => Promise.resolve({ revoked: 1 }),
+      }),
+    );
+
+    const utente = await pronto();
+    const premuto = bottone(NOME_B);
+    await utente.click(premuto);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    });
+
+    // Questo e' il caso che uccide `key={indice}`. Con la posizione come
+    // chiave, React non smonta niente: riusa il nodo della riga sparita per
+    // quella che prende il suo posto, riscrivendogli sopra l'`aria-label` e il
+    // gestore. Il pulsante che l'utente ha appena premuto — e su cui il browser
+    // ha lasciato il fuoco — resta li' sotto il dito e adesso scollega un altro
+    // dispositivo: premere due volte di fila, che e' la cosa piu' naturale
+    // mentre si ripulisce un elenco, ne chiude uno che nessuno aveva guardato.
+    expect(premuto.isConnected).toBe(false);
+    // E le due che restano sono ancora loro, con i loro nomi: una chiave
+    // sbagliata al contrario — tutte uguali — le farebbe collassare in una.
+    expect(bottone(NOME_A)).toBeTruthy();
+    expect(bottone(NOME_C)).toBeTruthy();
+  });
+
+  it("dopo il gesto riuscito l'elenco si ricarica e il campo si svuota", async () => {
+    let letture = 0;
+    await montaAccount(
+      conQuattro({
+        listSessions: () => {
+          letture += 1;
+          return Promise.resolve({
+            sessions: letture === 1 ? [...QUATTRO] : QUATTRO.filter((s) => s.id !== "fam-b"),
+          });
+        },
+        revokeSession: () => Promise.resolve({ revoked: 1 }),
+      }),
+    );
+
+    const utente = await pronto();
+    await utente.click(bottone(NOME_B));
+
+    const conferma = await screen.findByRole("status");
+    expect(conferma.textContent).toBe("Il dispositivo e' stato scollegato.");
+    // Senza la ricarica, sotto il messaggio resterebbe scritto il dispositivo
+    // appena chiuso, e la lista e' quella che si crede.
+    await waitFor(() => {
+      expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    });
+    expect(letture).toBe(2);
+    // Il campo si svuota come nell'altro modulo, e qui vale una volta in piu':
+    // dopo il primo gesto ogni pulsante torna spento, quindi un secondo clic
+    // distratto sulla riga accanto non parte da solo.
+    expect(campo("La tua password").value).toBe("");
+    expect(bottone(NOME_A).disabled).toBe(true);
+  });
+
+  it("zero non dice «scollegato»: dice che quel dispositivo era gia' andato", async () => {
+    await montaAccount(conQuattro({ revokeSession: () => Promise.resolve({ revoked: 0 }) }));
+
+    const utente = await pronto();
+    await utente.click(bottone(NOME_B));
+
+    // Succede con due schede aperte sullo stesso account, o con un elenco
+    // vecchio di qualche minuto. Dire «e' stato scollegato» a chi sta cercando
+    // un telefono rubato gli fa credere di averlo appena chiuso adesso, e di
+    // sapere che fino a un istante fa era vivo: due cose false.
+    const conferma = await screen.findByRole("status");
+    expect(conferma.textContent).toBe("Quel dispositivo era gia' scollegato.");
+  });
+
+  it("un rifiuto si legge, e la riga torna premibile", async () => {
+    await montaAccount(
+      conQuattro({
+        revokeSession: () =>
+          Promise.reject(
+            new ApiError({
+              code: "INVALID_CREDENTIALS",
+              message: "Email o password non corretti.",
+              status: 401,
+            }),
+          ),
+      }),
+    );
+
+    const utente = await pronto();
+    await utente.click(bottone(NOME_B));
+
+    const avviso = await screen.findByRole("alert");
+    expect(avviso.textContent).toBe("Email o password non corretti.");
+    expect(screen.queryByRole("status")).toBeNull();
+    // Senza il `finally`, la riga resterebbe spenta per sempre: l'unico modo di
+    // riprovare sarebbe ricaricare la pagina, e il messaggio d'errore — che
+    // parla di una password da correggere — starebbe sopra un pulsante che non
+    // si puo' piu' premere.
+    expect(campo("La tua password").value).toBe("quella-che-so");
+    await waitFor(() => {
+      expect(bottone(NOME_B).disabled).toBe(false);
+    });
+  });
+
+  it("premere «Scollega» su una riga non fa partire «scollega gli altri»", async () => {
+    let tutti = 0;
+    await montaAccount(
+      conQuattro({
+        revokeSession: () => Promise.resolve({ revoked: 1 }),
+        revokeOtherSessions: () => {
+          tutti += 1;
+          return Promise.resolve({ revoked: 3 });
+        },
+      }),
+    );
+
+    const utente = await pronto();
+    await utente.click(bottone(NOME_B));
+    await screen.findByRole("status");
+
+    // L'elenco sta dentro il `<form>`, dove un pulsante senza `type` e' un
+    // submit. Con il tipo sbagliato, un clic su una riga farebbe partire tutti
+    // e due i gesti insieme — il piu' piccolo e il piu' distruttivo — con la
+    // password gia' scritta nel campo, e la conferma che si vede a schermo
+    // sarebbe quella del gesto che nessuno voleva.
+    expect(tutti).toBe(0);
+  });
+
+  it("l'esito di una riga e quello del modulo non stanno a schermo insieme", async () => {
+    await montaAccount(
+      conQuattro({
+        revokeSession: () => Promise.resolve({ revoked: 1 }),
+        revokeOtherSessions: () => Promise.resolve({ revoked: 3 }),
+      }),
+    );
+
+    const utente = await pronto();
+    await utente.click(bottone("Scollega gli altri"));
+    expect((await screen.findByRole("status")).textContent).toBe(
+      "3 altri dispositivi sono stati scollegati.",
+    );
+
+    await utente.type(campo("La tua password"), "quella-che-so");
+    await utente.click(bottone(NOME_B));
+
+    // Un esito per riquadro e non due: con due stati separati esisterebbe il
+    // momento in cui lo schermo dice insieme «tre dispositivi sono stati
+    // scollegati» e «il dispositivo e' stato scollegato», e chi legge non
+    // saprebbe quanti ne sono caduti in tutto.
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toBe("Il dispositivo e' stato scollegato.");
+    });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
   });
 });
 

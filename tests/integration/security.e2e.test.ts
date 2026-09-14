@@ -217,6 +217,27 @@ describe("limite dei tentativi", () => {
     expect(quarto.status).toBe(429);
   });
 
+  it("anche chiuderne una sola e' limitato, e il limite non dipende da quale", async () => {
+    // Questa e' la rotta per cui il limitatore ha deciso la forma dell'URL.
+    // La chiave del secchiello contiene `req.path`, che e' il percorso
+    // *concreto*: con l'id nella posizione — `POST /sessions/:id/revoke` —
+    // ogni id aprirebbe un budget nuovo, e una rotta che accetta una password
+    // diventerebbe un oracolo senza limite, perche' basta cambiare l'UUID a
+    // ogni tentativo. Con l'id nel corpo il percorso e' uno solo, e i quattro
+    // tentativi qui sotto — tutti con un `sessionId` diverso — cadono nello
+    // stesso secchiello.
+    for (let i = 0; i < 3; i += 1) {
+      await call(server, "POST", "/api/auth/sessions/revoke-one", {
+        body: { sessionId: `fam-inventata-${String(i)}`, currentPassword: PASSWORD },
+      });
+    }
+
+    const quarto = await call(server, "POST", "/api/auth/sessions/revoke-one", {
+      body: { sessionId: "fam-inventata-3", currentPassword: PASSWORD },
+    });
+    expect(quarto.status).toBe(429);
+  });
+
   it("le due rotte con la password hanno budget separati", async () => {
     // Altrimenti chi sbaglia tre volte a scollegare i dispositivi non puo' piu'
     // cambiare la password, che e' il gesto piu' forte dei due: il limite

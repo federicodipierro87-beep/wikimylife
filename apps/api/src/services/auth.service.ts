@@ -6,6 +6,8 @@ import type {
   PublicUser,
   RevokeOtherSessionsRequest,
   RevokeOtherSessionsResponse,
+  RevokeSessionRequest,
+  RevokeSessionResponse,
   SignupRequest,
 } from "@wikimylife/shared";
 import type { AuthConfig } from "../config/env.js";
@@ -43,6 +45,11 @@ export interface AuthService {
     familyId: string,
     input: RevokeOtherSessionsRequest,
   ): Promise<RevokeOtherSessionsResponse>;
+  revokeSession(
+    userId: string,
+    familyId: string,
+    input: RevokeSessionRequest,
+  ): Promise<RevokeSessionResponse>;
   listSessions(userId: string, familyId: string): Promise<OpenSessionsResponse>;
   me(userId: string): Promise<PublicUser>;
 }
@@ -343,6 +350,82 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     },
 
     /**
+     * Chiude una sessione sola, quella scelta nell'elenco.
+     *
+     * ## Perche' chiede la password anche per una sola
+     *
+     * Perche' il gesto di sopra la chiede, e questo lo si puo' ripetere. Senza
+     * verifica, chi ha in mano il telefono rubato aprirebbe l'elenco e
+     * chiuderebbe le altre una per una, ottenendo in tre tocchi esattamente
+     * cio' che la password su «scollega gli altri» esiste per impedirgli in uno.
+     * Una difesa che si aggira contando fino a tre non e' una difesa.
+     *
+     * ## Perche' la verifica viene prima del 409
+     *
+     * Nell'ordine opposto il codice di stato diventerebbe un oracolo: 409 su
+     * una famiglia vorrebbe dire «questa e' la tua», 401 vorrebbe dire «non lo
+     * e'», e chi ha rubato un access token — ma non sa la password — imparerebbe
+     * quale riga dell'elenco e' la propria provandole tutte. Messa prima, la
+     * verifica fa rispondere 401 a ogni id finche' la password non e' quella
+     * giusta, e a quel punto non c'e' piu' niente da imparare.
+     *
+     * ## Perche' la propria famiglia e' un 409 e non un 200 silenzioso
+     *
+     * Perche' la schermata non mette nessun pulsante sulla riga `current`:
+     * chiudere la propria sessione e' il logout, che sta dieci righe piu' su.
+     * Una richiesta che chiede la propria famiglia e' quindi una richiesta che
+     * nessuna schermata produce, e se arriva vuol dire che qualcosa non ha
+     * capito quale riga stava premendo. Lasciarla passare sarebbe peggio che
+     * rifiutarla: revocherebbe il refresh token di chi sta chiamando mentre la
+     * risposta dice `revoked: 1`, e il client scoprirebbe di essere fuori alla
+     * richiesta dopo, con una rotazione che fallisce su un token ucciso da se'.
+     *
+     * ## Perche' zero non e' un errore
+     *
+     * Una sessione gia' chiusa risponde `{ revoked: 0 }`: due schede aperte
+     * sullo stesso account, lo stesso pulsante premuto due volte, e la seconda
+     * volta il risultato voluto c'e' gia'. Zero e' anche cio' che torna per la
+     * famiglia di un altro utente, e i due casi si confondono di proposito —
+     * un 404 sul primo e uno zero sul secondo direbbero a chi tira a indovinare
+     * quali id esistono.
+     */
+    async revokeSession(
+      userId: string,
+      familyId: string,
+      input: RevokeSessionRequest,
+    ): Promise<RevokeSessionResponse> {
+      const user = await repo.findUserById(userId);
+      if (user === null) {
+        throw AppError.unauthorized();
+      }
+
+      const ok = await hasher.verify(user.passwordHash, input.currentPassword);
+      if (!ok) {
+        throw AppError.invalidCredentials();
+      }
+
+      if (input.sessionId === familyId) {
+        throw AppError.conflict(
+          "Questa e' la sessione da cui stai chiedendo: per chiuderla, esci da questo dispositivo",
+        );
+      }
+
+      // `revokeFamilyOfUser` e non `revokeFamily`: lo `userId` che arriva da
+      // `requireAuth` e il `sessionId` che arriva dal corpo devono stare nella
+      // stessa clausola, perche' e' la clausola a decidere che quella famiglia
+      // sia di chi la sta chiudendo. Un controllo scritto qui sopra — leggere e
+      // confrontare — lascerebbe fra la lettura e la scrittura una finestra, e
+      // soprattutto sarebbe una seconda copia della stessa regola.
+      const revoked = await repo.revokeFamilyOfUser({
+        userId: user.id,
+        familyId: input.sessionId,
+        revokedAt: clock.now(),
+      });
+
+      return { revoked };
+    },
+
+    /**
      * L'elenco dei dispositivi collegati, che da' un senso al numero di sopra.
      *
      * ## Perche' esiste
@@ -361,13 +444,19 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
      * una lettura, e cio' che mostra — quante sessioni, e da quando — lo sa gia'
      * chiunque abbia una sessione viva, perche' e' il proprio account.
      *
-     * ## Perche' il familyId non esce
+     * ## Perche' adesso il familyId esce
      *
-     * La porta lo restituisce, questo metodo lo consuma per marcare `current` e
-     * lo butta. Farlo uscire vorrebbe dire spedire un identificativo di sessione
-     * a ogni apertura della schermata senza che ci sia un gesto che lo usi: il
-     * giorno in cui «chiudi questa sessione» esistera', il campo si aggiunge
-     * allora e non prima.
+     * Per un commit intero non usciva: la porta lo restituiva, questo metodo lo
+     * consumava per marcare `current` e lo buttava, perche' spedire un
+     * identificativo di sessione a ogni apertura della schermata senza un gesto
+     * che lo usi vuol dire lasciarlo nei log per niente. Il commento di allora
+     * diceva «il giorno in cui "chiudi questa sessione" esistera', il campo si
+     * aggiunge allora e non prima»: quel giorno e' arrivato, ed e' `revokeSession`
+     * — atterrata nello stesso commit di questo campo.
+     *
+     * Esce come `id` e non come `familyId` perche' dall'esterno e' l'id di una
+     * riga dell'elenco: che dentro sia la catena di rotazioni di un dispositivo
+     * e' un fatto del database, e il client non deve poterlo dedurre dal nome.
      *
      * ## Perche' non si controlla che l'elenco non sia vuoto
      *
@@ -381,6 +470,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const aperte = await repo.listOpenSessions(userId);
       return {
         sessions: aperte.map((sessione) => ({
+          id: sessione.familyId,
           createdAt: sessione.createdAt.toISOString(),
           current: sessione.familyId === familyId,
         })),

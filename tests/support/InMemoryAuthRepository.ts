@@ -192,6 +192,34 @@ export class InMemoryAuthRepository implements AuthRepository {
     return revoked;
   }
 
+  /**
+   * Lo stesso scope a tre parti dell'adattatore vero, scritto come tre
+   * condizioni in un `if` invece che come tre chiavi in un `WHERE`.
+   *
+   * Ricopiarlo e' il punto: se questo doppio si accontentasse del `familyId` —
+   * cioe' se fosse `revokeFamily` con un nome diverso — i test unitari del
+   * servizio passerebbero anche togliendo lo `userId` dalla query di Prisma, e
+   * l'unico posto dove il difetto si vedrebbe sarebbe l'integrazione.
+   */
+  async revokeFamilyOfUser(input: {
+    readonly userId: string;
+    readonly familyId: string;
+    readonly revokedAt: Date;
+  }): Promise<number> {
+    let revoked = 0;
+    for (const [id, token] of this.#tokens) {
+      if (
+        token.userId === input.userId &&
+        token.familyId === input.familyId &&
+        token.revokedAt === null
+      ) {
+        this.#tokens.set(id, { ...token, revokedAt: input.revokedAt });
+        revoked += 1;
+      }
+    }
+    return revoked;
+  }
+
   async revokeFamily(familyId: string, revokedAt: Date): Promise<number> {
     let revoked = 0;
     for (const [id, token] of this.#tokens) {

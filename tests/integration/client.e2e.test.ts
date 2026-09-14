@@ -481,6 +481,34 @@ describe("il ponte: la rotazione dopo un 401", () => {
     expect(primo.scaduta).toBe(1);
     expect((await secondo.client.listSessions()).sessions).toHaveLength(1);
   });
+
+  it("chiudere una sessione sola spende un id letto dall'elenco, e chiude quella", async () => {
+    const email = emailNuova();
+    const primo = creaCliente();
+    await primo.client.signup({ email, password: PASSWORD });
+
+    const secondo = creaCliente();
+    await secondo.client.login({ email, password: PASSWORD });
+
+    // L'id fa il giro intero sul filo: nasce in una risposta del server, passa
+    // per lo schema del client, torna indietro in un corpo. Sotto un `fetch`
+    // finto e' una stringa che va e viene; qui e' l'unico caso in cui la
+    // stringa che la schermata leggerebbe e' davvero la chiave che Postgres usa
+    // nel `WHERE`.
+    const { sessions } = await secondo.client.listSessions();
+    const altra = sessions.find((s) => !s.current)?.id ?? "";
+    expect(altra).not.toBe("");
+
+    const esito = await secondo.client.revokeSession({
+      sessionId: altra,
+      currentPassword: PASSWORD,
+    });
+
+    expect(esito).toEqual({ revoked: 1 });
+    await expect(secondo.client.me()).resolves.toBeDefined();
+    await expect(primo.client.me()).rejects.toThrow(ApiError);
+    expect(primo.scaduta).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -963,7 +991,7 @@ describe("il ponte: guardia", () => {
     // del client da oggetto letterale a classe, che e' una riscrittura
     // plausibile — renderebbe la guardia sopra verde per sempre, e nessuno se ne
     // accorgerebbe perche' i test verdi non si rileggono.
-    expect(tuttiIMetodi()).toHaveLength(27);
+    expect(tuttiIMetodi()).toHaveLength(28);
     expect(attraversati.size).toBeGreaterThan(0);
   });
 });

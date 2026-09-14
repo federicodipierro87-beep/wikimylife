@@ -821,7 +821,7 @@ describe("listSessions", () => {
     // Senza `revokedAt: null`, l'elenco conterrebbe ogni famiglia mai aperta da
     // questo utente, e chi cerca un telefono perduto lo vedrebbe ancora li'
     // dopo averlo scollegato.
-    expect(sessions).toEqual([{ createdAt: T0.toISOString(), current: true }]);
+    expect(sessions).toEqual([{ id: famiglia, createdAt: T0.toISOString(), current: true }]);
   });
 
   it("non mostra le sessioni di un altro utente", async () => {
@@ -829,15 +829,16 @@ describe("listSessions", () => {
     const mio = await harness.service.signup({ email: EMAIL, password: PASSWORD });
     await harness.service.signup({ email: "altro@esempio.it", password: PASSWORD });
     await harness.service.login({ email: "altro@esempio.it", password: PASSWORD });
+    const famiglia = famigliaDi(harness, mio);
 
-    const { sessions } = await harness.service.listSessions(
-      mio.user.id,
-      famigliaDi(harness, mio),
-    );
+    const { sessions } = await harness.service.listSessions(mio.user.id, famiglia);
 
     // Senza `userId` nella clausola sarebbero quattro, e due di quelle date
-    // direbbero a uno sconosciuto quando un altro si e' collegato.
-    expect(sessions).toEqual([{ createdAt: T0.toISOString(), current: true }]);
+    // direbbero a uno sconosciuto quando un altro si e' collegato. Adesso che
+    // c'e' anche l'`id`, quello che uscirebbe sarebbe peggio di una data: un
+    // `sessionId` altrui, cioe' esattamente l'argomento che `revokeSession`
+    // accetta.
+    expect(sessions).toEqual([{ id: famiglia, createdAt: T0.toISOString(), current: true }]);
   });
 
   it("ordina dalla piu' recente, che e' quella che si riconosce", async () => {
@@ -847,11 +848,9 @@ describe("listSessions", () => {
     await harness.service.login({ email: EMAIL, password: PASSWORD });
     harness.clock.advanceDays(30);
     await harness.service.login({ email: EMAIL, password: PASSWORD });
+    const famiglia = famigliaDi(harness, vecchio);
 
-    const { sessions } = await harness.service.listSessions(
-      vecchio.user.id,
-      famigliaDi(harness, vecchio),
-    );
+    const { sessions } = await harness.service.listSessions(vecchio.user.id, famiglia);
 
     // L'ordine non e' estetica: chi apre questa schermata cerca il dispositivo
     // di cui si e' appena accorto, e quello e' l'ultimo arrivato. In fondo alla
@@ -861,24 +860,258 @@ describe("listSessions", () => {
     // E la piu' vecchia — quella di chi sta chiedendo — e' in fondo, non in
     // cima: un ordine che mettesse per primo il chiamante passerebbe il
     // controllo di sopra e sarebbe comunque sbagliato.
-    expect(sessions[2]).toEqual({ createdAt: T0.toISOString(), current: true });
+    expect(sessions[2]).toEqual({ id: famiglia, createdAt: T0.toISOString(), current: true });
   });
 
-  it("non fa uscire il familyId: due campi, e nessun identificativo", async () => {
+  /**
+   * Il caso di prima diceva il contrario, e diceva il vero.
+   *
+   * Finche' non e' esistito un gesto che consumasse l'id, questo `expect`
+   * chiedeva `["createdAt", "current"]` e il commento spiegava che uno spread al
+   * posto della costruzione campo per campo avrebbe fatto uscire un
+   * identificativo di sessione a cui non corrispondeva niente. Adesso il gesto
+   * c'e', l'id esce, e il caso e' rovesciato — ma i campi restano contati, non
+   * verificati uno per uno: il difetto che quel conteggio prende e' ancora lo
+   * spread, che oggi porterebbe fuori `issuedAt` e `expiresAt` insieme all'id.
+   */
+  it("fa uscire l'id, e nient'altro oltre ai tre campi del contratto", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const famiglia = famigliaDi(harness, telefono);
+
+    const { sessions } = await harness.service.listSessions(telefono.user.id, famiglia);
+
+    expect(Object.keys(sessions[0] ?? {}).sort()).toEqual(["createdAt", "current", "id"]);
+    // E l'id e' *quello*, non un indice o un contatore: e' l'argomento che
+    // `revokeSession` andra' a cercare nel database, quindi deve essere la
+    // stessa stringa che il repository conosce come `familyId`.
+    expect(sessions[0]?.id).toBe(famiglia);
+  });
+});
+
+/**
+ * Chiuderne una sola, scelta dall'elenco di sopra.
+ *
+ * I casi qui dentro guardano tutti la stessa cosa da lati diversi: che l'unico
+ * modo di usare questa rotta sia quello previsto. Il `sessionId` arriva dal
+ * corpo di una richiesta HTTP — cioe' da chiunque, con qualunque valore — ed e'
+ * l'unico posto del servizio in cui un identificativo di un'altra riga del
+ * database entra da fuori. Le tre difese sono la password, lo `userId` nella
+ * clausola, e il rifiuto della propria famiglia; ognuna ha qui il suo caso e il
+ * suo opposto.
+ */
+describe("revokeSession", () => {
+  it("chiude la sessione scelta, e quella sola", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const portatile = await harness.service.login({ email: EMAIL, password: PASSWORD });
+    const tablet = await harness.service.login({ email: EMAIL, password: PASSWORD });
+
+    const esito = await harness.service.revokeSession(
+      telefono.user.id,
+      famigliaDi(harness, telefono),
+      { sessionId: famigliaDi(harness, portatile), currentPassword: PASSWORD },
+    );
+
+    expect(esito).toEqual({ revoked: 1 });
+    // Il numero da solo non basta: `revoked: 1` uscirebbe identico da una query
+    // che ne ha chiusa una a caso. Le tre prove che seguono dicono *quale*.
+    //
+    // `TOKEN_REUSED` e non `UNAUTHORIZED`, ed e' la risposta giusta: il token
+    // del portatile esiste ancora nel database con `revokedAt` valorizzato, e
+    // presentarne uno revocato e' indistinguibile — di proposito — da un furto.
+    // Chi scollega un dispositivo e poi lo riprende in mano rientra con la
+    // password, che e' cio' che deve succedere.
+    await expect(harness.service.refresh(portatile.tokens.refreshToken)).rejects.toMatchObject({
+      code: "TOKEN_REUSED",
+    });
+    await expect(harness.service.refresh(tablet.tokens.refreshToken)).resolves.toBeDefined();
+    // E la propria, che e' quella che si perderebbe con un `familyId` sbagliato
+    // nella clausola: chi scollega un dispositivo altrui e si ritrova fuori non
+    // riproverebbe mai piu'.
+    await expect(harness.service.refresh(telefono.tokens.refreshToken)).resolves.toBeDefined();
+  });
+
+  it("rifiuta chi non sa la password, e non chiude niente", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const portatile = await harness.service.login({ email: EMAIL, password: PASSWORD });
+
+    await expect(
+      harness.service.revokeSession(telefono.user.id, famigliaDi(harness, telefono), {
+        sessionId: famigliaDi(harness, portatile),
+        currentPassword: "non-e-questa",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
+
+    // Senza la password questa rotta sarebbe il modo di aggirare quella di
+    // sopra: chi ha in mano il telefono chiuderebbe gli altri uno per uno, e il
+    // campo che protegge «scollega gli altri» non proteggerebbe piu' niente.
+    await expect(harness.service.refresh(portatile.tokens.refreshToken)).resolves.toBeDefined();
+  });
+
+  it("verifica la password contro l'hash vero, non contro un ramo saltato", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const portatile = await harness.service.login({ email: EMAIL, password: PASSWORD });
+    const prima = harness.hasher.verifyCalls;
+
+    await harness.service.revokeSession(telefono.user.id, famigliaDi(harness, telefono), {
+      sessionId: famigliaDi(harness, portatile),
+      currentPassword: PASSWORD,
+    });
+
+    expect(harness.hasher.verifyCalls).toBe(prima + 1);
+  });
+
+  it("non chiude la sessione di un altro utente, e risponde zero", async () => {
+    const harness = build();
+    const mio = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const altro = await harness.service.signup({
+      email: "altro@esempio.it",
+      password: PASSWORD,
+    });
+
+    const esito = await harness.service.revokeSession(mio.user.id, famigliaDi(harness, mio), {
+      // Un `familyId` vero, di un altro. Nel prodotto non si indovina, ma non
+      // e' l'indovinabilita' la difesa: e' lo `userId` nella clausola.
+      sessionId: famigliaDi(harness, altro),
+      currentPassword: PASSWORD,
+    });
+
+    // Zero e non un errore: dire «quella sessione non e' tua» confermerebbe che
+    // esiste, e questa rotta risponde uguale a un id altrui, a uno gia' chiuso
+    // e a uno inventato.
+    expect(esito).toEqual({ revoked: 0 });
+    await expect(harness.service.refresh(altro.tokens.refreshToken)).resolves.toBeDefined();
+  });
+
+  it("rifiuta la propria sessione con un CONFLICT, e la lascia viva", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const famiglia = famigliaDi(harness, telefono);
+
+    await expect(
+      harness.service.revokeSession(telefono.user.id, famiglia, {
+        sessionId: famiglia,
+        currentPassword: PASSWORD,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    // Lasciarla passare sarebbe peggio di un errore: la risposta direbbe
+    // `revoked: 1` viaggiando su una sessione che quella stessa risposta ha
+    // appena ucciso, e il client lo scoprirebbe alla richiesta dopo, con una
+    // rotazione che fallisce su un token morto per mano sua.
+    await expect(harness.service.refresh(telefono.tokens.refreshToken)).resolves.toBeDefined();
+  });
+
+  it("sulla propria sessione con la password sbagliata dice INVALID_CREDENTIALS, non CONFLICT", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const famiglia = famigliaDi(harness, telefono);
+
+    // L'ordine fra le due difese e' esso stesso una difesa. Con il 409 davanti
+    // alla verifica, il codice di stato diventa un oracolo: 409 vuol dire
+    // «questa riga e' la tua», 401 vuol dire «non lo e'», e chi ha rubato un
+    // access token impara quale dispositivo sta usando il proprietario
+    // provando gli id dell'elenco con una password qualunque.
+    await expect(
+      harness.service.revokeSession(telefono.user.id, famiglia, {
+        sessionId: famiglia,
+        currentPassword: "non-e-questa",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
+  });
+
+  it("su una sessione gia' chiusa risponde zero, e non un errore", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const portatile = await harness.service.login({ email: EMAIL, password: PASSWORD });
+    const famiglia = famigliaDi(harness, telefono);
+    const chiusa = famigliaDi(harness, portatile);
+
+    await harness.service.revokeSession(telefono.user.id, famiglia, {
+      sessionId: chiusa,
+      currentPassword: PASSWORD,
+    });
+
+    // Due schede aperte sullo stesso account, lo stesso pulsante premuto due
+    // volte: la seconda volta il risultato voluto c'e' gia'. Un errore direbbe
+    // «e' andata male» a chi ha ottenuto esattamente cio' che chiedeva.
+    const esito = await harness.service.revokeSession(telefono.user.id, famiglia, {
+      sessionId: chiusa,
+      currentPassword: PASSWORD,
+    });
+
+    expect(esito).toEqual({ revoked: 0 });
+  });
+
+  it("su un id che non esiste risponde zero", async () => {
     const harness = build();
     const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
 
-    const { sessions } = await harness.service.listSessions(
+    const esito = await harness.service.revokeSession(
       telefono.user.id,
       famigliaDi(harness, telefono),
+      { sessionId: "famiglia-che-non-c-e-mai-stata", currentPassword: PASSWORD },
     );
 
-    // La porta lo restituisce, il servizio lo consuma per `current` e lo butta.
-    // Uno spread al posto della costruzione campo per campo lo farebbe uscire
-    // senza che niente smetta di funzionare, e da quel momento ogni apertura
-    // della schermata spedirebbe un identificativo di sessione a cui non
-    // corrisponde nessun gesto.
-    expect(Object.keys(sessions[0] ?? {}).sort()).toEqual(["createdAt", "current"]);
+    expect(esito).toEqual({ revoked: 0 });
+  });
+
+  it("e' UNAUTHORIZED se l'utente non esiste piu'", async () => {
+    const harness = build();
+
+    // Senza il `findUserById` davanti, non ci sarebbe nessun hash contro cui
+    // verificare e il ramo della password diventerebbe irraggiungibile o
+    // esploderebbe: l'`AppError` esplicito e' l'unica delle due che si legge
+    // dal client.
+    await expect(
+      harness.service.revokeSession("utente-sparito", "fam-qualunque", {
+        sessionId: "fam-altra",
+        currentPassword: PASSWORD,
+      }),
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("la revoca porta l'istante del Clock iniettato", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const portatile = await harness.service.login({ email: EMAIL, password: PASSWORD });
+    const chiusa = famigliaDi(harness, portatile);
+    harness.clock.advanceSeconds(3600);
+
+    await harness.service.revokeSession(telefono.user.id, famigliaDi(harness, telefono), {
+      sessionId: chiusa,
+      currentPassword: PASSWORD,
+    });
+
+    const revocati = harness.repo.allTokens().filter((t) => t.revokedAt !== null);
+    expect(revocati).toHaveLength(1);
+    expect(revocati[0]?.familyId).toBe(chiusa);
+    expect(revocati[0]?.revokedAt?.getTime()).toBe(T0.getTime() + 3600 * 1000);
+  });
+
+  it("la riga chiusa sparisce dall'elenco, e le altre restano", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const portatile = await harness.service.login({ email: EMAIL, password: PASSWORD });
+    await harness.service.login({ email: EMAIL, password: PASSWORD });
+    const famiglia = famigliaDi(harness, telefono);
+    const chiusa = famigliaDi(harness, portatile);
+
+    await harness.service.revokeSession(telefono.user.id, famiglia, {
+      sessionId: chiusa,
+      currentPassword: PASSWORD,
+    });
+
+    // Il giro completo: l'id letto dall'elenco, speso, e l'elenco riletto. E'
+    // la cosa che la schermata fa davvero, ed e' anche l'unico caso che
+    // fallirebbe se `listSessions` esponesse come `id` qualcosa che non e' il
+    // `familyId` — un indice, o il `tokenHash`.
+    const { sessions } = await harness.service.listSessions(telefono.user.id, famiglia);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.map((s) => s.id)).not.toContain(chiusa);
   });
 });
 

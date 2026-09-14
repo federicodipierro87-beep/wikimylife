@@ -113,7 +113,7 @@ ventitré cadute.
 
 ---
 
-## Il giro appena chiuso, quattro su quattro
+## Il penultimo giro, quattro su quattro
 
 Quattro attività scelte dall'elenco dei difetti noti, una per commit.
 
@@ -135,11 +135,24 @@ Una di quelle mutazioni ha lasciato un segno: con `delete` ridotta a un no-op,
 `svuotaIlBucket` girava per sempre, e la mutazione moriva dopo trentaquattro
 minuti invece di quaranta secondi. Adesso quel ciclo ha un tetto di venti scorse.
 
-> **Da fare a mano, una volta sola:** aggiungere al proprio `.env` le cinque
-> righe `S3_ENDPOINT_TEST`, `S3_BUCKET_TEST`, `S3_REGION_TEST`,
+> **Da fare a mano, una volta sola, e ancora non fatto:** aggiungere al proprio
+> `.env` le cinque righe `S3_ENDPOINT_TEST`, `S3_BUCKET_TEST`, `S3_REGION_TEST`,
 > `S3_ACCESS_KEY_ID_TEST`, `S3_SECRET_ACCESS_KEY_TEST`, copiandole da
-> `.env.example`. Senza, i due file nuovi non partono. `.env` non è leggibile
-> dagli strumenti, quindi non ho potuto farlo io.
+> `.env.example`. `.env` non è leggibile dagli strumenti, quindi non posso farlo
+> io.
+>
+> Qui si diceva «senza, i due file nuovi non partono». **È peggio:** il
+> `globalSetup` dell'integrazione prepara il bucket *prima* di raccogliere i
+> file, quindi senza quelle righe `npm run test:integration` muore con
+> `BucketDiTestAssente` e **nessuno** dei quattordici file parte. Il giro d'aiuto,
+> finché le righe mancano, è passarle sull'invocazione — `dotenv` non sovrascrive
+> ciò che è già in `process.env`:
+>
+> ```bash
+> S3_ENDPOINT_TEST="http://127.0.0.1:9100" S3_BUCKET_TEST=wikimylife-test \
+> S3_REGION_TEST=us-east-1 S3_ACCESS_KEY_ID_TEST=wikimylife \
+> S3_SECRET_ACCESS_KEY_TEST=wikimylife-segreto npm run test:integration
+> ```
 
 ### 2 — fatto
 
@@ -253,10 +266,13 @@ del terzo:
 
 ---
 
-## Il giro nuovo, appena cominciato
+## Il giro appena chiuso, quattro su quattro (più la correzione zero)
 
-Quattro attività scelte dai difetti noti, più una correzione che viene prima di
+Quattro attività scelte dai difetti noti, più una correzione che veniva prima di
 tutto. Una per commit, come sempre.
+
+Stato all'ultimo commit: typecheck verde sui quattro passaggi, **1050 test** unit
++ web su 47 file, **380** d'integrazione su 14 file, albero pulito.
 
 | | | stato |
 |---|---|---|
@@ -264,7 +280,7 @@ tutto. Una per commit, come sempre.
 | 1 | `RecordScreen`: il gesto principale dell'app, senza nessun caso | fatto, `dd84304` |
 | 2 | `ReviewScreen` e `ProcedureCard`, le altre due scoperte | fatto, `a14d9c9` |
 | 3 | svuotare un cestino grosso senza incontrare il timeout di un proxy | fatto, `7faaece` |
-| 4 | chiudere **una** sessione sola | da fare |
+| 4 | chiudere **una** sessione sola | fatto |
 
 ### 0 — le due correzioni
 
@@ -404,15 +420,69 @@ giro vanno ricordate, perché sono due cose diverse chiamate con lo stesso nome.
   diceva più di quanto fosse vero. Non si aggiunge un caso per uccidere una
   mutazione che non descrive nessun difetto — la si dichiara.
 
-### 4 — una decisione che si ribalta, e va detto
+### 4 — fatto, e una decisione che si ribalta
 
-Un giro fa, sull'elenco delle sessioni, si è deciso **solo l'elenco, niente
-«chiudi questa sessione» per riga**. Adesso si fa il contrario, e la scelta è
-dell'utente. Il vincolo che resta dal ragionamento di allora: l'id di sessione
-non deve esistere nel contratto **prima** del gesto che lo consuma — un id che
-gira in ogni risposta senza che nessuno lo usi è solo un id che prima o poi
-finisce in un log. Quindi l'id, la rotta che revoca e il pulsante atterrano
-**insieme**, in un commit solo, su quattro project.
+Un giro fa, sull'elenco delle sessioni, si era deciso **solo l'elenco, niente
+«chiudi questa sessione» per riga**. Qui si è fatto il contrario, e la scelta è
+stata dell'utente. Il vincolo rimasto dal ragionamento di allora ha governato
+tutto il resto: l'id di sessione non deve esistere nel contratto **prima** del
+gesto che lo consuma — un id che gira in ogni risposta senza che nessuno lo usi è
+solo un id che prima o poi finisce in un log. Quindi l'`id` in
+`openSessionSchema`, `POST /api/auth/sessions/revoke-one` e il pulsante per riga
+sono atterrati insieme, in un commit solo, su quattro project.
+
+Quarantuno casi nuovi: undici nel servizio, cinque nel client, undici nella
+schermata, nove contro Postgres in `auth.e2e.test.ts`, uno in
+`security.e2e.test.ts`, uno nel ponte. Da **1023 su 47 file** a **1050 su 47**, e
+da **369** d'integrazione a **380**, sempre su 14 file.
+
+Le decisioni prese con l'utente e quelle tecniche stanno tutte nel README — la
+schermata dell'account e la sezione della rotta. Qui restano le cinque cose che
+costano tempo se non si sanno.
+
+- **L'id sta nel corpo e non nel percorso, e la ragione è il limite dei
+  tentativi.** `rateLimit.ts` costruisce la chiave con `req.path`, che è il
+  percorso **concreto** e non lo schema della rotta: con l'id nel percorso ogni
+  id aprirebbe un secchiello nuovo, e una rotta che accetta una password
+  diventerebbe un oracolo senza limite. È il motivo per cui `POST
+  /sessions/:id/revoke` e `DELETE /sessions/:id` sono state scartate tutte e
+  due, ed è provato da un caso in `security.e2e.test.ts` che manda quattro
+  `sessionId` diversi e pretende il `429` al quarto.
+- **Revocare il proprio token dà `TOKEN_REUSED`, non `UNAUTHORIZED`.** Un caso
+  del servizio è stato scritto aspettandosi il secondo e ha trovato il primo. Non
+  è un difetto: la riga revocata **resta** nel database perché è lei a far
+  scattare la rilevazione del riuso, e presentare un token revocato è
+  indistinguibile da un furto — deliberatamente. L'aspettativa è stata corretta,
+  non il codice.
+- **`expect(null).not.toHaveProperty` ha un parente sul DOM.** Per uccidere
+  `key={indice}` non basta guardare cosa c'è scritto sulla riga: con tre date
+  diverse una riga *riciclata* mostra il testo giusto lo stesso. Quello che
+  cambia è l'identità del nodo, e si legge con `premuto.isConnected === false`
+  dopo che l'elenco si è ricaricato. Il `focus` sembrava la strada e non lo è:
+  jsdom lo perde da solo quando il nodo esce dal documento, quindi l'asserzione
+  passerebbe con tutte e due le chiavi.
+- **Il piano diceva `tests/unit/contract.test.ts` per i casi degli schemi nuovi.
+  Sbagliato**: quel file è tutto su `extractionContractSchema` (§4.1) e non ha
+  niente a che vedere con il contratto HTTP. I casi di rigidità della richiesta
+  sono finiti nell'integrazione (dove un corpo malformato attraversa `parseBody`
+  davvero) e quello dello schema di risposta in `apiClient.test.ts`. È la seconda
+  volta che un piano manda dei casi in quel file: la regola è che `contract` lì
+  dentro vuol dire il contratto **dell'estrazione**.
+- **Il `<Dispositivi>` è stato spostato *dentro* il `<form>`.** Il piano
+  giustificava `type="button"` con «premerlo dentro il `<form>` farebbe partire
+  scollega gli altri», ma l'elenco era renderizzato fuori — quindi la
+  precauzione non proteggeva niente e la mutazione sarebbe stata equivalente.
+  Spostarlo dentro rende la precauzione vera e la mutazione reale: adesso
+  `type="submit"` fa cadere un caso.
+
+Trentatré mutazioni, trentatré cadute, zero sopravvissute. Cinque sono state
+scritte **doppie** perché il filtro a tre parti è scritto due volte — Prisma e
+doppio in memoria — e toglierne una copia sola lascia in piedi l'altra suite. È
+la stessa lezione del terzo giro scorso, applicata prima invece che dopo. Una
+mutazione è stata saltata al primo giro per l'indentazione della stringa `da`
+(otto spazi invece di dieci, dentro un blocco multiriga): rifatta da sola con
+`python muta.py 22`, caduta. **Saltata non è caduta**, e contarla sarebbe stato
+un falso.
 
 ---
 

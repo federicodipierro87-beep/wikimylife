@@ -739,15 +739,69 @@ perché sono tre notizie. Lo zero è quella che conta di più ed è quella che u
 averlo scollegato, mentre la verità è che quel telefono non era collegato — il
 che vuol dire che il problema, se c'è, è da un'altra parte.
 
-**Sopra quel pulsante c'è l'elenco dei dispositivi collegati**, che è ciò che dà
-un metro al numero. Non è una sezione a sé e non potrebbe esserlo: da solo
-sarebbe una lista di date che non si possono toccare. Accanto al pulsante serve a
-due cose — dire quanti dispositivi ci sono *prima* di premere, e far vedere la
-lista accorciarsi dopo, perché è quello che trasforma «ne ho scollegate due» da
-un'affermazione in una verifica. Per questo dopo una revoca riuscita l'elenco si
-ricarica, e dopo un rifiuto no: lì non è stato revocato niente, la lista a
-schermo è ancora quella giusta, e rileggerla la farebbe sparire e riapparire
-identica sotto un messaggio d'errore, come se il guasto riguardasse anche lei.
+**Dentro quel modulo, sopra il campo della password, c'è l'elenco dei dispositivi
+collegati**, e ogni riga che non sia quella in mano ha accanto un pulsante che
+chiude quella sola. L'elenco non è una sezione a sé e adesso meno che mai: serve
+a tre cose, e nessuna delle tre funziona lontano dal modulo — dire quanti
+dispositivi ci sono *prima* di premere; dare un metro al numero che torna dopo,
+perché è ciò che trasforma «ne ho scollegate due» da un'affermazione in una
+verifica; e ospitare i pulsanti che consumano la password scritta nel campo qui
+sotto. Sta *dentro* il `<form>` e non sopra di esso, e non è una sfumatura:
+separarli vorrebbe dire un campo password fuori da qualunque form — che i gestori
+di password trattano peggio — e renderebbe `type="button"` sui pulsanti di riga
+una precauzione senza effetto invece della cosa che impedisce a un clic su una
+riga di far partire «scollega gli altri», cioè il più distruttivo dei due gesti
+al posto del più piccolo, con la password già scritta nel campo. Dopo una revoca
+riuscita — di una riga o di tutte — l'elenco si ricarica, e dopo un rifiuto no:
+lì non è stato revocato niente, la lista a schermo è ancora quella giusta, e
+rileggerla la farebbe sparire e riapparire identica sotto un messaggio d'errore,
+come se il guasto riguardasse anche lei.
+
+**Chiudere una sessione sola chiede la password**, ed è lo stesso campo di
+«scollega gli altri». Senza, chi ha in mano un telefono rubato chiuderebbe le
+altre una per una e otterrebbe esattamente ciò che quel campo esiste per
+impedire. Per la stessa ragione il campo si svuota anche dopo aver chiuso una
+riga sola, e non solo dopo il gesto grande: tutti i pulsanti tornano spenti
+insieme, quindi un secondo clic distratto sulla riga accanto non parte da solo, e
+chi vuole chiuderne due riscrive la password. Sono due decisioni, non un
+trascinamento. Finché il campo è vuoto i pulsanti di riga restano spenti, con la
+stessa disciplina del pulsante in fondo: una richiesta che partisse comunque
+tornerebbe indietro con un `VALIDATION_FAILED`, cioè un errore rosso al posto di
+un pulsante che si vede non essere ancora pronto.
+
+**Sulla riga di questo dispositivo non c'è nessun pulsante**, ed è una decisione
+e non una dimenticanza: chiudere la propria sessione è l'uscita, che sta dieci
+righe più giù nella stessa schermata. Il server, se quella richiesta gli arriva
+lo stesso, risponde `409 CONFLICT` invece di lasciarla passare — lasciarla
+passare vorrebbe dire revocare il refresh token di chi sta chiamando mentre la
+risposta dice «fatto», e il client scoprirebbe di essere fuori alla richiesta
+dopo, con una rotazione che fallisce su un token appena ucciso da sé. E il 409
+arriva **dopo** la verifica della password, mai prima: invertirli farebbe del
+codice di stato un oracolo — 409 su una riga vorrebbe dire «questa è la tua», 401
+«non lo è» — e chi avesse rubato un access token imparerebbe quale riga
+dell'elenco è la propria senza sapere la password.
+
+**Una sessione già chiusa risponde `{ revoked: 0 }`, non 404**, e la schermata lo
+dice con una frase sua: «Quel dispositivo era già scollegato». Capita davvero —
+due schede aperte sullo stesso account, lo stesso pulsante premuto due volte, un
+elenco vecchio di qualche minuto — e la seconda volta il risultato voluto c'è
+già: un 404 direbbe «è andata male» a chi ha ottenuto ciò che chiedeva. Ma non
+dice nemmeno «fatto», per la stessa ragione dello zero qui sopra — far credere di
+aver appena chiuso un dispositivo che era già andato è l'unica cosa peggiore
+delle due.
+
+Due dettagli della lista pesano più di quanto sembri. La chiave di ogni riga è
+l'`id` e non la posizione: con la posizione React riusa l'elemento della riga
+sparita per quella che le scivola sotto, e il pulsante che aveva il fuoco resta a
+fuoco puntando ormai a un altro dispositivo — premere due volte di seguito, la
+cosa più naturale del mondo mentre si ripulisce un elenco, chiuderebbe una riga
+che nessuno aveva guardato. E il nome accessibile di ogni pulsante ripete la data
+della riga («Scollega il dispositivo collegato 2 mesi fa»), perché tre «Scollega»
+identici uno sotto l'altro non si distinguono leggendoli a voce; l'`aria-label`
+vince sul contenuto, quindi resta lo stesso anche mentre l'etichetta visibile
+dice «Un attimo». Mentre una riga è in volo si spegne quella sola: lo stato è
+l'id della riga premuta e non un booleano condiviso, che spegnerebbe l'elenco
+intero per una richiesta che ne riguarda una.
 
 Di ogni dispositivo si legge **una cosa sola**: da quando è collegato, in
 italiano relativo — «Collegato 3 giorni fa», «Collegato 2 mesi fa» — e quello in
@@ -760,10 +814,13 @@ serve, e un registro degli spostamenti del proprietario in tutti gli altri,
 leggibile da chiunque prenda in mano uno qualsiasi dei dispositivi elencati.
 
 Se l'elenco non si carica, la frase che compare è grigia e non un avviso rosso.
-Il pulsante qui sotto funziona ancora, e continua a scollegare gli altri
-dispositivi anche se non si è riusciti a contarli: un `role="alert"` accanto a un
-modulo intatto direbbe che il gesto è diventato impossibile, e chi ha appena
-perso un telefono smetterebbe di provarci.
+Senza righe non ci sono nemmeno i pulsanti di riga, ma il pulsante in fondo
+funziona ancora e continua a scollegare gli altri dispositivi anche se non si è
+riusciti a contarli: un `role="alert"` accanto a un modulo intatto direbbe che il
+gesto è diventato impossibile, e chi ha appena perso un telefono smetterebbe di
+provarci. Resta il gesto grosso al posto di quello mirato, che è il verso giusto
+in cui degradare — chi non riesce a vedere l'elenco non può nemmeno scegliere
+dentro l'elenco.
 
 **Il cestino è una schermata e non un quarto chip.** I filtri dell'elenco sono
 gli ambiti — personale, lavoro, clienti — e sono tutti dello stesso tipo:
@@ -1128,10 +1185,10 @@ che tiene l'arma dalla parte giusta.
 `GET /api/auth/sessions` è il metro di quel numero, ed è arrivata dopo per la
 stessa ragione per cui era la risposta a essere un numero: «ne ho scollegate due»
 significa qualcosa solo a chi sapeva che ce n'erano tre. Risponde con una riga
-per dispositivo collegato e, di ogni riga, **due campi soli** — `createdAt` e
-`current`. Non chiede la password perché non fa niente: è una lettura, e ciò che
-mostra lo sa già chiunque abbia in mano una sessione viva, perché è il proprio
-account.
+per dispositivo collegato e, di ogni riga, **tre campi soli** — `id`, `createdAt`
+e `current`. Non chiede la password perché non fa niente: è una lettura, e ciò
+che mostra lo sa già chiunque abbia in mano una sessione viva, perché è il
+proprio account.
 
 `createdAt` è il momento del **login**, non quello dell'ultima rotazione, e la
 differenza è tutta la ragione per cui questa rotta esiste in questa forma. Una
@@ -1142,14 +1199,78 @@ degli spostamenti che questo prodotto ha deciso di non tenere. La nascita è
 rotazione ha già revocato — che è il motivo per cui l'adattatore fa due
 interrogazioni e non una: «viva» è una proprietà della riga corrente, «nata» è
 un'aggregazione su tutta la storia. Per lo stesso motivo non escono né IP né
-user-agent, e non esce nemmeno un identificativo di sessione: non c'è un gesto
-che ne prenda una sola, quindi sarebbe un id spedito a ogni apertura di una
-schermata senza che nessuno lo consumi.
+user-agent.
+
+L'`id` invece esce, ed è il `familyId`. Fino al commit che ha aggiunto la rotta
+qui sotto non c'era, e il commento accanto allo schema diceva perché: senza un
+gesto che lo consumi, un identificativo di sessione spedito a ogni apertura di
+una schermata è solo un id che prima o poi finisce in un log. Adesso il gesto c'è
+— e l'id, la rotta che lo consuma e il pulsante che lo manda sono atterrati
+insieme, in un commit solo, apposta.
 
 La rotta sta dietro `requireAuth` e **fuori** dal limite dei tentativi, per la
 ragione già scritta per `/me`: non accetta nessun segreto, quindi non c'è niente
 da indovinare a colpi di richieste, e limitarla spegnerebbe l'elenco proprio a
 chi ricarica la schermata mentre cerca di capire quale dispositivo scollegare.
+
+`POST /api/auth/sessions/revoke-one` ne chiude **una**, e l'id viaggia nel
+**corpo** insieme alla password:
+
+```powershell
+# L'id di una riga di GET /sessions, cioè un familyId.
+$corpo = @{ sessionId = "<id di una riga>"; currentPassword = "password-lunga-12" } |
+  ConvertTo-Json
+
+curl.exe -X POST http://localhost:3000/api/auth/sessions/revoke-one `
+  -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d $corpo
+# {"revoked":1}
+
+# Premuto una seconda volta sullo stesso id:
+# {"revoked":0}   <- e non un 404: il risultato voluto c'era già.
+```
+
+**Perché il corpo e non il percorso**, che sarebbe stato più REST. La chiave del
+limite dei tentativi si costruisce così
+(`apps/api/src/http/middleware/rateLimit.ts`):
+
+```ts
+const key = `${req.ip ?? "sconosciuto"} ${req.method} ${req.baseUrl}${req.path}`;
+```
+
+`req.path` è il percorso **concreto**, non lo schema della rotta. Con l'id nel
+percorso ogni id aprirebbe un secchiello nuovo, e una rotta che accetta una
+password diventerebbe un oracolo senza limite: basta cambiare l'UUID a ogni
+tentativo per non incontrare mai il 429. `POST /sessions/:id/revoke` e
+`DELETE /sessions/:id` cadono tutte e due per questo. È anche il motivo per cui
+il commento di `GET /sessions` avvisava che «un giorno qualcuno scriverà
+`router.get("/sessions/:id")` e il primo a rompersi sarà l'altro»: con l'id nel
+corpo quel giorno non arriva, e le tre rotte sotto `/sessions` non si contendono
+niente.
+
+Scartata anche la terza strada — allargare `/sessions/revoke` con un `sessionId`
+facoltativo — perché farebbe decidere a un **campo assente** se il gesto ne
+chiude una o tutte, e un corpo malformato sceglierebbe il ramo più distruttivo.
+Due gesti diversi, due rotte.
+
+Il servizio fa cinque cose in quest'ordine, e l'ordine è la sicurezza: rilegge
+l'utente (401 se non c'è più), verifica la password (401), rifiuta con `409` un
+`sessionId` uguale al proprio `fid`, revoca, risponde col conto. Le ragioni del
+409 e del suo posto in coda alla verifica stanno più sopra, nella schermata.
+
+La revoca passa da `revokeFamilyOfUser`, che **non** è `revokeFamily`, due righe
+più su nella stessa porta. Quello non ha lo `userId`: va bene per la rilevazione
+del riuso e per l'uscita, che partono da una riga già letta e già attribuita, ma
+raggiungibile da una rotta HTTP diventerebbe «revoca la sessione di chiunque, se
+ne indovini l'id». Il nuovo ha un `WHERE` a tre parti — `userId`, `familyId`,
+`revokedAt: null` — e ognuna delle tre ha un difetto suo se manca: senza
+`userId` si revoca la famiglia di un altro utente, senza `familyId` si revocano
+tutte le proprie, senza `revokedAt: null` si ricontano righe già morte e il
+numero mente. I due metodi restano separati apposta: uno è sicuro *perché* non
+ha lo `userId`, l'altro *perché* ce l'ha.
+
+Come `/sessions/revoke` e `/password`, questa rotta sta **dentro** il limite dei
+tentativi: è autenticata ma accetta una password, quindi è un posto da cui
+indovinarla, e paga un argon2 per tentativo.
 
 ### Un vocale che diventa una scheda, a mano
 
@@ -1497,6 +1618,25 @@ ricaricata identica è indistinguibile da una lista rimasta ferma. Infine il
 guasto dell'elenco: il modulo della revoca resta usabile e in pagina non compare
 nessun `role="alert"`, che è la differenza fra «non sono riuscito a contarli» e
 «non puoi più scollegarli».
+
+Dei pulsanti che ne chiudono uno solo, che premerne uno riguardi **quello**. La
+lista dei casi è quasi tutta di errori che a mano non si vedono: che parta l'id
+di quella riga e non quello della prima — con tre righe identiche un bug del
+genere è invisibile finché non si guarda il corpo della richiesta; che si spenga
+la sola riga premuta, provato guardando che le altre due restino premibili;
+che il nome accessibile del pulsante in volo nomini **ancora** il suo
+dispositivo, perché è il solo modo di sapere quale riga si sta aspettando; e che
+la riga chiusa venga **smontata** invece di essere riciclata per quella che le
+scivola sotto, che è il caso scritto apposta per uccidere `key={indice}` e si
+prova sull'identità del nodo (`isConnected`) e non su ciò che c'è scritto sopra,
+perché con tre date diverse una riga riciclata mostra il testo giusto lo stesso.
+Poi i due opposti, come sempre: il pulsante c'è sulle altre righe e **non** sulla
+riga `current`; è spento a campo vuoto e acceso appena si scrive. E i tre effetti
+di contorno: l'elenco si ricarica e il campo si svuota dopo un gesto riuscito;
+uno zero si legge «era già scollegato» e non «fatto»; un rifiuto si legge e la
+riga torna premibile. Infine il caso che tiene su il `type="button"`: premere
+«Scollega» su una riga **non** manda `revokeOtherSessions`, cioè non fa partire
+il gesto grosso dal pulsante del piccolo.
 
 Della sezione «In lavorazione», quando smette di chiedere. Il polling è il caso
 esemplare del guasto senza sintomo: se resta acceso quando non doveva, la
@@ -1863,11 +2003,13 @@ nel database e devono sparire da qui; l'utente accanto non compare. E l'ordine,
 che nel `groupBy` non esiste: il dispositivo di chi chiede è il primo dei tre a
 essersi collegato, quindi deve risultare **ultimo**. La risposta si legge con lo
 schema `.strict()` e non a mano, che è ciò che farebbe fallire il caso se un
-giorno il `familyId` uscisse dal servizio insieme agli altri due campi. In fondo,
-le due combinazioni sbagliate di verbo e percorso: `GET /sessions/revoke` e
-`POST /sessions` devono dare 404 entrambe, perché la più pericolosa delle due
-sarebbe la prima — se l'elenco fosse scritto come `/sessions/:qualcosa`, leggerlo
-potrebbe finire su un gestore che revoca.
+giorno uscisse dal servizio un quarto campo. In fondo, le combinazioni sbagliate
+di verbo e percorso — `GET /sessions/revoke`, `POST /sessions`,
+`GET /sessions/revoke-one` e `POST /sessions/<id>/revoke` devono dare 404 tutte e
+quattro — perché la più pericolosa sarebbe la prima: se l'elenco fosse scritto
+come `/sessions/:qualcosa`, leggerlo potrebbe finire su un gestore che revoca.
+L'elenco è cresciuto insieme alle rotte, ed è cresciuto apposta: è il caso che si
+rompe per primo il giorno in cui qualcuno aggiunge la quarta.
 
 Le mutazioni su questo blocco sono ventiquattro e cadono tutte: tre sul servizio
 (`current` sempre vero e sempre falso, la data buttata via), quattro
@@ -1878,6 +2020,36 @@ dovute essere scritte doppie: togliere lo `userId` da una sola delle due
 interrogazioni non cambia niente, perché a filtrare resta l'altra — la mutazione
 sopravviveva senza dire niente di vero sui test, e il difetto vero è
 dimenticarlo in tutti e due i posti.
+
+Della chiusura di **una** sessione si prova contro Postgres la sola cosa che in
+memoria non si potrebbe: che il `WHERE` a tre parti sia scritto in SQL come
+nell'idea. Due login veri, il secondo chiuso dal primo, e poi le due metà del
+caso — il refresh token appena chiuso non funziona più, e quello di chi ha
+chiamato **sì**. È l'errore opposto di quello che si teme, e da solo vale quanto
+l'altro: un `WHERE` senza `familyId` chiuderebbe tutto, compreso chi sta
+premendo, e la risposta direbbe lo stesso `revoked: 1`. Accanto, la famiglia di
+un altro utente: rispondere `0` non basta: il caso va a leggere che la sessione
+dell'altro sia ancora viva, perché `0` lo direbbe anche un `WHERE` che ha
+cancellato tutto e non ha trovato più niente da contare. Poi il `409` sulla
+propria famiglia, con la riga che resta viva; la password sbagliata, che dà `401`
+e non revoca nessuna riga — contate prima e ricontate dopo; e una famiglia già
+chiusa, che risponde `0` senza spostare il `revokedAt` che aveva, perché è il
+`revokedAt: null` del `WHERE` a impedire che il numero menta.
+
+Le mutazioni di questo blocco sono trentatré e cadono tutte. Nove stanno sul
+`WHERE` e sul servizio, e cinque di quelle sono state scritte **doppie** apposta:
+il filtro a tre parti è scritto due volte — nell'adattatore Prisma e nel doppio
+in memoria — e toglierne una copia sola lascia in piedi l'altra suite, che è il
+modo in cui una precauzione duplicata finisce per non essere provata da nessuna
+parte. Accanto alle doppie ci sono le singole sul solo Prisma, che servono a dire
+che anche l'integrazione da sola le vede. Le altre: la verifica della password
+tolta e poi resa inerte, l'ordine fra verifica e `409` invertito, il `409` che
+diventa un 200, l'utente sparito che smette di essere un 401, la famiglia
+scambiata con la propria, il `Clock` scavalcato, l'`id` che smette di uscire
+dall'elenco, i due middleware tolti dalla rotta, il percorso cambiato, lo
+`.strict()` e i due `.min(1)` dello schema, il percorso e l'`auth` del client, e
+dieci sulla schermata — fra cui `key={indice}`, `type="submit"` e il booleano
+condiviso al posto dell'id in volo.
 
 L'end-to-end delle registrazioni carica un multipart vero e poi esegue
 `ingestionService.processNext()` in-process, sulle **stesse istanze** che servono
@@ -2120,8 +2292,13 @@ Vale lo stesso per `security.e2e.test.ts`: che `req.ip` esista davvero dietro
 Express, che il `429` esca dall'error handler con il corpo del contratto invece
 che come stack, che il middleware sia montato sulle rotte giuste e non su tutte,
 e — il test che conta più degli altri — che un `X-Forwarded-For` inventato non
-compri un budget nuovo. Ogni test riparte da un server nuovo, perché i conteggi
-stanno in memoria di processo e `resetDatabase()` non li tocca.
+compri un budget nuovo. Accanto a quello ce n'è uno gemello, ed è il caso che
+tiene in piedi la scelta dell'id nel corpo: quattro richieste a
+`/sessions/revoke-one` con **quattro `sessionId` diversi** devono condividere lo
+stesso secchiello, e la quarta è un `429`. Con l'id nel percorso quel caso
+fallirebbe, ed è il solo modo di accorgersene senza rileggere `rateLimit.ts`.
+Ogni test riparte da un server nuovo, perché i conteggi stanno in memoria di
+processo e `resetDatabase()` non li tocca.
 
 `client.e2e.test.ts` è il file che chiude la distanza fra le due metà della
 suite. Fino a lì i test web premevano i pulsanti davanti a un `ApiClient` finto e
@@ -2144,13 +2321,20 @@ minuto, e un test che dorme un minuto è un test che qualcuno toglie. Si
 costruisce invece lo stato esatto in cui l'applicazione si trova dopo un riavvio
 del browser — refresh token nel deposito, memoria vuota — e si chiama una rotta
 autenticata. Il ramo che conta di più però è quello opposto, ed è quello che di
-solito manca: non tutti i `401` parlano della sessione. Su `/api/auth/password` e
-su `/api/auth/sessions/revoke` «credenziali non valide» significa «hai sbagliato
+solito manca: non tutti i `401` parlano della sessione. Su `/api/auth/password`,
+`/sessions/revoke` e `/sessions/revoke-one` «credenziali non valide» significa «hai sbagliato
 a digitare», e il token con cui la richiesta è partita è vivo. Trattarlo come gli
 altri farebbe ruotare per niente e poi, al secondo rifiuto identico, svuoterebbe
 la sessione: butterebbe fuori dall'account proprio chi lo stava proteggendo. Il
 caso lo verifica contando le richieste registrate — zero verso
 `/api/auth/refresh` — invece di guardare solo l'errore che torna.
+
+Nello stesso blocco c'è l'unico caso che spende un valore letto da una risposta
+per costruire la richiesta dopo: si legge `GET /sessions`, si prende l'`id` di
+una riga e lo si passa a `revokeSession`. Davanti a un `fetch` finto quell'id
+sarebbe una stringa qualunque scritta due volte nello stesso file; qui è il
+`familyId` che il servizio ha davvero messo nella risposta, e il caso fallisce
+se i due capi del contratto smettono di parlare dello stesso campo.
 
 Il giro della scheda è un `it` solo, lungo, e non dodici corti. Ogni passo dipende
 dallo stato che il precedente ha lasciato sul server: `retry` vuole una
@@ -2208,7 +2392,7 @@ fa HTTP; tutto il resto deve essere passato di là dal ponte, e il fallimento
 nomina i metodi scoperti invece di contarli — chi lo legge è quasi sempre chi ha
 appena aggiunto il metodo e non sa ancora che questo file esiste. Accanto, come
 in `guards.test.ts`, il caso che verifica che la guardia stia guardando
-qualcosa: i metodi sono ventisette. Senza, un `Object.keys` che tornasse vuoto —
+qualcosa: i metodi sono ventotto. Senza, un `Object.keys` che tornasse vuoto —
 per un refactoring del client da oggetto letterale a classe, che è una
 riscrittura plausibile — renderebbe la guardia verde per sempre, e nessuno se ne
 accorgerebbe perché i test verdi non si rileggono.
@@ -2649,8 +2833,8 @@ fallisce.
 
 ### Il limite dei tentativi
 
-`POST /api/auth/signup`, `/login`, `/refresh`, `/password` e `/sessions/revoke`
-passano da
+`POST /api/auth/signup`, `/login`, `/refresh`, `/password`, `/sessions/revoke` e
+`/sessions/revoke-one` passano da
 `apps/api/src/http/middleware/rateLimit.ts`: finestra fissa, **dieci tentativi al
 minuto per IP e per rotta** di default (`AUTH_RATE_LIMIT_MAX`,
 `AUTH_RATE_LIMIT_WINDOW_SEC`). Oltre il limite è un `429` con
@@ -2670,19 +2854,28 @@ Quattro decisioni, e il perché:
 - **La chiave è IP + metodo + percorso, non l'email.** Contare per email sembra
   più preciso e regala due cose a chi attacca: la possibilità di chiudere fuori
   un utente vero bombardando il suo indirizzo, e la possibilità di distribuire i
-  tentativi su indirizzi email diversi senza mai toccare il limite.
+  tentativi su indirizzi email diversi senza mai toccare il limite. Il percorso
+  che entra nella chiave è `req.path`, cioè quello **concreto** e non lo schema
+  della rotta: è la ragione per cui `/sessions/revoke-one` prende l'id nel corpo
+  e non nel percorso — con l'id nel percorso ogni id aprirebbe un secchiello
+  nuovo, e una rotta che accetta una password diventerebbe un oracolo senza
+  limite.
 - **Su Postgres, non su Redis e non in memoria.** Redis sarebbe un quarto
   servizio, un'altra variabile e un altro modo di rompersi, per proteggere
   l'account di una persona. Postgres c'è già, e il conteggio ci sta in una riga.
 
-`/password` e `/sessions/revoke` sono le due rotte limitate che stanno anche
-dietro `requireAuth`, e le due cose non si contraddicono: sono i due posti in cui
-chi ha rubato un access token può provare a indovinare la password online, e sono
-le due che pagano un argon2 per tentativo — `/password` ne paga due, una verifica
-e un hash — quindi martellarle costa alla CPU dell'API molto più che a chi le
-martella. Le finestre non si mescolano, perché la chiave contiene la rotta: un
-cambio password non consuma i tentativi di `/login`, «scollega gli altri» non
-consuma quelli del cambio password, e nessuno dei tre può esaurire gli altri.
+`/password`, `/sessions/revoke` e `/sessions/revoke-one` sono le tre rotte
+limitate che stanno anche dietro `requireAuth`, e le due cose non si
+contraddicono: sono i tre posti in cui chi ha rubato un access token può provare
+a indovinare la password online, e sono le tre che pagano un argon2 per tentativo
+— `/password` ne paga due, una verifica e un hash — quindi martellarle costa alla
+CPU dell'API molto più che a chi le martella. Le finestre non si mescolano,
+perché la chiave contiene la rotta: un cambio password non consuma i tentativi di
+`/login`, «scollega gli altri» non consuma quelli del cambio password, e nessuno
+dei quattro può esaurire gli altri. Ma i tentativi di `/sessions/revoke-one`
+**sì**, si consumano fra loro: cambiare `sessionId` a ogni richiesta non compra
+un budget nuovo, ed è esattamente ciò che l'id nel corpo garantisce e che l'id
+nel percorso avrebbe regalato.
 
 `/logout`, `/me` e `GET /sessions` non sono limitati. Il primo non regala niente a
 chi lo martella; gli altri due stanno già dietro `requireAuth` e non accettano
@@ -2959,20 +3152,22 @@ Non installate, e il perché:
   finestra fissa resta però una finestra fissa, e chi prova dieci password al
   minuto per un mese non incontra mai il muro. Fermarlo vorrebbe dire contare per
   account e su giorni, cioè un'altra cosa da questa.
-- **Le sessioni aperte si vedono, ma si chiudono solo tutte insieme.**
-  `GET /api/auth/sessions` esiste e l'elenco è in fondo alla schermata
-  dell'account: una riga per dispositivo collegato, con la data in cui lo è
-  diventato e un segno su quello in mano. Quello che manca è il gesto per riga.
-  Chi riconosce due dispositivi su tre e vuole chiudere solo il terzo non può:
-  preme «scollega gli altri dispositivi» e li chiude tutti e due, poi rientra da
-  quello che gli serviva. Il costo vero non è il secondo login, è che il gesto
-  disponibile è più grosso del problema, e chi ha un dubbio piccolo tende a non
-  usare uno strumento grosso. Farlo vorrebbe dire spedire un identificativo di
-  sessione a ogni apertura della schermata, e quell'id andrebbe poi accettato in
-  ingresso da una rotta che revoca: due cose che oggi non esistono apposta.
-  Aggiungere il campo al contratto **prima** che esista il gesto sarebbe il modo
-  peggiore di farlo — un id in giro, in ogni risposta e prima o poi in un log,
-  senza nessuno che lo consumi.
+- **Una sessione si chiude da sola, ma si sceglie al buio e non si annulla.** Il
+  gesto per riga adesso c'è — `POST /api/auth/sessions/revoke-one` e un pulsante
+  su ogni riga che non sia quella in mano — quindi chi riconosce due dispositivi
+  su tre può chiudere solo il terzo. Restano due cose. La prima è che **niente
+  chiede conferma**: il pulsante chiude subito, e le righe si distinguono solo
+  per una data (il difetto qui sotto), quindi un dito che scivola su quella
+  accanto chiude un dispositivo che andava bene. Il freno che c'è è indiretto —
+  il campo della password si svuota dopo ogni gesto, quindi il secondo clic
+  distratto non parte — ma è un freno sulla *raffica*, non sul primo colpo. La
+  seconda è che la conferma non nomina niente: dice «Il dispositivo è stato
+  scollegato» e la lista si accorcia, ma non dice **quale**, e su tre righe con
+  date vicine quella frase non basta a sapere se si è chiuso ciò che si voleva.
+  Il rimedio a tutti e due è lo stesso, ed è il difetto qui sotto: finché una
+  riga non ha un nome, non c'è niente da scrivere in una conferma né da
+  rileggere in un avviso. Il costo, per ora, è un login in più sul dispositivo
+  sbagliato.
 
 - **E di ogni sessione si sa una cosa sola: quando è nata.** Niente indirizzo,
   niente dispositivo, niente «ultimo uso». È una scelta e non una mancanza: un
@@ -2983,7 +3178,12 @@ Non installate, e il perché:
   motivazione: due telefoni aperti lo stesso pomeriggio sono due righe
   indistinguibili, e chi deve decidere quale buttare, da questo elenco, non lo
   scopre. La data di nascita distingue «il telefono di ieri» da «quello di due
-  anni fa», e si ferma lì.
+  anni fa», e si ferma lì. Da quando ogni riga ha un pulsante, questo costo è
+  salito: prima significava «non so contare cosa sto chiudendo», adesso
+  significa «non so quale sto chiudendo», ed è una domanda a cui la schermata
+  chiede di rispondere. La strada che non passa da un registro degli spostamenti
+  è un nome scelto dall'utente al primo accesso da un dispositivo nuovo — dato
+  da chi lo possiede e non dedotto da chi lo osserva — e oggi non c'è.
 - **Non si recupera una password dimenticata.** Non c'è rotta, non c'è mail, non
   c'è nulla: chi dimentica la password perde l'archivio. La schermata
   dell'account fa quel che può — chiede la nuova due volte e dice che non c'è

@@ -41,12 +41,18 @@ import type { TokenIssuer } from "../../services/ports/TokenIssuer.js";
  * `familyId` accanto a `userId`, e non solo lo userId.
  *
  * Per quasi tutte le rotte la famiglia non serve: le procedure sono
- * dell'utente, non del telefono. Serve all'unica rotta che deve distinguere
- * «questo dispositivo» da «tutti gli altri», e la risposta a quella domanda non
- * puo' arrivare dal corpo della richiesta — sarebbe il chiamante a dichiarare
- * quale sessione risparmiare, cioe' esattamente la cosa che non deve poter
- * scegliere. Qui invece e' il token stesso a dirlo, ed e' un token firmato di
- * cui la riga sopra ha appena verificato che la famiglia sia viva.
+ * dell'utente, non del telefono. Serve alle tre rotte che devono distinguere
+ * «questo dispositivo» dagli altri, e la risposta a quella domanda non puo'
+ * arrivare dal corpo della richiesta — sarebbe il chiamante a dichiarare quale
+ * sessione risparmiare, cioe' esattamente la cosa che non deve poter scegliere.
+ * Qui invece e' il token stesso a dirlo, ed e' un token firmato di cui la riga
+ * sopra ha appena verificato che la famiglia sia viva.
+ *
+ * Le tre: `/sessions/revoke` la risparmia, `GET /sessions` la marca `current`, e
+ * `/sessions/revoke-one` rifiuta con 409 chi chiede proprio quella. L'ultima e'
+ * la ragione per cui il `fid` non e' un dettaglio di comodo: senza, la rotta
+ * accetterebbe di revocare la famiglia del chiamante e risponderebbe «fatto» a
+ * un client che da quel momento e' fuori senza saperlo.
  */
 declare global {
   namespace Express {

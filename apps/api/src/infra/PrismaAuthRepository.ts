@@ -195,6 +195,42 @@ export class PrismaAuthRepository implements AuthRepository {
   }
 
   /**
+   * Il WHERE ha tre parti, e ciascuna ha un difetto tutto suo se manca.
+   *
+   * Senza `userId`, la rotta revoca la famiglia di un altro: e' l'unica delle
+   * tre che trasforma un guasto in un problema di sicurezza, ed e' anche la piu'
+   * facile da togliere, perche' senza di lei tutti i test che chiudono una
+   * propria sessione passano lo stesso.
+   *
+   * Senza `familyId`, ne revoca tutte — «chiudi questa» diventa «chiudi tutto»,
+   * cioe' il gesto che sta due sezioni piu' su e che l'utente non ha premuto.
+   *
+   * Senza `revokedAt: null` non cambia cosa succede, cambia cosa si racconta:
+   * le righe gia' morte verrebbero ricontate, il numero in risposta sarebbe piu'
+   * alto del vero, e la data del logout di tre settimane fa verrebbe riscritta
+   * con quella di stasera — l'unica traccia di quando una sessione e' stata
+   * chiusa davvero.
+   *
+   * `updateMany` e non `delete`, come ovunque qui: le righe revocate sono cio'
+   * che fa scattare la reuse detection quando il token tornera'.
+   */
+  async revokeFamilyOfUser(input: {
+    userId: string;
+    familyId: string;
+    revokedAt: Date;
+  }): Promise<number> {
+    const revoked = await this.#prisma.refreshToken.updateMany({
+      where: {
+        userId: input.userId,
+        familyId: input.familyId,
+        revokedAt: null,
+      },
+      data: { revokedAt: input.revokedAt },
+    });
+    return revoked.count;
+  }
+
+  /**
    * Le due scritture in una transazione sola: il motivo per cui devono stare
    * insieme e' scritto sulla porta.
    *
