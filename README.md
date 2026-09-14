@@ -88,7 +88,8 @@ prisma/         Schema, migration, seed.
 tests/          unit (senza Docker) e integration (Postgres e bucket veri).
 docs/           Le deviazioni dalla specifica, con le motivazioni.
 netlify.toml    Netlify serve file e nient'altro: redirect SPA e header.
-apps/*/railway.toml   Come si costruisce e come parte ciascun servizio.
+apps/*/railway.toml   Come si costruisce e come parte ciascun servizio — ma
+                Railway non li legge piu': vanno ricopiati nel pannello.
 .github/workflows/ci.yml   Typecheck, unit, integrazione e build a ogni push.
 ```
 
@@ -1940,11 +1941,9 @@ modulo puro che cominciasse a nominare `window` non sarebbe più importabile dai
 test unitari, e la separazione non può marcire in silenzio.
 
 Fra i test unitari c'è anche `deploy.test.ts`, che non prova codice ma i tre file
-di configurazione del deploy. `netlify.toml` e i due `railway.toml` sono
-eseguibili solo dalle piattaforme, quindi ogni nome che contengono è una promessa
-verificata al primo deploy e non prima: uno script `npm run` che non esiste, un
-`node apps/api/dist/index.js` che punta a un file che il `tsc` non produce più, un
-`healthcheckPath` che nessuna rotta serve, un `publish` che non è la `outDir` di
+di configurazione del deploy. `netlify.toml` è eseguibile solo dalla piattaforma,
+quindi ogni nome che contiene è una promessa verificata al primo deploy e non
+prima: uno script `npm run` che non esiste, un `publish` che non è la `outDir` di
 Vite, un `for = "/sw.js"` per un file che è stato rinominato. Sono tutti errori
 che vivono in un file solo e si scoprono su una macchina lontana. Il test li
 riporta a casa: legge i tre `.toml` con un lettore scritto per l'occasione — una
@@ -1953,6 +1952,15 @@ sproporzionata — e controlla che i nomi citati esistano da questa parte. Inclu
 come `guards.test.ts`, un blocco che prova la guardia stessa: senza, un lettore
 rotto renderebbe vera ogni asserzione della forma «tutti gli elementi sono
 validi».
+
+Sui due `railway.toml` lo stesso test dice **meno di quanto sembri**, da quando
+Railway ha deprecato config-as-code: quei file non li esegue più nessuno, e i
+valori veri stanno nelle impostazioni dei servizi. Il rosso qui continua a
+proteggere da un `healthcheckPath` che nessuna rotta serve o da un `node
+apps/api/dist/index.js` che il `tsc` non produce più — che è ciò che serve,
+perché quei file adesso sono la fonte da cui qualcuno *ricopia* — ma non dice
+più che sia quello il comando in produzione. Il confronto fra questi file e il
+pannello nessun test lo fa, e sta fra i difetti noti.
 
 **integration** applica le migration su `DATABASE_URL_TEST`, poi verifica lo
 schema fisico contro il catalogo di Postgres, esegue il seed vero e ricontrolla
@@ -2493,14 +2501,64 @@ test` diventa rosso qui invece che il deploy laggiù.
 | Dove | Cosa | Come parte |
 |---|---|---|
 | Railway | Postgres con `pgvector` | template ufficiale, estensione creata dalla prima migration |
-| Railway | `apps/api` | `apps/api/railway.toml` → `npm run start:api` |
-| Railway | `apps/worker` | `apps/worker/railway.toml` → `npm run start:worker` |
+| Railway | `apps/api` | `npm run start:api` |
+| Railway | `apps/worker` | `npm run start:worker` |
 | Netlify | `apps/web` (statico) | `netlify.toml` → `npm run build:web` |
 
-I due `railway.toml` si attivano da **Settings → Config-as-code** del rispettivo
-servizio, indicando il percorso del file. Entrambi i servizi puntano allo stesso
-repo e allo stesso `DATABASE_URL`, e hanno `watchPatterns` diversi: un push che
-tocca solo `apps/web` non fa ripartire niente su Railway.
+**I due `railway.toml` Railway non li legge più.** Sono stati scritti quando
+esisteva **Settings → Config-as-code**, che voleva il percorso del file; quella
+funzione è deprecata, e provare a impostarla oggi — dal pannello o dall'API —
+risponde testualmente:
+
+```
+Config as Code (railway.json / railway.toml) is deprecated.
+Use Infrastructure as Code (.railway/railway.ts) instead.
+```
+
+Quindi i due file adesso sono **documentazione, e basta**: il loro contenuto va
+ricopiato a mano nelle impostazioni del servizio (`buildCommand`, `startCommand`,
+`watchPatterns`, `healthcheckPath`, `healthcheckTimeout`, `restartPolicy*`).
+Restano in repo, e restano sotto `deploy.test.ts`, per una ragione sola: sono
+l'unico posto dove è scritto **perché** quei valori sono quelli, e il pannello di
+Railway un commento non lo tiene. Ma chi li modifica deve sapere che non sta
+cambiando niente di vivo finché non tocca anche il pannello — ed è un difetto
+noto, non un assetto voluto.
+
+Entrambi i servizi puntano allo stesso repo e allo stesso `DATABASE_URL`, e hanno
+`watchPatterns` diversi: un push che tocca solo `apps/web` non fa ripartire
+niente su Railway.
+
+### `NODE_ENV=production` rompe la build, e il messaggio non lo dice
+
+Su Railway la variabile `NODE_ENV=production` esiste **prima** del `npm ci`, e
+`npm ci` sotto `production` salta tutto ciò che il lockfile marca come `dev`. Il
+risultato è un fallimento che sembra un errore di configurazione TypeScript:
+
+```
+error TS2688: Cannot find type definition file for 'node'.
+  The file is in the program because:
+    Entry point of type library 'node' specified in compilerOptions
+```
+
+Il motivo sta in due righe che non si vedono insieme. `apps/api/tsconfig.json`
+dichiara `"types": ["node"]`; `@types/node` è una **devDependency**. Ma
+`typescript` e `prisma` finiscono in `node_modules` lo stesso, perché qualcosa in
+produzione li tira dentro come transitivi — quindi `tsc` **parte**, e fallisce a
+metà invece di non esistere. Un compilatore assente si sarebbe notato subito.
+
+Il rimedio è una variabile in più sui due servizi Railway:
+
+```
+NPM_CONFIG_INCLUDE=dev
+```
+
+L'alternativa — spostare `@types/node` fra le `dependencies` — è peggiore: fa
+finta che un pacchetto di soli tipi serva a runtime, e il giorno che qualcuno
+guarda le dipendenze di produzione per capire cosa viene spedito trova una
+risposta falsa. La build ha bisogno delle devDependencies perché **è una build**;
+la cosa da dire alla piattaforma è quella, non un'altra.
+
+Vale per entrambi i servizi, API e worker: costruiscono tutti e due con `tsc`.
 
 **Le migration girano nell'API e in nessun altro posto.** `npm run start:api` è
 `prisma migrate deploy && node apps/api/dist/index.js`; il worker parte e basta.
@@ -2755,11 +2813,12 @@ significherebbe quattro deploy.
 | Variabile | R | W | N | L | Note |
 |---|:-:|:-:|:-:|:-:|---|
 | `NODE_ENV` | ✓ | ✓ | | ✓ | `production` sui due servizi Railway: attiva le regole qui sopra |
+| `NPM_CONFIG_INCLUDE` | ✓ | ✓ | | | `dev`. Non la legge il codice: la legge `npm ci`. Senza, `NODE_ENV=production` salta `@types/node` e la build muore con `TS2688` |
 | `PORT` | | | | ✓ | **non impostarla su Railway**: la impone la piattaforma |
 | `LOG_LEVEL` | ✓ | ✓ | | ✓ | `info` in produzione |
 | `DATABASE_URL` | ✓ | ✓ | | ✓ | su Railway è il riferimento al servizio Postgres, non un URL copiato |
 | `DATABASE_URL_TEST` | | | | ✓ | solo `npm run test:integration`. Nessun default: i test fanno `TRUNCATE` |
-| `CORS_ORIGINS` | ✓ | | | ✓ | in produzione il dominio Netlify. In locale `http://localhost:5173` |
+| `CORS_ORIGINS` | ✓ | ✓ | | ✓ | in produzione il dominio Netlify. In locale `http://localhost:5173`. **Anche sul worker**, che non la usa ma senza non parte |
 | `JWT_ACCESS_SECRET` | ✓ | ✓ | | ✓ | ≥ 32 caratteri. Lo stesso valore nei due servizi |
 | `ACCESS_TOKEN_TTL_MIN` | ✓ | | | ✓ | default 15 |
 | `REFRESH_TOKEN_TTL_DAYS` | ✓ | | | ✓ | default 30 |
@@ -2796,31 +2855,77 @@ Le API delle chiavi le vede solo Railway: **le `VITE_*` finiscono nel bundle in
 chiaro**, quindi su Netlify va un URL e nient'altro. E vale al momento della
 build, non dell'avvio: cambiare `VITE_API_URL` richiede un nuovo deploy.
 
-Il worker riceve `CORS_ORIGINS`? No, e non serve: non espone HTTP. Riceve invece
-tutte le variabili dei provider e dello storage, perché è lui a chiamare Whisper
-e Claude e a scrivere l'audio — l'API lo storage lo tocca solo per rileggere il
-file da servire.
+**Il worker ha bisogno di `CORS_ORIGINS`, e non perché serva.** Non espone HTTP e
+quel valore non lo usa mai; ma `loadConfig` è uno solo, condiviso fra i due
+processi, e il suo controllo di produzione non distingue chi lo sta chiamando.
+Senza la variabile il worker non parte affatto:
+
+```
+ConfigError: Configurazione non valida:
+CORS_ORIGINS: in produzione serve almeno l'origine del frontend
+```
+
+Si imposta uguale a quella dell'API. La strada alternativa — insegnare a
+`loadConfig` quale processo lo sta invocando, e chiedere solo ciò che a quel
+processo serve — è più pulita e non è stata presa: significherebbe due forme
+valide della stessa configurazione, e quindi un modo per avviare l'**API** senza
+`CORS_ORIGINS` sbagliando il flag. Una variabile inutile sul worker costa una
+riga; una configurazione che si valida in due modi costa un buco. Sta fra i
+difetti noti, ma è il residuo che si è scelto.
+
+Il worker riceve poi tutte le variabili dei provider e dello storage, perché è
+lui a chiamare Whisper e Claude e a scrivere l'audio — l'API lo storage lo tocca
+solo per rileggere il file da servire.
 
 ### Il primo deploy, nell'ordine
 
 1. **Postgres** su Railway. La prima migration fa `CREATE EXTENSION vector`:
    non serve abilitarla a mano, ma serve un'immagine che ce l'abbia (il template
-   Postgres di Railway va bene).
-2. **API**: nuovo servizio dallo stesso repo, config-as-code `apps/api/railway.toml`,
-   variabili della colonna `R`. Al primo avvio applica tutte le migration. Poi si
-   genera un dominio pubblico — quello è `VITE_API_URL`.
-3. **Primo utente**: con `SIGNUP_ENABLED=true`, un `POST /api/auth/signup`, e
+   Postgres di Railway va bene). Che ce l'abbia davvero si controlla prima di
+   costruire qualunque altra cosa, con una riga sola:
+   `SELECT extname, extversion FROM pg_available_extensions WHERE name = 'vector'`.
+   Scoprirlo dopo significa un'API che muore in `migrate deploy` e un messaggio
+   che parla di SQL invece che di immagini.
+2. **Il bucket.** `STORAGE_PROVIDER=s3` è obbligatorio, quindi lo storage viene
+   prima dell'API e non dopo. Va qualunque cosa parli S3: AWS, Cloudflare R2,
+   Backblaze, o i bucket nativi di Railway (`railway bucket create`), che hanno il
+   vantaggio di stare nello stesso progetto e lo svantaggio dell'endpoint
+   personalizzato — che si mette in `S3_ENDPOINT` lasciando
+   `S3_FORCE_PATH_STYLE=false`, perché sono virtual-host.
+3. **API**: nuovo servizio dallo stesso repo, variabili della colonna `R`
+   (`NPM_CONFIG_INCLUDE=dev` compresa, o la build cade), e le impostazioni di
+   build e avvio ricopiate da `apps/api/railway.toml` — che Railway, come detto,
+   non legge. Al primo avvio applica tutte le migration. Poi si genera un dominio
+   pubblico, **scegliendo la porta a mano**: senza `--port` Railway prova a
+   dedurla e con più porte esposte non ci riesce. Quel dominio è `VITE_API_URL`.
+4. **Primo utente**: con `SIGNUP_ENABLED=true`, un `POST /api/auth/signup`, e
    subito dopo la variabile a `false` e redeploy. Il seed non è un'alternativa:
-   popola dati di esempio, e in produzione non ci vanno.
-4. **Worker**: terzo servizio, config-as-code `apps/worker/railway.toml`,
-   variabili della colonna `W`.
-5. **Netlify**: si collega il repo, `netlify.toml` è già lì, si imposta
+   popola dati di esempio, e in produzione non ci vanno. Che la chiusura abbia
+   fatto effetto lo si verifica riprovando la stessa `signup`: deve rispondere
+   `403 SIGNUP_DISABLED`. Impostare la variabile e non riprovare significa
+   credere a un pannello invece che al server.
+5. **Worker**: terzo servizio, variabili della colonna `W` — `CORS_ORIGINS`
+   compresa, per la ragione scritta qui sopra — e impostazioni da
+   `apps/worker/railway.toml`.
+6. **Netlify**: si collega il repo, `netlify.toml` è già lì, si imposta
    `VITE_API_URL` e si fa il deploy. Il dominio che ne esce va in `CORS_ORIGINS`
    sull'API — e l'API va riavviata, perché la lista si legge all'avvio.
 
-Il punto 5 è circolare per costruzione: il frontend ha bisogno del dominio
+Il punto 6 è circolare per costruzione: il frontend ha bisogno del dominio
 dell'API e l'API ha bisogno del dominio del frontend. Si rompe deployando prima
-l'API, che con un `CORS_ORIGINS` provvisorio parte lo stesso.
+l'API, che con un `CORS_ORIGINS` provvisorio parte lo stesso. Il provvisorio si
+può anche azzeccare: il dominio di default di Netlify è
+`https://<nome-del-sito>.netlify.app`, quindi scegliere il nome del sito prima di
+crearlo evita il secondo riavvio. È una comodità, non una garanzia — se quel nome
+è già preso Netlify ne assegna un altro, e allora il riavvio serve.
+
+**Il giro si chiude verificando dal di fuori, non dal pannello.** Le quattro cose
+che dicono che è davvero in piedi sono: `/health` che risponde `200` con
+`"db":"up"`; una preflight `OPTIONS` con `Origin` del sito che torna `204` e
+rimanda indietro **quell'origine** e non `*`; un `POST /api/auth/login` che
+restituisce dei token veri; e il bundle pubblicato che contiene il dominio
+dell'API — perché `VITE_API_URL` è compilata dentro, e un sito che si costruisce
+senza vede `undefined` senza lamentarsi.
 
 ---
 
@@ -3007,6 +3112,30 @@ Due concessioni, entrambe necessarie:
 
 `Permissions-Policy` concede `microphone=(self)` e `geolocation=(self)` e nega
 tutto il resto: sono le due cose che la PWA usa davvero.
+
+**L'HSTS che esce non è quello scritto nel file.** `netlify.toml` chiede
+`max-age=31536000; includeSubDomains`, con accanto un commento che spiega perché
+*non* c'è `preload`; quello che il sito risponde davvero è:
+
+```
+Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+```
+
+Lo aggiunge Netlify, che su `*.netlify.app` lo fa di suo — il dominio è già nella
+lista di precarico dei browser, quindi per quel nome la direttiva descrive uno
+stato di fatto e non una richiesta nuova. Lo stesso valore mandato dall'API su
+Railway arriva invece intatto, senza `preload`: la differenza è la piattaforma,
+non il codice.
+
+Vale la pena saperlo per due ragioni, e nessuna delle due è la sicurezza di
+oggi. La prima è che **un header dichiarato in un file non è un header servito**,
+e l'unico modo di sapere cosa arriva è chiederlo al dominio vero — il che rende
+`deploy.test.ts` una prova di coerenza interna e non di comportamento. La
+seconda è che il giorno in cui il sito passerà a un dominio proprio, quel
+`preload` potrebbe seguirlo su un nome che nella lista **non** c'è, e iscrivere
+un dominio al precarico è la decisione difficile da revocare che il commento nel
+file voleva evitare. Non è un problema adesso; è un posto da guardare quel
+giorno.
 
 ### Il tetto ai tentativi di ingestione, e la distanza fra uno e l'altro
 
@@ -3397,12 +3526,44 @@ Non installate, e il perché:
   costruiscono ciò che sta su `master` appena ci arriva, senza chiedere niente a
   GitHub: un rosso è una notifica, non un cancello. Farlo diventare un cancello
   è un'impostazione delle due piattaforme, e sta da quella parte.
-- **Del deploy si provano i nomi, non il comportamento.** `deploy.test.ts`
-  garantisce che ogni script, percorso e rotta citati nei tre `.toml` esistano
-  davvero da questa parte, ma nessun test può dire che Railway legga
-  `watchPatterns` come crediamo, che Netlify applichi quelle intestazioni a
-  quelle risposte, o che una CSP passi in un browser vero. Un file sintatticamente
-  valido e semanticamente frainteso resta un errore che si scopre al primo deploy.
+- **Del deploy si provano i nomi, non il comportamento — e per Railway nemmeno
+  quelli.** `deploy.test.ts` garantisce che ogni script, percorso e rotta citati
+  nei tre `.toml` esistano davvero da questa parte, e nessun test può dire che
+  Netlify applichi quelle intestazioni a quelle risposte o che una CSP passi in
+  un browser vero. Fin qui è il limite dichiarato. Quello che il primo deploy
+  vero ha aggiunto è peggio: **i due `railway.toml` Railway non li legge
+  affatto**, perché config-as-code è deprecata, e le impostazioni vere sono state
+  digitate nel pannello. Quindi quei due file non sono più configurazione
+  fraintendibile, sono una copia — e una copia che nessuno confronta con
+  l'originale. Chi cambia `startCommand` qui vede il test verde e la produzione
+  invariata, che è esattamente il modo di sbagliare da cui `deploy.test.ts` era
+  nato per difendere. La via d'uscita è la Infrastructure as Code che Railway
+  propone al suo posto (`.railway/railway.ts`, generabile con
+  `railway config pull`): descriverebbe i servizi in TypeScript, dentro il
+  typecheck, e `railway config plan` direbbe la differenza col vivo. Non è stata
+  presa qui perché costa una dipendenza npm nuova (`railway`) e la riscrittura di
+  `deploy.test.ts`, e perché il momento per farlo non è il giorno in cui si mette
+  in piedi la produzione. È il debito più concreto di questo elenco.
+- **Le due piattaforme chiedono cose che il repo non dice, e lo dicono male.**
+  I due intoppi che hanno fermato il primo deploy avevano tutti e due un
+  messaggio che parlava d'altro: `NODE_ENV=production` che fa saltare
+  `@types/node` e produce un `TS2688` su un `tsconfig` che non è cambiato, e il
+  worker che rifiuta di partire per un `CORS_ORIGINS` che non userà mai. Adesso stanno scritti nel
+  README e nei due `.toml`, il che li rende ricordabili e non impossibili: non
+  c'è nessun test che li provi, perché provarli vorrebbe dire costruire in un
+  container con `NODE_ENV=production` — cioè avere una CI che ricostruisce
+  l'ambiente di Railway, che è un progetto e non una riga.
+- **I servizi girano dall'altra parte dell'oceano rispetto ai loro byte.** API e
+  worker stanno in `us-west2`, il bucket dell'audio in `ams`: ogni upload e ogni
+  riascolto attraversano l'Atlantico due volte. È successo in silenzio — la
+  regione era stata chiesta come `europe-west4`, che Railway ha accettato senza
+  errore e ignorato, perché l'identificatore giusto è `europe-west4-drams3a` — e
+  si è visto solo rileggendo la configurazione generata. Con un database quasi
+  vuoto spostare tutto costa poco; con un anno di registrazioni dentro costa una
+  migrazione. Il difetto vero però non è la latenza, è che **una piattaforma ha
+  accettato un valore che non sapeva applicare**, e l'unica difesa è rileggere
+  ciò che si è impostato invece di fidarsi del fatto che la chiamata sia
+  riuscita.
 
 ---
 

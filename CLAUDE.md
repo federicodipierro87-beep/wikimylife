@@ -488,6 +488,93 @@ un falso.
 
 ---
 
+## Fuori dai giri: il primo deploy vero
+
+Non è un'attività dell'elenco dei difetti, è una richiesta dell'utente arrivata
+dopo il quarto commit: «possiamo iniziare a vedere qualcosa su railway e
+netlify?». Il codice era fermo su `master` da trentotto commit non spinti.
+
+Adesso è in piedi. **Quello che gira, e dove:**
+
+| | |
+|---|---|
+| repo | `github.com/federicodipierro87-beep/wikimylife`, `master` |
+| Railway | progetto `wikimylife`, tre servizi: `Postgres`, `api`, `worker` |
+| API | `https://api-production-15b2f.up.railway.app` |
+| storage | un bucket nativo Railway, endpoint `t3.storageapi.dev`, virtual-host |
+| Netlify | `https://wikimylife.netlify.app`, collegato a `master`, deploy continuo |
+
+Nessun segreto sta in git e nessuno sta qui: chiavi, `JWT_ACCESS_SECRET` e
+credenziali S3 vivono solo nei pannelli delle due piattaforme. `SIGNUP_ENABLED`
+è `false`, verificato riprovando la `signup` e ottenendo `403 SIGNUP_DISABLED` —
+non fidandosi del pannello.
+
+Le correzioni al repo che ne sono uscite stanno nel README, nei tre file di
+deploy e nel commento di `deploy.test.ts`. Non c'è nessun `feat:` da
+accompagnare: il codice di produzione non è stato toccato, perché nessuno dei
+guasti incontrati era nel codice — erano tutti in ciò che il repo **diceva** di
+sé. Qui restano le cose da sapere prima di toccare di nuovo la produzione:
+
+- **Config-as-code di Railway è deprecata.** I due `apps/*/railway.toml` non li
+  legge più nessuno: le impostazioni sono state digitate nel pannello, e i file
+  sono rimasti come documentazione delle *ragioni*. Il che li rende una copia
+  senza un originale con cui confrontarsi — è il difetto noto più concreto che
+  questo deploy ha lasciato, e la via d'uscita è `.railway/railway.ts` con
+  `railway config plan`. Non presa qui: costa una dipendenza npm nuova e la
+  riscrittura di `deploy.test.ts`, e non si fa il giorno in cui si mette in piedi
+  la produzione.
+- **`NODE_ENV=production` rompe la build, e il messaggio parla d'altro.** `npm
+  ci` salta le devDependencies, fra cui `@types/node` che
+  `apps/api/tsconfig.json` pretende; ma `typescript` e `prisma` restano perché
+  transitivi di produzione, quindi `tsc` parte e muore a metà con un `TS2688`. Il
+  rimedio è `NPM_CONFIG_INCLUDE=dev` sui due servizi. Spostare `@types/node`
+  fra le `dependencies` sarebbe stato peggio: farebbe mentire l'elenco di ciò che
+  va in produzione.
+- **Il worker ha bisogno di `CORS_ORIGINS` pur non usandola.** `loadConfig` è
+  condiviso e non sa chi lo chiama. Il README diceva il contrario — «No, e non
+  serve: non espone HTTP» — ed è il quarto difetto noto falso di questa serie,
+  trovato dal processo che si rifiutava di partire invece che da un `grep`.
+- **Una piattaforma può accettare un valore e ignorarlo.** `region:
+  "europe-west4"` è stata accettata senza errore e non applicata: l'id giusto è
+  `europe-west4-drams3a`, e i servizi sono finiti in `us-west2` mentre il bucket
+  sta ad Amsterdam. Si è visto solo rileggendo la configurazione con
+  `railway config pull`. **Rileggere ciò che si è impostato**, non fidarsi del
+  fatto che la chiamata sia riuscita.
+- **Un header dichiarato non è un header servito.** `netlify.toml` dice
+  esplicitamente «niente preload» sull'HSTS, e Netlify aggiunge `; preload` di
+  suo. Il valore identico mandato dall'API su Railway arriva intatto. Verificato
+  con `curl -I` su tutti e due prima di scriverlo.
+
+Due note di metodo, che valgono anche fuori da qui:
+
+- **`grep -c` su un bundle minificato mente.** Per controllare che
+  `VITE_API_URL` fosse finita nel JS pubblicato, un `grep -c` ha risposto `0` su
+  un file che la conteneva: è una riga sola da 268 kB. Il confronto giusto è
+  binario, byte a byte, contro il file costruito in locale.
+- **Netlify CLI si blocca su un prompt interattivo nei monorepo.** `sites:create`
+  e `deploy` dalla radice si fermano ad aspettare una risposta che non arriva
+  mai. Le due vie d'uscita: `netlify api <metodo>` per le operazioni, e lanciare
+  il deploy da `apps/web` con `--dir apps/web/dist` (il `base = "."` fa comunque
+  risolvere i percorsi dalla radice).
+
+E una cosa scoperta verificando queste modifiche, che non c'entra col deploy ma
+va detta: **due test web falliscono sotto carico e passano da soli.** Con la
+macchina occupata, `list.test.tsx` («cambiare ambito riporta alla prima pagina»)
+e `account.test.tsx` («manda la password attuale e la nuova») sono andati in
+timeout su una `findBy*`; la stessa suite, due volte di fila a macchina scarica,
+ha fatto **1050 su 1050** in meno di un minuto contro i due minuti e mezzo del
+giro fallito. Il primo sospetto è stato di averli rotti io, ed è stato escluso
+rifacendo girare la suite sull'albero pulito — dove però passava, il che da solo
+non bastava: è servito rifarla girare **con** le modifiche e vederla verde due
+volte. Non è un difetto del codice, è un'attesa tarata su una macchina veloce, e
+su una CI lenta tornerà. Chi vede rosso lì rifaccia girare il file da solo prima
+di cercare la causa altrove.
+
+Resta da fare, e l'utente lo sa: **ruotare le due chiavi API**, perché sono
+passate dalla chat.
+
+---
+
 ## Cosa resta scoperto
 
 L'elenco intero è la sezione `## Cosa non c'è ancora, e si sa` del README, ed è
@@ -515,4 +602,8 @@ la prima cosa da leggere per decidere cosa fare dopo. I tre più grossi:
 
 E la più grande di tutte, che nessun test coprirà mai: che il pulsante di
 registrazione sia davvero collegato al microfono lo dice solo premerlo su un
-telefono vero.
+telefono vero. **Da adesso si può**: il sito è pubblico e la pipeline è
+collegata a modelli veri, quindi la cosa più utile che si possa fare al prossimo
+giro non è un test — è registrare un vocale da un telefono e guardare dove si
+ferma. Nessuno l'ha ancora fatto, e finché non succede «funziona» resta una
+parola sostenuta solo da finti.

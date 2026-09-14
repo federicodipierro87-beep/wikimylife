@@ -6,7 +6,18 @@
 # chiamate a modelli, e dentro l'API terrebbe occupato l'event loop e morirebbe
 # a meta' a ogni redeploy del frontend-facing.
 #
-# Da impostare in Settings -> Config-as-code: `apps/worker/railway.toml`.
+# ## ATTENZIONE: questo file Railway NON lo legge piu'
+#
+# Vale parola per parola quanto scritto in apps/api/railway.toml: Config-as-code
+# e' deprecata, i valori qui sotto vanno ricopiati nelle impostazioni del
+# servizio, e questo file e' rimasto perche' e' l'unico posto dove le ragioni
+# sono scritte.
+#
+# Due variabili da non dimenticare sul worker, che il README spiega per esteso:
+# `NPM_CONFIG_INCLUDE=dev`, senza cui la build cade su `@types/node`; e
+# `CORS_ORIGINS`, che il worker non usa mai — non espone HTTP — ma che
+# `loadConfig`, condiviso con l'API, pretende in produzione. Senza, il processo
+# non arriva alla prima riga di lavoro.
 # ---------------------------------------------------------------------------
 
 [build]

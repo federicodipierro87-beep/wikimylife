@@ -5,16 +5,32 @@ import { describe, expect, it } from "vitest";
 /**
  * I file di deploy, letti da un test invece che da una piattaforma.
  *
- * `netlify.toml` e i due `railway.toml` sono documentazione eseguibile da
- * qualcun altro: nessun comando di questo repository li apre, quindi un refuso
- * dentro `startCommand` o un `healthcheckPath` che non esiste si scoprono al
- * primo deploy — e si scoprono male, perche' il build risulta riuscito e il
- * servizio non riceve traffico. La CI prova i comandi di build; non prova i
- * file che li invocano.
+ * `netlify.toml` e' documentazione eseguibile da qualcun altro: nessun comando
+ * di questo repository lo apre, quindi un `publish` che non e' la `outDir` di
+ * Vite o un `for = "/sw.js"` per un file rinominato si scoprono al primo deploy
+ * — e si scoprono male, perche' il build risulta riuscito e il sito serve la
+ * cosa sbagliata. La CI prova i comandi di build; non prova i file che li
+ * invocano.
+ *
+ * ## I due `railway.toml` non li esegue piu' nemmeno Railway
+ *
+ * Config-as-code e' deprecata, e i valori di quei due file oggi vivono nelle
+ * impostazioni dei servizi, ricopiati a mano. Il che li declassa da
+ * «configurazione che qualcun altro esegue» a «documentazione di cio' che
+ * qualcuno ha digitato altrove», e rende questo test piu' debole di quanto
+ * sembri: puo' ancora dire che `npm run start:api` esiste, non puo' piu' dire
+ * che sia quello che Railway lancia davvero.
+ *
+ * Restano sotto test lo stesso, e di proposito. Il giorno che qualcuno
+ * rinomina uno script, il rosso qui e' l'unico posto che glielo dice — e un
+ * documento che mente sul comando di avvio e' peggio di nessun documento,
+ * perche' chi lo legge lo ricopia nel pannello. Il confronto che manca, e che
+ * nessun test di questo repo puo' fare, e' fra questi file e il pannello: sta
+ * fra i difetti noti.
  *
  * Cio' che si puo' verificare da qui e' preciso e limitato: che ogni nome
  * citato esista davvero da questa parte. Non che Railway lo interpreti come
- * pensiamo — quello lo dice solo Railway.
+ * pensiamo, ne' che qualcuno gliel'abbia detto — quello lo dice solo Railway.
  *
  * ## Perche' non un parser TOML
  *

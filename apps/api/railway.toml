@@ -1,14 +1,32 @@
 # ---------------------------------------------------------------------------
 # Servizio Railway: l'API.
 #
-# Da impostare in Settings -> Config-as-code: `apps/api/railway.toml`. Il
-# servizio del worker punta al proprio file, e i due condividono il repo e il
-# database ma non il ciclo di vita.
+# ## ATTENZIONE: questo file Railway NON lo legge piu'
+#
+# Era da impostare in Settings -> Config-as-code. Quella funzione e' deprecata, e
+# oggi chi prova a indicare il percorso — dal pannello o dall'API — si sente
+# rispondere «Config as Code (railway.json / railway.toml) is deprecated. Use
+# Infrastructure as Code (.railway/railway.ts) instead».
+#
+# Quindi i valori qui sotto vanno ricopiati a mano nelle impostazioni del
+# servizio, e modificarli qui non cambia niente di vivo. Il file resta per una
+# ragione sola: e' l'unico posto dove e' scritto *perche'* quei valori sono
+# quelli, e il pannello di Railway i commenti non li tiene. Chi lo cambia cambi
+# anche il pannello, o avra' due verita' e nessun test che le confronti.
+#
+# Il servizio del worker ha il proprio file gemello, e i due condividono il repo
+# e il database ma non il ciclo di vita.
 #
 # In questo file non c'e' nessuna variabile d'ambiente: quelle stanno nel
 # pannello, sono elencate nel README e non devono finire in git. Qui c'e' solo
 # come si costruisce e come si avvia — e sono due comandi npm, per cui la stessa
 # cosa si riproduce a mano su qualunque host che sappia eseguire Node.
+#
+# Una variabile pero' va nominata, perche' senza di lei il `buildCommand` qui
+# sotto fallisce e il messaggio parla d'altro: `NPM_CONFIG_INCLUDE=dev`. Railway
+# imposta `NODE_ENV=production` prima del `npm ci`, e `npm ci` in produzione
+# salta le devDependencies — fra cui `@types/node`, che `apps/api/tsconfig.json`
+# pretende in `types`. Il README lo racconta per esteso.
 # ---------------------------------------------------------------------------
 
 [build]

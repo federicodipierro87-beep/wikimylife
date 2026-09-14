@@ -46,6 +46,13 @@
     Referrer-Policy = "no-referrer"
     # Un anno, sottodomini inclusi. Niente preload: iscriversi alla lista dei
     # browser e' difficile da revocare, e non si decide in un file di deploy.
+    #
+    # ATTENZIONE: quello che esce non e' questo. Su *.netlify.app la piattaforma
+    # aggiunge `; preload` da sola, e la risposta vera e'
+    # `max-age=31536000; includeSubDomains; preload`. Per quel dominio descrive
+    # un fatto — e' gia' nella lista — quindi oggi non cambia niente. Il giorno
+    # del dominio proprio va ricontrollato con un `curl -I`, perche' li' quel
+    # `preload` sarebbe una richiesta nuova e non una constatazione.
     Strict-Transport-Security = "max-age=31536000; includeSubDomains"
     # Nessuna API di prossimita', e dirlo esplicitamente: il GPS lo chiede la
     # PWA per la posizione di cattura, il resto no.
