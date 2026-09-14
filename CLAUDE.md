@@ -510,10 +510,11 @@ credenziali S3 vivono solo nei pannelli delle due piattaforme. `SIGNUP_ENABLED`
 non fidandosi del pannello.
 
 Le correzioni al repo che ne sono uscite stanno nel README, nei tre file di
-deploy e nel commento di `deploy.test.ts`. Non c'è nessun `feat:` da
-accompagnare: il codice di produzione non è stato toccato, perché nessuno dei
-guasti incontrati era nel codice — erano tutti in ciò che il repo **diceva** di
-sé. Qui restano le cose da sapere prima di toccare di nuovo la produzione:
+deploy e nel commento di `deploy.test.ts`. Nessuno dei guasti incontrati *durante
+il deploy* era nel codice — erano tutti in ciò che il repo **diceva** di sé, e
+infatti quel commit è un `docs:` senza `feat:` davanti. Il codice ha ceduto dopo,
+alla prima registrazione vera, e ha una sezione sua qui sotto. Qui restano le
+cose da sapere prima di toccare di nuovo la produzione:
 
 - **Config-as-code di Railway è deprecata.** I due `apps/*/railway.toml` non li
   legge più nessuno: le impostazioni sono state digitate nel pannello, e i file
@@ -582,6 +583,73 @@ di cercare la causa altrove.
 
 Resta da fare, e l'utente lo sa: **ruotare le due chiavi API**, perché sono
 passate dalla chat.
+
+---
+
+## Il primo difetto trovato dalla produzione, e non dai test
+
+`5e2a772`, «un 400 non dice di cosa parla, e non puo' essere definitivo».
+
+La prima registrazione vera è finita in `ESTRAZIONE_FALLITA` con questo, incollato
+dall'utente:
+
+```
+anthropic: HTTP 400 — {"error":{"message":"This API key is not scoped to a
+workspace, so this request must include the anthropic-workspace-id header"}}
+L'estrazione e' stata rifiutata per com'e' fatta questa trascrizione:
+rimandarla identica darebbe lo stesso esito.
+```
+
+**Due guasti, e il secondo è peggiore del primo.** Il primo è una chiave legata
+all'organizzazione invece che a un workspace: si ripara dal pannello di Anthropic
+e non è codice. Il secondo è che l'app ha dato la colpa alla trascrizione
+dell'utente per una nostra configurazione sbagliata, e le ha tolto i tentativi
+automatici: `retryCount` era `1` su `3`, verificato interrogando il Postgres di
+produzione.
+
+La causa sta in `STATI_RIFIUTO` di `services/ingestion/definitivo.ts`, che
+conteneva `400`. Quel file dichiara in testa che ciò che si aggiusta con una
+variabile d'ambiente resta transitorio, «novanta minuti sono anche la finestra
+entro cui chi ha sbagliato la chiave può correggerla» — e poi il caso di
+configurazione per eccellenza gli è passato sotto travestito da 400. **Il
+commento diceva l'intenzione giusta e la riga sotto la tradiva**, e nessuno dei
+tredici casi del file se n'era accorto perché tutti provavano il 401 e il 403.
+
+La correzione è togliere il `400`, non distinguerlo. `413`, `415` e `422` parlano
+*per definizione* dell'entità spedita; `400` è il generico delle richieste
+malformate, e una richiesta comprende le intestazioni e le credenziali oltre al
+corpo: è ambiguo per costruzione. Distinguere cercando marcatori nel messaggio
+era la strada sbagliata due volte — il corpo arriva lì dentro solo perché
+`ProviderHttpError` lo concatena troncato a 500 caratteri, e legare la
+classificazione alla prosa inglese di un fornitore vuol dire che il giorno in cui
+la riscrive nessun test cade. Il prezzo di toglierlo (un rifiuto di contenuto
+annunciato con un 400 ora paga i novanta minuti) è dichiarato nel README e nel
+file.
+
+Una riga di produzione cambiata, sei casi nuovi, da **1050 su 47 file** a
+**1056**. Ventidue mutazioni, ventidue cadute — ma solo al secondo giro, e le due
+sopravvissute valgono più del conteggio:
+
+- **La guardia sul nome non era provata.** Tolto `!NOMI_CON_STATUS.has(nome)`,
+  niente cadeva: i casi negativi usavano oggetti *senza* nome, che la prima metà
+  della condizione ferma lo stesso. Il caso che mancava è un `AppError` — che ha
+  anche lui uno `status` — con dentro un 422: un errore nostro che senza quella
+  guardia verrebbe scambiato per un rifiuto del fornitore. Test debole, non
+  mutazione equivalente.
+- **Una mutazione doppia può morire su metà di sé e nascondere l'altra.** Il
+  messaggio «stesso esito» è costruito in due punti gemelli, trascrizione ed
+  estrazione. La mutazione che li accendeva *tutti e due insieme* cadeva, quindi
+  sembrava tutto pinzato; quella sul solo stadio della trascrizione sopravviveva,
+  perché l'unico caso che guardava il messaggio passava dall'estrazione. Il giro
+  scorso la lezione era «una precauzione scritta due volte va mutata in tutti e
+  due i punti insieme». Questa la completa: **anche uno per volta**, sempre, o la
+  mutazione congiunta fa da copertura a quella scoperta.
+
+E la lezione grossa, che non è sul codice: **1050 test verdi non hanno visto un
+difetto che la prima registrazione vera ha trovato in un minuto.** Non perché i
+test fossero scritti male — provavano esattamente ciò che credevano — ma perché
+nessuno aveva mai visto un fornitore rispondere 400 a un problema di credenziali.
+La tassonomia degli errori altrui non si deduce: si osserva.
 
 ---
 
