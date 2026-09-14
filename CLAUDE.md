@@ -280,7 +280,7 @@ Stato all'ultimo commit: typecheck verde sui quattro passaggi, **1050 test** uni
 | 1 | `RecordScreen`: il gesto principale dell'app, senza nessun caso | fatto, `dd84304` |
 | 2 | `ReviewScreen` e `ProcedureCard`, le altre due scoperte | fatto, `a14d9c9` |
 | 3 | svuotare un cestino grosso senza incontrare il timeout di un proxy | fatto, `7faaece` |
-| 4 | chiudere **una** sessione sola | fatto |
+| 4 | chiudere **una** sessione sola | fatto, `b904141` |
 
 ### 0 — le due correzioni
 
@@ -421,6 +421,8 @@ giro vanno ricordate, perché sono due cose diverse chiamate con lo stesso nome.
   mutazione che non descrive nessun difetto — la si dichiara.
 
 ### 4 — fatto, e una decisione che si ribalta
+
+`b904141`, «chiudere una sessione sola, e non tutte le altre insieme».
 
 Un giro fa, sull'elenco delle sessioni, si era deciso **solo l'elenco, niente
 «chiudi questa sessione» per riga**. Qui si è fatto il contrario, e la scelta è
