@@ -544,6 +544,16 @@ sé. Qui restano le cose da sapere prima di toccare di nuovo la produzione:
   esplicitamente «niente preload» sull'HSTS, e Netlify aggiunge `; preload` di
   suo. Il valore identico mandato dall'API su Railway arriva intatto. Verificato
   con `curl -I` su tutti e due prima di scriverlo.
+- **Su Railway il repo e il trigger sono due cose diverse**, e per un po' qui ce
+  n'è stata una sola. I due servizi avevano `source.repo` impostato — la
+  dashboard mostrava il repo giusto, `railway redeploy --from-source` costruiva
+  da `master` — ma `repoTriggers` era vuoto, quindi **nessun push faceva partire
+  niente**. Se ne è accorto solo il push del commit delle correzioni: Netlify ha
+  ripubblicato da sola, Railway è rimasta ferma al commit prima. Sistemato con
+  `deploymentTriggerCreate` su entrambi i servizi, `master`. La lezione è più
+  larga del bottone: **un deploy automatico che non si è mai visto scattare non
+  si sa se esiste**, e l'unico modo di saperlo è spingere qualcosa e guardare i
+  due cruscotti — non guardare la configurazione, che sembrava a posto.
 
 Due note di metodo, che valgono anche fuori da qui:
 

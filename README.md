@@ -2898,6 +2898,16 @@ solo per rileggere il file da servire.
    non legge. Al primo avvio applica tutte le migration. Poi si genera un dominio
    pubblico, **scegliendo la porta a mano**: senza `--port` Railway prova a
    dedurla e con più porte esposte non ci riesce. Quel dominio è `VITE_API_URL`.
+
+   **Dire a un servizio da quale repo costruire non lo fa partire a ogni push.**
+   Sono due cose separate e si somigliano abbastanza da sembrarne una: il
+   *source* dice dove trovare il codice quando un deploy parte, il *trigger* è
+   ciò che fa partire il deploy. Con il solo source, `railway up` e
+   `railway redeploy` funzionano, la dashboard mostra il repo giusto, e i push su
+   `master` non succede niente — un deploy che sembra automatico e non lo è, che
+   è il modo peggiore di non esserlo. Il trigger si crea a parte
+   (`deploymentTriggerCreate`, o «Connect repo» dal pannello) e va messo su
+   **entrambi** i servizi.
 4. **Primo utente**: con `SIGNUP_ENABLED=true`, un `POST /api/auth/signup`, e
    subito dopo la variabile a `false` e redeploy. Il seed non è un'alternativa:
    popola dati di esempio, e in produzione non ci vanno. Che la chiusura abbia
