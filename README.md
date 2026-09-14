@@ -3211,9 +3211,9 @@ aspettare è l'unica cosa sensata; un audio che il fornitore rifiuta perché è 
 un formato che non sa leggere darà la stessa risposta al terzo giro che al primo,
 e nel frattempo la registrazione risulta «in lavorazione» a chi l'ha fatta.
 `services/ingestion/definitivo.ts` toglie dalla coda subito ciò che riprovare non
-cambierebbe: un `400`, `413`, `415` o `422` da un fornitore — stati che parlano
-del contenuto della richiesta e non del server che la riceve — e un oggetto che
-lo storage non ha (404 da S3, `ENOENT` dal filesystem).
+cambierebbe: un `413`, `415` o `422` da un fornitore — stati che parlano del
+contenuto della richiesta e non del server che la riceve — e un oggetto che lo
+storage non ha (404 da S3, `ENOENT` dal filesystem).
 
 La classificazione è sbilanciata di proposito. Chiamare «transitorio» qualcosa di
 definitivo costa novanta minuti di tentativi inutili e finisce comunque in
@@ -3226,6 +3226,30 @@ variabile d'ambiente, e quei novanta minuti sono la finestra per accorgersene
 senza che nessuno perda niente. Per lo stesso motivo un `404` da un fornitore
 resta transitorio — url o modello sbagliati, cioè ancora configurazione — mentre
 un `404` dallo storage no, perché lì significa che l'oggetto non c'è.
+
+**Nell'elenco c'era anche il `400`, e a toglierlo è stato il primo deploy vero.**
+La premessa era che con un corpo costruito dal nostro codice «richiesta
+malformata» potesse voler dire solo che l'audio dentro non è quello che dichiara.
+È falsa: una chiave Anthropic legata all'organizzazione e non a un workspace fa
+rispondere `400 — This API key is not scoped to a workspace`, cioè il caso di
+configurazione per eccellenza, quello che il paragrafo qui sopra promette di
+lasciare transitorio. In produzione la registrazione è uscita dalla coda al primo
+tentativo su tre, e all'utente è stato scritto che era colpa di com'era fatta la
+sua trascrizione. Il difetto era strutturale, non una svista: `413`, `415` e `422`
+sono stati che *per definizione* parlano dell'entità spedita — troppo grande,
+formato non gestito, contenuto letto e rifiutato — e non esiste una lettura di
+quei tre in cui il soggetto sia chi sta chiamando. Il `400` è il generico delle
+richieste malformate, e una richiesta comprende il corpo ma anche le intestazioni
+e la forma delle credenziali: è ambiguo per costruzione, e la regola
+dell'asimmetria decide i pareggi verso il transitorio.
+
+Scartata l'alternativa di distinguere *dentro* il `400` cercando nel messaggio i
+marcatori della configurazione. Il corpo della risposta arriva a quel modulo solo
+perché `ProviderHttpError` lo concatena nel `message` troncato a 500 caratteri,
+quindi il marcatore può cadere fuori dalla finestra; e legare la classificazione
+alla prosa inglese di un fornitore significa che il giorno in cui la riscrive
+nessun test cade e il difetto torna in silenzio. Quel modulo riconosce gli errori
+dalla forma, mai dal testo — la stessa ragione per cui non importa le classi.
 
 Il modulo non importa `ProviderHttpError` né `S3StorageError`: riconosce gli
 errori da `name` e `status`, perché il servizio di ingestione non dipende da
@@ -3358,15 +3382,20 @@ Non installate, e il perché:
   l'intera profondità per rifinire un pareggio. Ciò che la paginazione garantisce
   è che nessuna scheda si ripeta e nessuna sparisca; l'ordine *fine* vale nella
   pagina.
-- **Delle cause di fallimento si riconoscono solo quelle dichiarate.** Un
-  fornitore che rifiuta il contenuto con un `400`, `413`, `415` o `422` esce
-  subito dalla coda; tutto il resto continua a comprare tre tentativi. Ma i
-  guasti definitivi che non si annunciano con uno di quei quattro numeri esistono
-  — un `500` che nasconde un audio illeggibile, un `200` con un corpo che non si
-  interpreta — e per quelli l'ora e mezza si paga ancora. Allungare l'elenco
-  richiede di misurare fallimenti veri, non di indovinarli: finché non ci sono,
-  ogni aggiunta rischia di togliere i tentativi automatici a chi ne aveva
-  bisogno.
+- **Delle cause di fallimento si riconoscono solo quelle dichiarate, e adesso
+  sono tre.** Un fornitore che rifiuta il contenuto con un `413`, `415` o `422`
+  esce subito dalla coda; tutto il resto continua a comprare tre tentativi. I
+  guasti definitivi che non si annunciano con uno di quei tre numeri esistono —
+  un `500` che nasconde un audio illeggibile, un `200` con un corpo che non si
+  interpreta — e per quelli l'ora e mezza si paga ancora. Da quando il `400` è
+  uscito dall'elenco il debito è cresciuto di un caso noto e non ipotetico: un
+  fornitore che rifiuta il contenuto con un `400` invece che con uno dei tre — una
+  trascrizione più lunga del massimo, per esempio — adesso si porta via i novanta
+  minuti prima di finire in `ESTRAZIONE_FALLITA`. È il prezzo dichiarato di non
+  chiamare definitivo un numero ambiguo, e si paga nella direzione che costa
+  meno. Allungare l'elenco richiede di misurare fallimenti veri, non di
+  indovinarli: finché non ci sono, ogni aggiunta rischia di togliere i tentativi
+  automatici a chi ne aveva bisogno.
 - **La metà assistita della §9 non è provata contro un modello vero.** Il
   contratto, la verifica delle impronte, il rifiuto delle allucinazioni e il
   degrado hanno i loro test, ma tutti contro un fake che risponde ciò che il

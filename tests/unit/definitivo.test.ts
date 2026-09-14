@@ -1,4 +1,6 @@
+import { ErrorCode } from "@wikimylife/shared";
 import { describe, expect, it } from "vitest";
+import { AppError } from "../../apps/api/src/errors/AppError.js";
 import { ProviderHttpError } from "../../apps/api/src/providers/http.js";
 import { S3StorageError } from "../../apps/api/src/providers/S3StorageProvider.js";
 import {
@@ -37,10 +39,42 @@ describe("richiestaRifiutata", () => {
   it("copre tutti gli stati dichiarati, e sono quelli", () => {
     // Il `Set` e' la policy: se qualcuno ci aggiunge un 401 il test lo dice,
     // invece di lasciare che una chiave scaduta fermi la coda per sempre.
-    expect([...STATI_RIFIUTO].sort((a, b) => a - b)).toEqual([400, 413, 415, 422]);
+    expect([...STATI_RIFIUTO].sort((a, b) => a - b)).toEqual([413, 415, 422]);
     for (const status of STATI_RIFIUTO) {
       expect(richiestaRifiutata(http(status))).toBe(true);
     }
+  });
+
+  it("lascia transitorio un 400, che e' il generico e non dice di cosa parla", () => {
+    // Questo caso esiste per un guasto vero in produzione. Una chiave Anthropic
+    // legata all'organizzazione invece che a un workspace risponde 400, non 401:
+    // il 400 e' il generico delle richieste malformate, e «malformata» copre le
+    // intestazioni e le credenziali oltre al corpo. Con il 400 nell'elenco la
+    // registrazione usciva dalla coda al primo tentativo su tre, e all'utente
+    // veniva detto che era colpa della sua trascrizione.
+    expect(richiestaRifiutata(http(400))).toBe(false);
+    expect(STATI_RIFIUTO.has(400)).toBe(false);
+  });
+
+  it("il 400 resta transitorio qualunque cosa dica il corpo", () => {
+    // Il verso opposto del caso sopra, ed e' il motivo per cui la
+    // classificazione non guarda il testo. Se un giorno qualcuno provasse a
+    // distinguere un 400 di configurazione da uno di contenuto cercando parole
+    // nel messaggio, questi due divergerebbero — e quello che parla di
+    // contenuto tornerebbe definitivo sulla fede di una stringa inglese che il
+    // fornitore puo' riscrivere senza dirlo a nessuno.
+    const configurazione = new ProviderHttpError({
+      provider: "anthropic",
+      status: 400,
+      body: '{"error":{"message":"This API key is not scoped to a workspace"}}',
+    });
+    const contenuto = new ProviderHttpError({
+      provider: "anthropic",
+      status: 400,
+      body: '{"error":{"message":"prompt is too long"}}',
+    });
+    expect(richiestaRifiutata(configurazione)).toBe(false);
+    expect(richiestaRifiutata(contenuto)).toBe(false);
   });
 
   it("lascia transitorio tutto cio' che parla del server", () => {
@@ -74,6 +108,22 @@ describe("richiestaRifiutata", () => {
     expect(richiestaRifiutata({ status: RIFIUTO })).toBe(false);
   });
 
+  it("non decide su uno status che non viene da un fornitore", () => {
+    // `AppError` porta anche lui un `status`, ed e' la ragione per cui la
+    // classificazione guarda prima il `name`. Un errore nostro con dentro 422
+    // — una validazione fallita, un corpo rifiutato da una rotta — non dice
+    // niente su come il fornitore ha trovato l'audio, e senza la guardia sul
+    // nome si prenderebbe i tentativi della riga per un guasto che non c'entra.
+    const nostro = new AppError({
+      code: ErrorCode.VALIDATION_FAILED,
+      message: "corpo non valido",
+      status: 422,
+    });
+    expect(nostro.status).toBe(422);
+    expect(STATI_RIFIUTO.has(nostro.status)).toBe(true);
+    expect(richiestaRifiutata(nostro)).toBe(false);
+  });
+
   it("non si fa ingannare da uno status che non e' un numero", () => {
     const finto = new Error("boh");
     finto.name = "ProviderHttpError";
@@ -81,8 +131,15 @@ describe("richiestaRifiutata", () => {
   });
 
   it("vale anche per lo storage, con gli stessi stati", () => {
-    expect(richiestaRifiutata(new S3StorageError("put", 400, ""))).toBe(true);
+    expect(richiestaRifiutata(new S3StorageError("put", RIFIUTO, ""))).toBe(true);
     expect(richiestaRifiutata(new S3StorageError("put", TRANSITORIO, ""))).toBe(false);
+  });
+
+  it("e anche per lo storage il 400 resta transitorio", () => {
+    // Non e' solo coerenza con i fornitori di modelli: S3 risponde 400 anche a
+    // `AuthorizationHeaderMalformed`, cioe' di nuovo a una configurazione
+    // sbagliata. Lo stesso numero, la stessa ambiguita'.
+    expect(richiestaRifiutata(new S3StorageError("put", 400, ""))).toBe(false);
   });
 });
 

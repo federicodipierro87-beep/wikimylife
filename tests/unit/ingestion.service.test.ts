@@ -715,12 +715,66 @@ describe("i fallimenti che riprovare non cambierebbe", () => {
     // Un 401 ferma tutta la coda insieme e si ripara da fuori. Toglierle i
     // tentativi automatici significherebbe un «riprova» a mano per ogni riga
     // registrata durante il guasto.
-    h.transcription.failNext(new ProviderHttpError({ provider: "openai", status: 401, body: "" }));
+    h.transcription.failNext(
+      new ProviderHttpError({ provider: "openai", status: 401, body: "chiave scaduta" }),
+    );
     const id = await seedConAudio();
 
     const outcome = await h.service.processRecording(id);
 
     expect(outcome).toMatchObject({ status: RecordingStatus.BOZZA_AUDIO });
+    // E nemmeno qui le si dice che era colpa del suo audio. Lo stadio della
+    // trascrizione ha il suo messaggio, separato da quello dell'estrazione:
+    // fissarne uno solo lascia l'altro libero di mentire, ed e' esattamente
+    // com'era prima di questo caso.
+    const messaggio = h.repo.snapshot(id).lastErrorMessage;
+    expect(messaggio).not.toBeNull();
+    expect(messaggio).not.toContain("stesso esito");
+    expect(messaggio).toContain("chiave scaduta");
+  });
+
+  it("e una chiave senza workspace pure, benche' il 400 sembri un rifiuto", async () => {
+    // Il guasto vero del primo deploy, con il corpo che ha mandato Anthropic.
+    // Un 400 e' il generico delle richieste malformate, e i fornitori ci mettono
+    // dentro anche le credenziali: se lo si chiama definitivo, il guasto che si
+    // ripara con una variabile d'ambiente si porta via i tentativi di tutte le
+    // righe registrate mentre durava.
+    h.extraction.failNext(
+      new ProviderHttpError({
+        provider: "anthropic",
+        status: 400,
+        body: '{"type":"error","error":{"type":"invalid_request_error","message":"This API key is not scoped to a workspace"}}',
+      }),
+    );
+    const id = await seedConAudio();
+
+    const outcome = await h.service.processRecording(id);
+
+    expect(outcome).toMatchObject({ status: RecordingStatus.BOZZA_AUDIO });
+    expect(attesaDi(id)).toBe(RITARDI_RITENTATIVO[0]);
+  });
+
+  it("e non le dice che era colpa della sua trascrizione", async () => {
+    // L'altra meta' del danno, e quella che l'utente ha letto davvero: non solo
+    // la riga usciva dalla coda, ma il messaggio le dava la colpa. La frase
+    // «stesso esito» e' una deduzione vera solo sui tre stati che parlano
+    // dell'entita' spedita, e su un 400 non lo e' mai stata.
+    h.extraction.failNext(
+      new ProviderHttpError({
+        provider: "anthropic",
+        status: 400,
+        body: '{"error":{"message":"This API key is not scoped to a workspace"}}',
+      }),
+    );
+    const id = await seedConAudio();
+
+    await h.service.processRecording(id);
+
+    const messaggio = h.repo.snapshot(id).lastErrorMessage;
+    expect(messaggio).not.toBeNull();
+    expect(messaggio).not.toContain("stesso esito");
+    // E quello che resta e' l'errore vero, quello su cui si puo' agire.
+    expect(messaggio).toContain("not scoped to a workspace");
   });
 
   it("vale anche per l'estrazione, e non brucia il retry della §5", async () => {
@@ -743,7 +797,7 @@ describe("i fallimenti che riprovare non cambierebbe", () => {
   it("la trascrizione salvata resta salvata", async () => {
     // Definitivo vuol dire «non riprovare», non «butta via cio' che e' costato».
     h.transcription.enqueue("Racconto completo della procedura.");
-    h.extraction.failNext(new ProviderHttpError({ provider: "anthropic", status: 400, body: "" }));
+    h.extraction.failNext(new ProviderHttpError({ provider: "anthropic", status: 422, body: "" }));
     const id = await seedConAudio();
 
     await h.service.processRecording(id);
