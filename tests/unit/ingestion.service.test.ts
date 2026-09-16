@@ -1,6 +1,7 @@
 import {
   CardStatus,
   DEDUP_COSINE_THRESHOLD,
+  DetectedType,
   RecordingStatus,
   deterministicUnitVector,
   embeddingInput,
@@ -273,6 +274,54 @@ describe("estrazione non conforme — un solo retry", () => {
     expect(dopo.lastErrorCode).toBe(IngestionError.contrattoNonConforme);
     expect(dopo.retryCount).toBe(1);
     expect(h.repo.persisted).toEqual([]);
+  });
+
+  it("scrive nel messaggio il motivo, non il conteggio dei tentativi", async () => {
+    // Il caso arrivato dalla produzione: audio senza parlato, il modello
+    // risponde NON_CLASSIFICABILE con tutto a null, e blocca il titolo mancante.
+    // Prima qui finiva «Estrazione non conforme al contratto dopo 2 tentativi»,
+    // che chi ha registrato non puo' usare per fare niente.
+    const muta = buildExtractionContract({
+      titolo: null,
+      passi: [],
+      _meta: {
+        confidenzaGlobale: 0,
+        campiIncerti: ["titolo", "passi"],
+        domandeSuggerite: ["Puoi descrivere quale procedura hai completato?"],
+        contieneDatiSensibili: false,
+        tipoRilevato: DetectedType.NON_CLASSIFICABILE,
+      },
+    });
+    h.extraction.enqueue(muta).enqueue(muta);
+    const id = await seedConAudio();
+
+    await h.service.processRecording(id);
+
+    const messaggio = h.repo.snapshot(id).lastErrorMessage;
+    expect(messaggio).not.toBeNull();
+    expect(messaggio).toContain("Il titolo e' assente");
+    // Il conteggio resta, ma in coda: dice che non e' stata sfortuna.
+    expect(messaggio).toContain(`${String(MAX_EXTRACTION_ATTEMPTS)} volte`);
+    // E non usa «stesso esito», che negli altri stadi marca tutt'altro.
+    expect(messaggio).not.toContain("stesso esito");
+    // E l'errore opposto: le tre regole non bloccanti restano fuori, e la
+    // parola che l'utente non sa cosa significhi non c'e' piu'.
+    expect(messaggio).not.toContain("NON_CLASSIFICABILE");
+    expect(messaggio).not.toContain("contratto");
+  });
+
+  it("e a un JSON illeggibile non fa dire che mancava il titolo", async () => {
+    // L'errore opposto: qui blocca la forma, il livello di dominio non gira
+    // mai, e nominare il titolo sarebbe inventare cio' che nessuno ha guardato.
+    h.extraction.enqueue("Certo! Ecco la procedura:").enqueue("Ecco:");
+    const id = await seedConAudio();
+
+    await h.service.processRecording(id);
+
+    const messaggio = h.repo.snapshot(id).lastErrorMessage;
+    expect(messaggio).not.toBeNull();
+    expect(messaggio).toContain("un formato che non so leggere");
+    expect(messaggio).not.toContain("titolo");
   });
 
   it("non ritenta quando la prima risposta e' gia' buona", async () => {

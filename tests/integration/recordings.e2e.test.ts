@@ -1,6 +1,7 @@
 import {
   CardStatus,
   DEDUP_COSINE_THRESHOLD,
+  DetectedType,
   MAX_AUDIO_BYTES,
   RecordingStatus,
   Scope,
@@ -872,6 +873,42 @@ describe("fallimenti", () => {
     expect(dopo.transcript).toBe("Un vocale che il modello non sa strutturare.");
     expect(dopo.extraction).toBeNull();
     expect(dopo.issues.some((i) => i.blocking)).toBe(true);
+  });
+
+  it("il motivo del rifiuto attraversa il contratto fino a chi ha registrato", async () => {
+    // Il caso arrivato dalla produzione, rifatto contro Postgres e sopra HTTP:
+    // audio senza parlato, il modello classifica NON_CLASSIFICABILE e lascia
+    // tutto a null, e blocca solo il titolo mancante. Quello che conta qui non
+    // e' lo stato — lo prova il caso sopra — ma che la frase scritta sulla riga
+    // sopravviva al giro e arrivi dentro `lastError.message`.
+    const { token } = await signup();
+    stt.enqueue("Sottotitoli creati dalla comunita' Amara.org");
+    const muta = buildExtractionContract({
+      titolo: null,
+      passi: [],
+      _meta: {
+        confidenzaGlobale: 0,
+        campiIncerti: ["titolo", "passi"],
+        domandeSuggerite: ["Puoi descrivere quale procedura hai completato?"],
+        contieneDatiSensibili: false,
+        tipoRilevato: DetectedType.NON_CLASSIFICABILE,
+      },
+    });
+    llm.enqueue(muta).enqueue(muta);
+
+    const state = await carica(token);
+    await elabora();
+
+    const dopo = await stato(token, state.id);
+    const messaggio = dopo.lastError?.message ?? null;
+
+    expect(messaggio).not.toBeNull();
+    expect(messaggio).toContain("Il titolo e' assente");
+    // Le tre non bloccanti ci sono, nel contratto, e restano fuori dalla frase:
+    // e' la differenza fra «ecco perche' mi sono fermato» e «ecco tutto».
+    expect(dopo.issues.filter((i) => !i.blocking).length).toBeGreaterThan(0);
+    expect(messaggio).not.toContain("NON_CLASSIFICABILE");
+    expect(messaggio).not.toContain("contratto");
   });
 
   it("una ESTRAZIONE_FALLITA non torna in coda da sola", async () => {

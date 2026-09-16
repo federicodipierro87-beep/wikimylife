@@ -278,3 +278,62 @@ export function validateExtraction(raw: unknown): ExtractionVerdict {
     issues,
   };
 }
+
+/** Quando nessuna bloccante sa parlare italiano. */
+const FORMA_ILLEGGIBILE = "Il modello ha risposto in un formato che non so leggere.";
+
+/**
+ * Traduce un verdetto RIFIUTATA nella frase che leggera' chi ha registrato.
+ *
+ * ## Perche' esiste
+ *
+ * Il messaggio scritto su `Recording.lastErrorMessage` non resta nei log:
+ * attraversa `recordingErrorSchema.message`, arriva in
+ * `RecordingState.lastError`, e `format.ts` lo mette nel `dettaglio` che la
+ * lista delle registrazioni in sospeso stampa sotto il titolo dell'avviso.
+ * Prima qui c'era una frase sola per tutti i rifiuti — «Estrazione non conforme
+ * al contratto dopo N tentativi» — che nominava un contratto che l'utente non
+ * ha mai visto. Il motivo vero era gia' calcolato, dentro le issue, e veniva
+ * buttato via.
+ *
+ * ## Solo le bloccanti
+ *
+ * Una regola NON bloccante, per definizione, non e' il motivo per cui ci si e'
+ * fermati: la scheda con quella sola sarebbe nata in `DA_RIVEDERE`. Elencarla
+ * accanto a quella che blocca farebbe sembrare che bloccasse anche lei.
+ *
+ * Il prezzo e' che a volte si legge il sintomo invece della causa: un'estrazione
+ * classificata `NON_CLASSIFICABILE` non ha titolo, quindi blocca su
+ * `titolo.mancante` mentre `meta.tipo_non_procedura` — che spiega il perche' —
+ * resta non bloccante e muta. E' un prezzo accettato: la trascrizione grezza si
+ * stampa comunque sotto il messaggio (§3), e di solito da sola racconta il
+ * resto.
+ *
+ * ## Perche' i messaggi di Zod non si citano
+ *
+ * Le issue del primo livello portano `zodIssue.message`, e senza un `errorMap`
+ * — non ce n'e' uno — quella e' prosa inglese di libreria: «Expected string,
+ * received null». Sostituirebbe una frase italiana inutile con una inglese
+ * inutile, e appenderebbe cio' che legge l'utente al testo di un terzo, che puo'
+ * riscriverlo in una versione minore senza che nessun test se ne accorga. E' la
+ * stessa ragione per cui `definitivo.ts` non classifica gli errori leggendone il
+ * corpo. Quindi per quel ramo una frase fissa, e i dettagli restano dove servono
+ * a chi ripara: nel log e negli `issues` del contratto.
+ */
+export function motivoDelRifiuto(issues: readonly ExtractionIssue[]): string {
+  const bloccanti = issues.filter((i) => i.blocking);
+  const nostre = bloccanti.filter((i) => i.rule !== ExtractionRule.contrattoNonConforme);
+
+  if (nostre.length > 0) {
+    return nostre.map((i) => i.message).join(" ");
+  }
+
+  if (bloccanti.length > 0) {
+    return FORMA_ILLEGGIBILE;
+  }
+
+  /* c8 ignore next 3 -- `validateExtraction` non produce mai una RIFIUTATA
+     senza almeno una bloccante: il ramo Zod ne crea una per issue, quello di
+     dominio ci arriva solo con `some(blocking)`. */
+  return "Non sono riuscito a ricavarne una scheda.";
+}

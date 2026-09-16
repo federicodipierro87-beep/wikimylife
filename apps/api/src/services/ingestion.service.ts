@@ -14,7 +14,11 @@ import type { Logger } from "../logger.js";
 import { oggettoMancante, richiestaRifiutata } from "./ingestion/definitivo.js";
 import type { Clock } from "./ports/Clock.js";
 import type { RecordingJob, RecordingRepository } from "./ports/RecordingRepository.js";
-import { normalizeSteps, validateExtraction } from "./validation/extractionValidation.js";
+import {
+  motivoDelRifiuto,
+  normalizeSteps,
+  validateExtraction,
+} from "./validation/extractionValidation.js";
 
 /**
  * La pipeline: trascrizione -> estrazione -> validazione -> deduplicazione ->
@@ -346,9 +350,18 @@ export function createIngestionService(deps: IngestionDeps): IngestionService {
       });
     }
 
+    // Il motivo prima, il conteggio dopo. La coda sui tentativi resta perche'
+    // dice una cosa vera e utile — non e' stata sfortuna, e' andata cosi' tutte
+    // le volte — ma da sola non era un messaggio: era la contabilita' interna al
+    // posto della spiegazione.
+    //
+    // La frase NON dice «lo stesso esito», che altrove significa un'altra cosa:
+    // nei messaggi degli stadi definitivi marca «rimandarla identica non serve»,
+    // e due casi la cercano proprio per quello (`ingestion.service.test.ts`).
+    // Usarla qui con un terzo significato la renderebbe inutile come indizio.
     throw new StageFailure({
       code: IngestionError.contrattoNonConforme,
-      message: `Estrazione non conforme al contratto dopo ${String(MAX_EXTRACTION_ATTEMPTS)} tentativi.`,
+      message: `${motivoDelRifiuto(lastIssues)} Ho riprovato ${String(MAX_EXTRACTION_ATTEMPTS)} volte, e non e' cambiato niente.`,
       status: RecordingStatus.ESTRAZIONE_FALLITA,
       issues: lastIssues,
     });

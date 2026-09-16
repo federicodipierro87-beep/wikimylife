@@ -1,10 +1,11 @@
-import { CardStatus, Severity } from "@wikimylife/shared";
+import { CardStatus, DetectedType, Severity } from "@wikimylife/shared";
 import { buildExtractionContract } from "@wikimylife/shared/testing";
 import { describe, expect, it } from "vitest";
 import {
   ExtractionRule,
   MAX_TITOLO_LENGTH,
   MIN_CONFIDENZA,
+  motivoDelRifiuto,
   normalizeSteps,
   validateExtraction,
   type ExtractionVerdict,
@@ -403,6 +404,116 @@ describe("normalizeSteps", () => {
     expect(
       validateExtraction({ ...rotto, passi: normalizeSteps(rotto.passi) }).issues,
     ).toEqual([]);
+  });
+});
+
+/**
+ * `motivoDelRifiuto` — la frase che legge chi ha registrato.
+ *
+ * Non e' un dettaglio di presentazione: questa stringa finisce su
+ * `Recording.lastErrorMessage`, viaggia nel contratto dentro `lastError.message`
+ * e la lista delle registrazioni in sospeso la stampa. Quindi si prova come si
+ * prova una risposta HTTP, non come si prova un log.
+ *
+ * Le due proprieta' che questi casi difendono: che le regole NON bloccanti
+ * restino fuori, e che la prosa inglese di Zod non ci entri mai.
+ */
+describe("motivoDelRifiuto", () => {
+  it("cita alla lettera la regola di dominio che ha bloccato", () => {
+    const verdict = validateExtraction(buildExtractionContract({ titolo: null }));
+    const bloccante = verdict.issues.find((i) => i.blocking);
+
+    // `toBeDefined` prima di leggerne il messaggio: senza, un `find` andato a
+    // vuoto darebbe `undefined` su tutti e due i lati e il caso passerebbe
+    // confrontando niente con niente.
+    expect(bloccante).toBeDefined();
+    expect(bloccante?.rule).toBe(ExtractionRule.titoloMancante);
+    // Alla lettera, non "contiene": il messaggio e' scritto una volta sola, e se
+    // qualcuno lo riscrive li' questo caso deve accorgersene.
+    expect(motivoDelRifiuto(verdict.issues)).toBe(bloccante?.message);
+  });
+
+  it("tace sulle regole non bloccanti, che non hanno fermato niente", () => {
+    // L'estrazione vera arrivata dalla produzione: quindici secondi senza
+    // parlato, Whisper che allucina, e il modello che risponde onestamente
+    // NON_CLASSIFICABILE con tutto a null. Quattro regole rilevate, una sola
+    // blocca.
+    const verdict = validateExtraction(
+      buildExtractionContract({
+        titolo: null,
+        passi: [],
+        _meta: {
+          confidenzaGlobale: 0,
+          campiIncerti: ["titolo", "passi"],
+          domandeSuggerite: ["Puoi descrivere quale procedura hai completato?"],
+          contieneDatiSensibili: false,
+          tipoRilevato: DetectedType.NON_CLASSIFICABILE,
+        },
+      }),
+    );
+    const motivo = motivoDelRifiuto(verdict.issues);
+
+    // La premessa del caso: le altre tre ci sono davvero, quindi il silenzio su
+    // di loro e' una scelta e non un elenco vuoto.
+    expect(verdict.issues.length).toBeGreaterThan(1);
+    expect(verdict.issues.filter((i) => i.blocking)).toHaveLength(1);
+
+    expect(motivo).toContain("titolo");
+    expect(motivo).not.toContain("NON_CLASSIFICABILE");
+    expect(motivo).not.toContain("passo");
+    expect(motivo).not.toContain("Confidenza");
+  });
+
+  it("unisce due bloccanti invece di fermarsi alla prima", () => {
+    // Dal dominio ne arriva sempre una sola, ma da Zod ne arrivano quante sono
+    // le chiavi rotte, e il giorno in cui una regola di dominio nuova blocca
+    // insieme al titolo l'utente deve leggerle tutte e due.
+    const motivo = motivoDelRifiuto([
+      { rule: "a.uno", path: "x", message: "Primo guaio.", blocking: true },
+      { rule: "b.due", path: "y", message: "Secondo guaio.", blocking: true },
+    ]);
+
+    expect(motivo).toBe("Primo guaio. Secondo guaio.");
+  });
+
+  it("non ripete la prosa inglese di Zod, e mette una frase sua", () => {
+    // Il caso che capita davvero: il modello risponde in prosa invece che in
+    // JSON. Senza `errorMap` le issue portano "Expected object, received
+    // string" — inglese di libreria, e riscrivibile da terzi in una minor.
+    const verdict = validateExtraction("Certo! Ecco la procedura estratta:");
+    const motivo = motivoDelRifiuto(verdict.issues);
+
+    expect(verdict.issues.every((i) => i.rule === ExtractionRule.contrattoNonConforme)).toBe(true);
+    expect(motivo).toBe("Il modello ha risposto in un formato che non so leggere.");
+    expect(motivo).not.toMatch(/Expected|Invalid|Required|Unrecognized/);
+  });
+
+  it("ma se accanto a Zod c'e' una regola nostra, vince la nostra", () => {
+    const motivo = motivoDelRifiuto([
+      {
+        rule: ExtractionRule.contrattoNonConforme,
+        path: "esito",
+        message: "Invalid input: expected string, received null",
+        blocking: true,
+      },
+      {
+        rule: ExtractionRule.titoloMancante,
+        path: "titolo",
+        message: "Il titolo e' assente o vuoto: la scheda non e' creabile.",
+        blocking: true,
+      },
+    ]);
+
+    expect(motivo).toBe("Il titolo e' assente o vuoto: la scheda non e' creabile.");
+    expect(motivo).not.toContain("expected string");
+  });
+
+  it("un rifiuto di sola forma non nomina il titolo, che nessuno ha guardato", () => {
+    // L'errore opposto del primo caso: quando blocca Zod, il livello di dominio
+    // non e' mai stato eseguito, e dire "manca il titolo" sarebbe un'invenzione.
+    const verdict = validateExtraction(null);
+
+    expect(motivoDelRifiuto(verdict.issues)).not.toContain("titolo");
   });
 });
 
