@@ -5,13 +5,23 @@ sapere **come si lavora qui** e sapere **dove eravamo arrivati**. Non è
 documentazione del prodotto — quella sta nel `README.md`, che è lungo e va letto
 quando serve.
 
-I tre file di riferimento, in ordine di autorità:
+Siccome viene caricato ogni volta, **deve restare corto**: sopra i 40.000
+caratteri Claude Code avvisa che occupa troppo contesto. Ci sta ciò che serve
+*sempre*; la cronaca di ciò che è stato fatto sta altrove.
+
+I file di riferimento, in ordine di autorità:
 
 | file | cos'è | si modifica? |
 |---|---|---|
 | `wikimylife-schema.md` | la specifica del prodotto, con le sezioni numerate (§1 pipeline, §4 contratto, §5 validazione, §7 ricerca, §8 esecuzioni, §9 redazione) | **no**, è il contratto |
 | `wikimylife-prompt-claude-code.md` | il brief originale: fasi, vincoli trasversali | **no**, è la consegna |
 | `README.md` | come funziona ciò che esiste davvero, e cosa non esiste | **sì, sempre**, insieme al codice |
+| `docs/diario.md` | la cronaca dei giri: quale commit, quali numeri, quale alternativa scartata | **sì**, in coda, a fine giro |
+
+`docs/diario.md` si apre a mano quando si tocca qualcosa e si vuole sapere se ci
+si è già scottati lì. **Non va richiamato con un `@import`**: un import lo
+rimetterebbe nel contesto di ogni avvio, che è il problema per cui è stato
+scorporato.
 
 ---
 
@@ -72,10 +82,14 @@ viva è un test che non serve, e va detto invece di essere nascosto.
 lavoro la rende falsa, va sostituita con il residuo vero — quasi sempre ce n'è
 uno più piccolo — e non tolta dall'elenco.
 
-**Prima di scrivere nel README che qualcosa non è provato, verificalo.** In
-questa sessione ho scritto un difetto noto falso («nessun test d'integrazione
-prova che `CAMBIATA` riporti la scheda in `DA_RIVEDERE`») e il test esisteva, in
-`tests/integration/procedures.e2e.test.ts:713`. Un `grep` prima di affermare.
+**Prima di scrivere che qualcosa non è provato, verificalo.** Ogni frase della
+forma «non è provato che X» va preceduta da un `grep`, sempre, anche quando sono
+sicuro, e **anche quando la fonte è un altro strumento**: il riassunto di un
+agente di ricerca ha la stessa autorità di un ricordo, cioè nessuna. È già
+successo **cinque volte** di scrivere un difetto noto falso — una di queste
+*dentro il commit che ne correggeva altri due*, tre righe sotto questa regola — e
+l'ultima non l'ha trovata un `grep` ma un processo che si rifiutava di partire.
+I cinque sono elencati uno per uno in `docs/diario.md`.
 
 **I messaggi di commit sono in italiano**, con un titolo che dice l'effetto e un
 corpo che spiega il ragionamento. Finiscono con
@@ -88,413 +102,116 @@ dominio nel frontend, e `packages/shared` non importa mai API del browser.
 
 ---
 
+## Lezioni di metodo
+
+Regole nate da un errore concreto, che valgono oltre il giro in cui sono nate.
+Il caso da cui viene ciascuna sta in `docs/diario.md`.
+
+### Sulle mutazioni
+
+- **Una mutazione di controllo in ogni `.muta.json`**, che cambia *solo un
+  commento* e quindi **deve sopravvivere**. Senza, «dodici cadute su dodici» è
+  indistinguibile da «dodici volte lo stesso guasto del runner» — è già successo,
+  con un `UnicodeDecodeError` che faceva fallire il comando sempre.
+- **Una precauzione scritta due volte va mutata in tre modi**: tutti e due i
+  punti insieme, e poi **uno per volta**. La congiunta da sola non basta (cade
+  anche se un solo punto è pinzato, e fa da copertura all'altro); le singole da
+  sole neanche (una può essere equivalente). Vale per i filtri ripetuti fra Prisma
+  e doppio in memoria, per lo `userId` scritto in due interrogazioni, per i
+  messaggi costruiti in due rami gemelli.
+- **`.muta.json` accetta una lista di sostituzioni per mutazione**, con un
+  conteggio atteso per ciascuna. Serve per le mutazioni che altrimenti non
+  compilerebbero (`<button>` → `<div>` vuole anche il tag di chiusura) e per
+  quelle ripetute in più punti dello stesso file.
+- **Saltata non è caduta.** Se `muta.py` dice che una sostituzione non ha trovato
+  il testo (quasi sempre: indentazione diversa dentro un blocco multiriga), va
+  corretta e rifatta da sola con `python muta.py <indice>`, non contata fra le
+  cadute.
+- **Una mutazione equivalente si dichiara, non si copre.** Se sopravvive perché
+  non descrive nessun difetto reale, non si aggiunge un caso: si scrive perché, e
+  se il commento del codice prometteva più di quanto è vero, si corregge il
+  commento.
+- **Una costante che è un compromesso si difende con un intervallo**, non con un
+  `toBe` tautologico. I casi che la usano simbolicamente (`COSTANTE + 7`) si
+  muovono insieme a lei e non la proteggono: serve una guardia che dica fra quali
+  estremi ha senso, e perché esistono i due estremi.
+
+### Sui test che sembrano verdi e non provano niente
+
+- **`expect(null).not.toHaveProperty(...)` passa.** Asserire l'*assenza* di un
+  campo dentro un valore raccolto da una callback vuole un `not.toBeNull()`
+  prima, o il caso resta verde anche se il server non è mai stato chiamato.
+- **Per l'identità di un nodo del DOM si guarda `isConnected`**, non il testo e
+  non il `focus`. Una riga riciclata da React mostra il contenuto giusto lo
+  stesso, e jsdom perde il focus da solo quando il nodo esce dal documento.
+- **Due montaggi nello stesso caso vogliono `within(container)`.** `screen` cerca
+  in tutto il documento: un'asserzione di assenza fatta dopo il secondo montaggio
+  trova l'elemento del primo e passa al contrario.
+- **Si guarda il contenitore, non solo il pulsante.** Un riquadro che resta nel
+  DOM vuoto disegna bordi e separatori; i casi che cercano il pulsante non lo
+  vedono, perché il pulsante ha una sua condizione. Si usa
+  `container.querySelector(".classe")`.
+- **`navigate()` si verifica leggendo `window.location.hash`**, non sostituendo
+  il modulo del router: un finto dice che è stata chiamata una funzione, l'hash
+  dice dove si è finiti. Serve un `beforeEach` che lo riporti al punto di
+  partenza, o l'hash lasciato dal caso prima fa passare per «non ha navigato» un
+  caso che ha navigato.
+- **Un 401 non si aspetta, si provoca.** `ACCESS_TOKEN_TTL_MIN` ha un minimo di
+  un minuto, e un test che dorme un minuto è un test che qualcuno toglie. Si
+  costruisce un secondo client con il refresh token del primo nel deposito e la
+  memoria vuota: è lo stato esatto dopo un riavvio del browser.
+
+### Dove NON vanno i test
+
+Tre piani di lavoro hanno già sbagliato indirizzo. I nomi ingannano:
+
+- `tests/unit/contract.test.ts` è il contratto **dell'estrazione**
+  (`extractionContractSchema`, §4.1), non il contratto HTTP.
+- `tests/unit/routes.test.ts` è il router **a hash del web**, non le rotte
+  Express — che nessun test unitario tocca.
+- Le rotte Express si provano **nell'integrazione**, dove un corpo malformato
+  attraversa `parseBody` davvero. Percorso e verbo si provano in
+  `apiClient.test.ts`.
+
+### Su ciò che si scrive e su ciò da cui si dipende
+
+- **Prima di scrivere una stringa nuova destinata all'utente, `grep`ala.** Nei
+  messaggi le parole sono interfacce: riusare con un terzo significato una frase
+  che due test cercano come marcatore non rompe niente e non fa protestare
+  nessuno — rende solo inutile il marcatore.
+- **Non si lega mai una decisione alla prosa di un terzo.** Non i messaggi di Zod
+  (senza `errorMap` sono inglese di libreria), non il corpo di errore di un
+  fornitore. Il giorno che lo riscrivono, nessun test cade.
+- **La tassonomia degli errori altrui non si deduce: si osserva.** 1050 test
+  verdi non hanno visto che un fornitore risponde `400` a un problema di
+  credenziali, e la prima registrazione vera l'ha trovato in un minuto.
+
+### Sulle piattaforme
+
+- **Rileggere ciò che si è impostato.** Una piattaforma può accettare un valore e
+  ignorarlo senza errore: `railway config pull`, `curl -I`, il pannello riletto.
+  Che la chiamata sia riuscita non dice che il valore sia applicato.
+- **Un deploy automatico che non si è mai visto scattare non si sa se esiste.**
+  La configurazione sembrava a posto e nessun push faceva partire niente. L'unico
+  modo di saperlo è spingere qualcosa e guardare i cruscotti.
+- **`grep -c` su un bundle minificato mente**: è una riga sola da centinaia di kB,
+  e ha risposto `0` su un file che conteneva `VITE_API_URL`. Il confronto giusto è
+  binario, byte a byte, contro il file costruito in locale.
+
+---
+
 ## Dove siamo arrivati
 
 Le cinque fasi del brief sono chiuse. Da lì in poi si è lavorato a giri di
-rifinitura, ognuno nato da un elenco di difetti noti.
-
-**Ultimo giro concluso — quattro attività, quattro commit separati:**
-
-| | | commit |
-|---|---|---|
-| 1 | test d'integrazione della scopa contro un Postgres vero | `2499602` |
-| 2 | svuotare il cestino: `DELETE` vero, figli, vocali e byte | `8323a97` |
-| 3 | «scollega tutti i dispositivi» senza cambiare password | `605c34f` |
-| 4 | i test della schermata di dettaglio | `797d1d1` |
-
-Stato all'ultimo commit: typecheck verde sui quattro passaggi, **921 test**
-unit + web su 44 file, **305** d'integrazione su 11 file, albero pulito.
-
-Il quarto ha portato `tests/web/detail.test.tsx` da 8 a 26 casi, sui quattro
-punti in cui quella schermata decide qualcosa invece di stampare un campo: la
-voce che si butta, i tre esiti della §8, le porte verso redazione e revisione, i
-riferimenti che escono con `rel="noreferrer noopener"`. Ventitré mutazioni,
-ventitré cadute.
-
----
-
-## Il penultimo giro, quattro su quattro
-
-Quattro attività scelte dall'elenco dei difetti noti, una per commit.
-
-| | | stato |
-|---|---|---|
-| 1 | MinIO sotto la scopa: uno storage vero nei test d'integrazione | fatto, `8d5f608` |
-| 2 | svuotare il cestino in un gesto solo | fatto, `9fb2126` |
-| 3 | l'elenco delle sessioni aperte, con la sola data di nascita | fatto, `c9184c0` |
-| 4 | il ponte fra il client vero e il server vero | fatto, `024ea02` |
-
-### 1 — fatto
-
-`8d5f608`, «un bucket vero sotto il provider che nessun test eseguiva». MinIO in
-`docker-compose.yml`, `tests/integration/helpers/storage.ts`, e due file nuovi:
-`storage.s3.e2e.test.ts` (14 casi) e `sweep.s3.e2e.test.ts` (4). Da **305 su 11
-file** a **323 su 13**. Ventidue mutazioni, tutte cadute.
-
-Una di quelle mutazioni ha lasciato un segno: con `delete` ridotta a un no-op,
-`svuotaIlBucket` girava per sempre, e la mutazione moriva dopo trentaquattro
-minuti invece di quaranta secondi. Adesso quel ciclo ha un tetto di venti scorse.
-
-> **Da fare a mano, una volta sola, e ancora non fatto:** aggiungere al proprio
-> `.env` le cinque righe `S3_ENDPOINT_TEST`, `S3_BUCKET_TEST`, `S3_REGION_TEST`,
-> `S3_ACCESS_KEY_ID_TEST`, `S3_SECRET_ACCESS_KEY_TEST`, copiandole da
-> `.env.example`. `.env` non è leggibile dagli strumenti, quindi non posso farlo
-> io.
->
-> Qui si diceva «senza, i due file nuovi non partono». **È peggio:** il
-> `globalSetup` dell'integrazione prepara il bucket *prima* di raccogliere i
-> file, quindi senza quelle righe `npm run test:integration` muore con
-> `BucketDiTestAssente` e **nessuno** dei quattordici file parte. Il giro d'aiuto,
-> finché le righe mancano, è passarle sull'invocazione — `dotenv` non sovrascrive
-> ciò che è già in `process.env`:
->
-> ```bash
-> S3_ENDPOINT_TEST="http://127.0.0.1:9100" S3_BUCKET_TEST=wikimylife-test \
-> S3_REGION_TEST=us-east-1 S3_ACCESS_KEY_ID_TEST=wikimylife \
-> S3_SECRET_ACCESS_KEY_TEST=wikimylife-segreto npm run test:integration
-> ```
-
-### 2 — fatto
-
-`9fb2126`, «svuotare il cestino in un gesto solo, e sapere quante ne sono
-andate». Il codice di produzione era già scritto e compilava dal giro prima;
-questa sessione ha aggiunto i **sessantatré casi** che mancavano, sui quattro
-project: il servizio, il client, la schermata, e la rotta contro Postgres.
-
-Stato all'ultimo commit: typecheck verde sui quattro passaggi, **943 test**
-unit + web su 44 file, **332** d'integrazione su 13 file, albero pulito.
-
-Le tre decisioni che il diff non racconta — una scheda per volta invece di una
-`deleteMany`, `ASSENTE` e `NON_ARCHIVIATA` contate come `saltate`, il pulsante
-montato fuori dal ramo dell'elenco — adesso stanno nel README, in «Leggere,
-modificare, cercare» e nella sezione della schermata. Qui non si ripetono.
-
-Trenta mutazioni, ventinove cadute al primo giro. **La sopravvissuta va
-ricordata**, perché è il tipo di buco che si rifà da solo: tolto il
-`return null` anticipato di `SvuotaIlCestino`, il riquadro restava nel DOM
-vuoto, e siccome `.svuota` ha un `border-top` disegnava una riga che separava
-«Il cestino e' vuoto.» da niente. Nessun caso lo vedeva, perché tutti cercavano
-il *pulsante* — che ha una sua condizione e spariva lo stesso. Il caso nuovo
-guarda il contenitore (`container.querySelector(".svuota")`), come già fa
-`pending.test.tsx`, e quella mutazione cade.
-
-### 3 — fatto
-
-`c9184c0`, «vedere quali dispositivi sono collegati, e da quando».
-`GET /api/auth/sessions` e l'elenco dentro la sezione «Scollega gli altri
-dispositivi», non in una sezione sua. Ventidue casi nuovi su quattro project:
-sei nel servizio, tre nel client, sette nella schermata, sei — poi sette, con
-l'ordine — contro Postgres.
-
-Stato all'ultimo commit: typecheck verde sui quattro passaggi, **959 test**
-unit + web su 44 file, **338** d'integrazione su 13 file, albero pulito.
-
-Le due decisioni prese con l'utente prima di scrivere, e che il diff non
-racconta: **solo l'elenco**, niente «chiudi questa sessione» per riga; e la
-**data di nascita** (`MIN(issuedAt)` su tutta la famiglia) e non l'`issuedAt`
-della riga viva, che sarebbe «ultimo accesso» sotto un altro nome. Entrambe
-stanno nel README, insieme alla ragione delle due interrogazioni nell'adattatore
-invece di una. Qui non si ripetono.
-
-Due cose emerse strada facendo, che vale la pena ricordare:
-
-- Il nome `session` era già occupato: `authSessionSchema` è la sessione di
-  login (utente + token). Il contratto nuovo si chiama `openSession*`, e la
-  porta restituisce `OpenSessionRecord`.
-- Il piano diceva di mettere i casi della rotta in `tests/unit/routes.test.ts`.
-  Quel file prova il router **a hash del web**, non le rotte Express — che
-  nessun test unitario tocca. I casi della rotta sono finiti
-  nell'integrazione, quelli di percorso e verbo in `apiClient.test.ts`.
-
-Ventiquattro mutazioni, ventiquattro cadute. **Una cosa da ricordare sul
-metodo**, per il prossimo `muta.py`: una mutazione è sopravvissuta al primo giro
-perché *equivalente*, non perché il test fosse debole. Lo `userId` è scritto in
-tutte e due le interrogazioni — quella che trova le famiglie vive e quella che
-ne calcola la nascita — e toglierlo da una sola non cambia il risultato. La cura
-non è aggiungere un caso: è che una mutazione possa toccare **più punti insieme**,
-perché il difetto vero è dimenticare lo scope in tutti e due i posti. Vale ogni
-volta che la stessa precauzione è scritta due volte.
-
-### 4 — fatto
-
-La domanda aperta è stata chiusa dall'utente: **niente Playwright**. Il ponte è
-l'`ApiClient` vero contro il server HTTP vero, in Node, senza schermata sopra —
-ampiezza «il giro intero più una guardia», e il CORS provato come dichiarazione e
-non come applicazione.
-
-Un file solo, `tests/integration/client.e2e.test.ts`, **29 casi** in sei
-blocchi: la sessione, la rotazione dopo un 401, il giro completo della scheda,
-le risposte senza corpo e il cestino, le intestazioni sul filo, la guardia.
-Niente altro toccato: né il client né il server.
-
-Stato all'ultimo commit: typecheck verde sui quattro passaggi, **959 test**
-unit + web su 44 file (invariati, com'era giusto), **367** d'integrazione su 14
-file, albero pulito.
-
-Le decisioni che il diff non racconta stanno nel README, nella sezione dei test.
-Qui restano le quattro cose che costano tempo se non si sanno:
-
-- **Il 401 non si aspetta, si provoca.** `ACCESS_TOKEN_TTL_MIN` ha un minimo di
-  un minuto (`apps/api/src/config/env.ts`), e un test che dorme un minuto è un
-  test che qualcuno toglie. Si costruisce invece un secondo client con il refresh
-  token dell'altro nel deposito e la memoria vuota: è lo stato esatto dopo un
-  riavvio del browser.
-- **`refresh()` non lo attraversa la rotazione automatica.** Il giro sul 401
-  chiama la funzione interna `rotate()`, non il metodo pubblico. Senza un caso
-  che lo chiami a mano, la guardia del blocco 6 lo segnala come scoperto — ed è
-  stato il primo fallimento vero del file.
-- **Una scheda nasce con `volteEseguita: 1`**, non zero: la §6 conta come prima
-  esecuzione il fatto stesso di averla raccontata. Dopo una `recordExecution` il
-  numero è due.
-- **`restoreProcedure` non esiste.** Ripescare dal cestino è
-  `updateProcedure(id, { status: "DA_RIVEDERE" })`, e il servizio non lo blocca
-  su una `ARCHIVIATA`.
-
-Venti mutazioni, venti cadute. Due valgono come metodo, e continuano il discorso
-del terzo:
-
-- `sbagliatoIlCorpo` è letto in due punti di `execute` (il ramo che ruota e
-  quello che svuota la sessione). Le mutazioni sono **tre**: una che spegne la
-  variabile e quindi tocca entrambi i punti insieme, e una per punto. Sono tutte
-  e tre cadute, quindi i due rami sono davvero pinzati separatamente — è la
-  verifica che il terzo giro suggeriva di fare.
-- La guardia «senza token conservato non si chiede niente al server» ha avuto
-  bisogno di una mutazione a **due sostituzioni**: il `return null` di
-  `restoreSession` e il `throw` di `rotate()` proteggono la stessa cosa, e
-  toglierne uno solo è una mutazione equivalente — l'altro fermerebbe comunque la
-  richiesta prima che parta.
-
----
-
-## Il giro appena chiuso, quattro su quattro (più la correzione zero)
-
-Quattro attività scelte dai difetti noti, più una correzione che veniva prima di
-tutto. Una per commit, come sempre.
-
-Stato all'ultimo commit: typecheck verde sui quattro passaggi, **1050 test** unit
-+ web su 47 file, **380** d'integrazione su 14 file, albero pulito.
-
-| | | stato |
-|---|---|---|
-| 0 | due difetti noti sbagliati, riscritti | fatto, `36a6f8c` |
-| 1 | `RecordScreen`: il gesto principale dell'app, senza nessun caso | fatto, `dd84304` |
-| 2 | `ReviewScreen` e `ProcedureCard`, le altre due scoperte | fatto, `a14d9c9` |
-| 3 | svuotare un cestino grosso senza incontrare il timeout di un proxy | fatto, `7faaece` |
-| 4 | chiudere **una** sessione sola | fatto, `b904141` |
-
-### 0 — le due correzioni
-
-Scritte nel giro scorso, sbagliate tutte e due, trovate rileggendo prima di
-proporre il giro nuovo:
-
-- Il residuo del ponte diceva che «il single-flight della rotazione non è provato
-  sotto concorrenza». **Falso**: `tests/unit/apiClient.test.ts:292`, «due
-  richieste parallele condividono una sola rotazione», mette due `me()` in un
-  `Promise.all`, li fa fallire entrambi con `401` e conta una sola chiamata a
-  `refresh`. Il residuo vero è più piccolo: non è provato **contro un server
-  vero**, cioè contro uno che la rilevazione del riuso ce l'ha davvero.
-- «Di schermate ne sono provate sette». Sono **nove** su dodici: l'elenco non
-  citava `account.test.tsx` (30 casi) né `trash.test.tsx` (20), aggiunti nei due
-  giri scorsi. Le tre senza nessun caso sono `RecordScreen`, `ReviewScreen` e
-  `ProcedureCard` — ed è da lì che nascono le attività 1 e 2.
-
-È la seconda volta che scrivo un difetto noto falso, e la regola che lo vieta è
-già scritta qui sopra. Il modo per non farlo una terza volta non è ricordarsela:
-è che ogni frase della forma «non è provato che X» sia preceduta da un `grep`,
-sempre, anche quando sono sicuro.
-
-### 1 — fatto
-
-`tests/web/record.test.tsx`, **ventuno casi** su `RecordScreen` e `NonSalvata`.
-Da **959 su 44 file** a **980 su 45**. Ventitré mutazioni, ventitré cadute.
-
-Il caso che vale da solo l'intero file: `premi()` fa `await capture.stop()` e
-**poi** `navigate({ name: "lista" })`, e quell'ordine è tutta la garanzia che
-un salvataggio fallito non mandi via l'utente dalla schermata dove c'è scritto
-come recuperare l'audio. Il caso non guarda un messaggio: guarda che dopo un
-`stop()` fallito `window.location.hash` sia rimasto dov'era.
-
-Tre cose sul metodo, che serviranno di nuovo nell'attività 2:
-
-- **Due esportazioni fatte per i test, e dichiarate come tali.**
-  `CaptureContext` (prima privato) e `NonSalvata` (prima interno a `App`).
-  L'alternativa era montare `CaptureProvider`, che costruisce da sé un
-  `MediaRecorder`, un GPS e un IndexedDB: tre finti di hardware per provare che
-  un pulsante cambia etichetta. Il commento sopra ciascuna esportazione dice
-  perché esiste, così nessuno la scambia per una porta aperta.
-- **`navigate()` si verifica leggendo `window.location.hash`**, non sostituendo
-  il modulo del router. Un finto direbbe che la schermata ha chiamato una
-  funzione; l'hash dice dove si è finiti. In `jsdom` funziona senza niente
-  intorno, basta un `beforeEach` che lo riporti a `#/registra` — senza, l'hash
-  lasciato dal caso prima fa passare per «non ha navigato» un caso che ha
-  navigato.
-- **Due montaggi nello stesso caso vogliono `within(container)`.** `screen`
-  cerca in tutto il documento, quindi un'asserzione di assenza fatta dopo il
-  secondo montaggio trova l'elemento del primo e passa al contrario. È successo
-  scrivendo il caso di «Annulla», ed è il tipo di errore che rende un test
-  verde e inutile.
-
-E una nota sul `muta.py`: una mutazione è stata **saltata** al primo giro perché
-la stringa `da` aveva due spazi di indentazione in più di quella vera. Saltata
-non è caduta, e contarla fra le cadute sarebbe stato un falso. Da qui l'indice
-opzionale sulla riga di comando (`python muta.py 20`), che rifà girare una
-mutazione sola invece di venti minuti di suite.
-
-### 2 — fatto, e c'era un terzo difetto noto falso
-
-`tests/web/review.test.tsx` (**venti casi**) e `tests/web/card.test.tsx`
-(**nove**). Da **980 su 45 file** a **1009 su 47**. Ventinove mutazioni,
-ventinove cadute, zero saltate.
-
-**La cosa da ricordare prima di tutte.** Nel commit `36a6f8c` — cioè nel commit
-che correggeva due difetti noti falsi — ne ho scritto un terzo: «`ReviewScreen`,
-dove si decide cosa fare di un duplicato sospetto, e l'unico punto dell'app in
-cui cancellare una cosa ne crea un'altra». **Falso.** `ReviewScreen` è la
-revisione di una scheda `DA_RIVEDERE`: domande suggerite, titolo, un passo
-facoltativo in coda. `DUPLICATO_SOSPETTO` compare in tutto `apps/web/src` una
-volta sola, in `format.ts:213`, come etichetta di uno stato di registrazione.
-La frase veniva dal riassunto di un agente di ricerca e non l'ho verificata —
-tre righe sotto la regola che dice di verificare. La regola non basta scriverla:
-**il `grep` va fatto anche quando la fonte è un altro strumento**, perché un
-riassunto di seconda mano ha la stessa autorità di un ricordo. Corretta in
-README e qui.
-
-Sul contenuto: undici dei venti casi della revisione non guardano la pagina,
-guardano l'oggetto che finisce in `updateProcedure`. È lì che stanno le
-decisioni, e la più pericolosa è che `steps` sia una **sostituzione**: mandare
-il solo passo nuovo cancella tutti quelli che c'erano, e la schermata dice
-«salvato». Le ragioni per esteso stanno nel README, qui non si ripetono.
-
-Due cose sul metodo:
-
-- **`expect(null).not.toHaveProperty(...)` passa.** Due casi asserivano che un
-  campo *non* fosse nel corpo, e sarebbero rimasti verdi anche se il pulsante
-  non avesse chiamato il server affatto. La cura è una riga: `not.toBeNull()`
-  prima. Vale ogni volta che si asserisce l'**assenza** di qualcosa dentro un
-  valore raccolto da una callback.
-- **Le mutazioni possono toccare più punti insieme** — `.muta.json` accetta una
-  lista di sostituzioni per mutazione, più un conteggio atteso per ciascuna.
-  Serve per le mutazioni che altrimenti non compilerebbero (`<button>` →
-  `<div>` vuole anche il tag di chiusura) e per quelle ripetute (i tre
-  `disabled={attesa}` della revisione sono un `disabled={false}` solo).
-
-### 3 — fatto
-
-Il tetto e il ciclo. `EMPTY_TRASH_BATCH_SIZE = 50` nel contratto,
-`listArchivedIds(userId, take)` che porta il `take` fino alla `findMany`,
-`rimaste` nella risposta, e il ciclo dentro `ApiClient.emptyTrash()`. Quattordici
-casi nuovi su quattro project: quattro nel servizio, sette nel client, tre nella
-schermata, più due contro Postgres. Da **1009 su 47 file** a **1023 su 47**, e da
-**367** d'integrazione a **369**, sempre su 14 file.
-
-Le due decisioni prese con l'utente prima di scrivere:
-
-- **Il ciclo sta dentro `ApiClient.emptyTrash()`**, non nella schermata. Il
-  metodo resta senza argomenti e restituisce i totali sommati, quindi
-  `TrashScreen` cambia quasi niente — che è ciò che vuole il vincolo «nessuna
-  regola di dominio nel frontend». Prezzo dichiarato: mentre gira non c'è
-  avanzamento, e sta fra i difetti noti.
-- **Cinquanta per richiesta**, e deliberatamente **non** legato a
-  `PROCEDURE_PAGE_SIZE` (che è venti): lì il numero è quanto ci sta su uno
-  schermo, qui è quanto ci sta dentro un timeout. Due ragioni diverse non
-  condividono una costante.
-
-Le altre — `rimaste` da un `COUNT` fresco invece che da `ids.length - cancellate`,
-il tetto non esposto come parametro di query, le due uscite del ciclo — stanno nel
-README. Qui non si ripetono.
-
-Ventitré mutazioni, ventidue cadute. **Le due che sono sopravvissute al primo
-giro vanno ricordate, perché sono due cose diverse chiamate con lo stesso nome.**
-
-- `EMPTY_TRASH_BATCH_SIZE` portato da 50 a 1000 non faceva cadere niente: si
-  poteva rimettere il difetto che l'attività esiste per togliere. Sopravviveva
-  perché i casi usano la costante **simbolicamente** (`EMPTY_TRASH_BATCH_SIZE + 7`
-  schede, `cancellate` pari alla costante) — e va bene così, altrimenti cambiarla
-  vorrebbe dire riscrivere i test. Ma un test scritto così si muove insieme al
-  valore e non lo difende. La cura non è un `toBe(50)` tautologico: è una guardia
-  sull'**intervallo**, fra dieci e cento, con scritto accanto perché esistono i due
-  estremi. Vale ogni volta che una costante è un compromesso e non un dettaglio.
-- L'`orderBy: { updatedAt: "asc" }` di `listArchivedIds` girato in `"desc"`
-  sopravvive ancora, ed è **equivalente**: per lo svuotamento a più passate serve
-  solo che un ordine ci sia. Qui la cura è stata correggere il **commento**, che
-  diceva più di quanto fosse vero. Non si aggiunge un caso per uccidere una
-  mutazione che non descrive nessun difetto — la si dichiara.
-
-### 4 — fatto, e una decisione che si ribalta
-
-`b904141`, «chiudere una sessione sola, e non tutte le altre insieme».
-
-Un giro fa, sull'elenco delle sessioni, si era deciso **solo l'elenco, niente
-«chiudi questa sessione» per riga**. Qui si è fatto il contrario, e la scelta è
-stata dell'utente. Il vincolo rimasto dal ragionamento di allora ha governato
-tutto il resto: l'id di sessione non deve esistere nel contratto **prima** del
-gesto che lo consuma — un id che gira in ogni risposta senza che nessuno lo usi è
-solo un id che prima o poi finisce in un log. Quindi l'`id` in
-`openSessionSchema`, `POST /api/auth/sessions/revoke-one` e il pulsante per riga
-sono atterrati insieme, in un commit solo, su quattro project.
-
-Quarantuno casi nuovi: undici nel servizio, cinque nel client, undici nella
-schermata, nove contro Postgres in `auth.e2e.test.ts`, uno in
-`security.e2e.test.ts`, uno nel ponte. Da **1023 su 47 file** a **1050 su 47**, e
-da **369** d'integrazione a **380**, sempre su 14 file.
-
-Le decisioni prese con l'utente e quelle tecniche stanno tutte nel README — la
-schermata dell'account e la sezione della rotta. Qui restano le cinque cose che
-costano tempo se non si sanno.
-
-- **L'id sta nel corpo e non nel percorso, e la ragione è il limite dei
-  tentativi.** `rateLimit.ts` costruisce la chiave con `req.path`, che è il
-  percorso **concreto** e non lo schema della rotta: con l'id nel percorso ogni
-  id aprirebbe un secchiello nuovo, e una rotta che accetta una password
-  diventerebbe un oracolo senza limite. È il motivo per cui `POST
-  /sessions/:id/revoke` e `DELETE /sessions/:id` sono state scartate tutte e
-  due, ed è provato da un caso in `security.e2e.test.ts` che manda quattro
-  `sessionId` diversi e pretende il `429` al quarto.
-- **Revocare il proprio token dà `TOKEN_REUSED`, non `UNAUTHORIZED`.** Un caso
-  del servizio è stato scritto aspettandosi il secondo e ha trovato il primo. Non
-  è un difetto: la riga revocata **resta** nel database perché è lei a far
-  scattare la rilevazione del riuso, e presentare un token revocato è
-  indistinguibile da un furto — deliberatamente. L'aspettativa è stata corretta,
-  non il codice.
-- **`expect(null).not.toHaveProperty` ha un parente sul DOM.** Per uccidere
-  `key={indice}` non basta guardare cosa c'è scritto sulla riga: con tre date
-  diverse una riga *riciclata* mostra il testo giusto lo stesso. Quello che
-  cambia è l'identità del nodo, e si legge con `premuto.isConnected === false`
-  dopo che l'elenco si è ricaricato. Il `focus` sembrava la strada e non lo è:
-  jsdom lo perde da solo quando il nodo esce dal documento, quindi l'asserzione
-  passerebbe con tutte e due le chiavi.
-- **Il piano diceva `tests/unit/contract.test.ts` per i casi degli schemi nuovi.
-  Sbagliato**: quel file è tutto su `extractionContractSchema` (§4.1) e non ha
-  niente a che vedere con il contratto HTTP. I casi di rigidità della richiesta
-  sono finiti nell'integrazione (dove un corpo malformato attraversa `parseBody`
-  davvero) e quello dello schema di risposta in `apiClient.test.ts`. È la seconda
-  volta che un piano manda dei casi in quel file: la regola è che `contract` lì
-  dentro vuol dire il contratto **dell'estrazione**.
-- **Il `<Dispositivi>` è stato spostato *dentro* il `<form>`.** Il piano
-  giustificava `type="button"` con «premerlo dentro il `<form>` farebbe partire
-  scollega gli altri», ma l'elenco era renderizzato fuori — quindi la
-  precauzione non proteggeva niente e la mutazione sarebbe stata equivalente.
-  Spostarlo dentro rende la precauzione vera e la mutazione reale: adesso
-  `type="submit"` fa cadere un caso.
-
-Trentatré mutazioni, trentatré cadute, zero sopravvissute. Cinque sono state
-scritte **doppie** perché il filtro a tre parti è scritto due volte — Prisma e
-doppio in memoria — e toglierne una copia sola lascia in piedi l'altra suite. È
-la stessa lezione del terzo giro scorso, applicata prima invece che dopo. Una
-mutazione è stata saltata al primo giro per l'indentazione della stringa `da`
-(otto spazi invece di dieci, dentro un blocco multiriga): rifatta da sola con
-`python muta.py 22`, caduta. **Saltata non è caduta**, e contarla sarebbe stato
-un falso.
-
----
-
-## Fuori dai giri: il primo deploy vero
-
-Non è un'attività dell'elenco dei difetti, è una richiesta dell'utente arrivata
-dopo il quarto commit: «possiamo iniziare a vedere qualcosa su railway e
-netlify?». Il codice era fermo su `master` da trentotto commit non spinti.
-
-Adesso è in piedi. **Quello che gira, e dove:**
+rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
+deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
+dai test. Il racconto di tutto questo è in `docs/diario.md`.
+
+**Stato all'ultimo commit** (`cfe5351`): typecheck verde sui quattro passaggi,
+**1064 test** unit + web su 47 file, **381** d'integrazione su 14 file, albero
+pulito.
+
+### Cosa gira, e dove
 
 | | |
 |---|---|
@@ -509,214 +226,33 @@ credenziali S3 vivono solo nei pannelli delle due piattaforme. `SIGNUP_ENABLED`
 è `false`, verificato riprovando la `signup` e ottenendo `403 SIGNUP_DISABLED` —
 non fidandosi del pannello.
 
-Le correzioni al repo che ne sono uscite stanno nel README, nei tre file di
-deploy e nel commento di `deploy.test.ts`. Nessuno dei guasti incontrati *durante
-il deploy* era nel codice — erano tutti in ciò che il repo **diceva** di sé, e
-infatti quel commit è un `docs:` senza `feat:` davanti. Il codice ha ceduto dopo,
-alla prima registrazione vera, e ha una sezione sua qui sotto. Qui restano le
-cose da sapere prima di toccare di nuovo la produzione:
+### Cosa resta da fare a mano, e l'utente lo sa
 
-- **Config-as-code di Railway è deprecata.** I due `apps/*/railway.toml` non li
-  legge più nessuno: le impostazioni sono state digitate nel pannello, e i file
-  sono rimasti come documentazione delle *ragioni*. Il che li rende una copia
-  senza un originale con cui confrontarsi — è il difetto noto più concreto che
-  questo deploy ha lasciato, e la via d'uscita è `.railway/railway.ts` con
-  `railway config plan`. Non presa qui: costa una dipendenza npm nuova e la
-  riscrittura di `deploy.test.ts`, e non si fa il giorno in cui si mette in piedi
-  la produzione.
-- **`NODE_ENV=production` rompe la build, e il messaggio parla d'altro.** `npm
-  ci` salta le devDependencies, fra cui `@types/node` che
-  `apps/api/tsconfig.json` pretende; ma `typescript` e `prisma` restano perché
-  transitivi di produzione, quindi `tsc` parte e muore a metà con un `TS2688`. Il
-  rimedio è `NPM_CONFIG_INCLUDE=dev` sui due servizi. Spostare `@types/node`
-  fra le `dependencies` sarebbe stato peggio: farebbe mentire l'elenco di ciò che
-  va in produzione.
-- **Il worker ha bisogno di `CORS_ORIGINS` pur non usandola.** `loadConfig` è
-  condiviso e non sa chi lo chiama. Il README diceva il contrario — «No, e non
-  serve: non espone HTTP» — ed è il quarto difetto noto falso di questa serie,
-  trovato dal processo che si rifiutava di partire invece che da un `grep`.
-- **Una piattaforma può accettare un valore e ignorarlo.** `region:
-  "europe-west4"` è stata accettata senza errore e non applicata: l'id giusto è
-  `europe-west4-drams3a`, e i servizi sono finiti in `us-west2` mentre il bucket
-  sta ad Amsterdam. Si è visto solo rileggendo la configurazione con
-  `railway config pull`. **Rileggere ciò che si è impostato**, non fidarsi del
-  fatto che la chiamata sia riuscita.
-- **Un header dichiarato non è un header servito.** `netlify.toml` dice
-  esplicitamente «niente preload» sull'HSTS, e Netlify aggiunge `; preload` di
-  suo. Il valore identico mandato dall'API su Railway arriva intatto. Verificato
-  con `curl -I` su tutti e due prima di scriverlo.
-- **Su Railway il repo e il trigger sono due cose diverse**, e per un po' qui ce
-  n'è stata una sola. I due servizi avevano `source.repo` impostato — la
-  dashboard mostrava il repo giusto, `railway redeploy --from-source` costruiva
-  da `master` — ma `repoTriggers` era vuoto, quindi **nessun push faceva partire
-  niente**. Se ne è accorto solo il push del commit delle correzioni: Netlify ha
-  ripubblicato da sola, Railway è rimasta ferma al commit prima. Sistemato con
-  `deploymentTriggerCreate` su entrambi i servizi, `master`. La lezione è più
-  larga del bottone: **un deploy automatico che non si è mai visto scattare non
-  si sa se esiste**, e l'unico modo di saperlo è spingere qualcosa e guardare i
-  due cruscotti — non guardare la configurazione, che sembrava a posto.
+- **Ruotare le due chiavi API**, perché sono passate dalla chat.
+- **Le cinque righe `S3_*_TEST` nel proprio `.env`**, copiate da `.env.example`:
+  `S3_ENDPOINT_TEST`, `S3_BUCKET_TEST`, `S3_REGION_TEST`, `S3_ACCESS_KEY_ID_TEST`,
+  `S3_SECRET_ACCESS_KEY_TEST`. `.env` non è leggibile dagli strumenti, quindi non
+  posso farlo io. Senza, **nessuno** dei quattordici file d'integrazione parte: il
+  `globalSetup` prepara il bucket *prima* di raccogliere i file e muore con
+  `BucketDiTestAssente`. Il giro d'aiuto, finché le righe mancano, è passarle
+  sull'invocazione — `dotenv` non sovrascrive ciò che è già in `process.env`:
 
-Due note di metodo, che valgono anche fuori da qui:
+  ```bash
+  S3_ENDPOINT_TEST="http://127.0.0.1:9100" S3_BUCKET_TEST=wikimylife-test \
+  S3_REGION_TEST=us-east-1 S3_ACCESS_KEY_ID_TEST=wikimylife \
+  S3_SECRET_ACCESS_KEY_TEST=wikimylife-segreto npm run test:integration
+  ```
 
-- **`grep -c` su un bundle minificato mente.** Per controllare che
-  `VITE_API_URL` fosse finita nel JS pubblicato, un `grep -c` ha risposto `0` su
-  un file che la conteneva: è una riga sola da 268 kB. Il confronto giusto è
-  binario, byte a byte, contro il file costruito in locale.
-- **Netlify CLI si blocca su un prompt interattivo nei monorepo.** `sites:create`
-  e `deploy` dalla radice si fermano ad aspettare una risposta che non arriva
-  mai. Le due vie d'uscita: `netlify api <metodo>` per le operazioni, e lanciare
-  il deploy da `apps/web` con `--dir apps/web/dist` (il `base = "."` fa comunque
-  risolvere i percorsi dalla radice).
+### Tre test che traballano sotto carico, e non è colpa di chi li vede rossi
 
-E una cosa scoperta verificando queste modifiche, che non c'entra col deploy ma
-va detta: **due test web falliscono sotto carico e passano da soli.** Con la
-macchina occupata, `list.test.tsx` («cambiare ambito riporta alla prima pagina»)
-e `account.test.tsx` («manda la password attuale e la nuova») sono andati in
-timeout su una `findBy*`; la stessa suite, due volte di fila a macchina scarica,
-ha fatto **1050 su 1050** in meno di un minuto contro i due minuti e mezzo del
-giro fallito. Il primo sospetto è stato di averli rotti io, ed è stato escluso
-rifacendo girare la suite sull'albero pulito — dove però passava, il che da solo
-non bastava: è servito rifarla girare **con** le modifiche e vederla verde due
-volte. Non è un difetto del codice, è un'attesa tarata su una macchina veloce, e
-su una CI lenta tornerà. Chi vede rosso lì rifaccia girare il file da solo prima
-di cercare la causa altrove.
-
-Resta da fare, e l'utente lo sa: **ruotare le due chiavi API**, perché sono
-passate dalla chat.
-
----
-
-## Il primo difetto trovato dalla produzione, e non dai test
-
-`5e2a772`, «un 400 non dice di cosa parla, e non puo' essere definitivo».
-
-La prima registrazione vera è finita in `ESTRAZIONE_FALLITA` con questo, incollato
-dall'utente:
-
-```
-anthropic: HTTP 400 — {"error":{"message":"This API key is not scoped to a
-workspace, so this request must include the anthropic-workspace-id header"}}
-L'estrazione e' stata rifiutata per com'e' fatta questa trascrizione:
-rimandarla identica darebbe lo stesso esito.
-```
-
-**Due guasti, e il secondo è peggiore del primo.** Il primo è una chiave legata
-all'organizzazione invece che a un workspace: si ripara dal pannello di Anthropic
-e non è codice. Il secondo è che l'app ha dato la colpa alla trascrizione
-dell'utente per una nostra configurazione sbagliata, e le ha tolto i tentativi
-automatici: `retryCount` era `1` su `3`, verificato interrogando il Postgres di
-produzione.
-
-La causa sta in `STATI_RIFIUTO` di `services/ingestion/definitivo.ts`, che
-conteneva `400`. Quel file dichiara in testa che ciò che si aggiusta con una
-variabile d'ambiente resta transitorio, «novanta minuti sono anche la finestra
-entro cui chi ha sbagliato la chiave può correggerla» — e poi il caso di
-configurazione per eccellenza gli è passato sotto travestito da 400. **Il
-commento diceva l'intenzione giusta e la riga sotto la tradiva**, e nessuno dei
-tredici casi del file se n'era accorto perché tutti provavano il 401 e il 403.
-
-La correzione è togliere il `400`, non distinguerlo. `413`, `415` e `422` parlano
-*per definizione* dell'entità spedita; `400` è il generico delle richieste
-malformate, e una richiesta comprende le intestazioni e le credenziali oltre al
-corpo: è ambiguo per costruzione. Distinguere cercando marcatori nel messaggio
-era la strada sbagliata due volte — il corpo arriva lì dentro solo perché
-`ProviderHttpError` lo concatena troncato a 500 caratteri, e legare la
-classificazione alla prosa inglese di un fornitore vuol dire che il giorno in cui
-la riscrive nessun test cade. Il prezzo di toglierlo (un rifiuto di contenuto
-annunciato con un 400 ora paga i novanta minuti) è dichiarato nel README e nel
-file.
-
-Una riga di produzione cambiata, sei casi nuovi, da **1050 su 47 file** a
-**1056**. Ventidue mutazioni, ventidue cadute — ma solo al secondo giro, e le due
-sopravvissute valgono più del conteggio:
-
-- **La guardia sul nome non era provata.** Tolto `!NOMI_CON_STATUS.has(nome)`,
-  niente cadeva: i casi negativi usavano oggetti *senza* nome, che la prima metà
-  della condizione ferma lo stesso. Il caso che mancava è un `AppError` — che ha
-  anche lui uno `status` — con dentro un 422: un errore nostro che senza quella
-  guardia verrebbe scambiato per un rifiuto del fornitore. Test debole, non
-  mutazione equivalente.
-- **Una mutazione doppia può morire su metà di sé e nascondere l'altra.** Il
-  messaggio «stesso esito» è costruito in due punti gemelli, trascrizione ed
-  estrazione. La mutazione che li accendeva *tutti e due insieme* cadeva, quindi
-  sembrava tutto pinzato; quella sul solo stadio della trascrizione sopravviveva,
-  perché l'unico caso che guardava il messaggio passava dall'estrazione. Il giro
-  scorso la lezione era «una precauzione scritta due volte va mutata in tutti e
-  due i punti insieme». Questa la completa: **anche uno per volta**, sempre, o la
-  mutazione congiunta fa da copertura a quella scoperta.
-
-E la lezione grossa, che non è sul codice: **1050 test verdi non hanno visto un
-difetto che la prima registrazione vera ha trovato in un minuto.** Non perché i
-test fossero scritti male — provavano esattamente ciò che credevano — ma perché
-nessuno aveva mai visto un fornitore rispondere 400 a un problema di credenziali.
-La tassonomia degli errori altrui non si deduce: si osserva.
-
-### Il secondo, che il primo ha scoperto
-
-`9c5c587`, «il messaggio di un rifiuto dice quale regola ha bloccato».
-
-Rimessa in coda la registrazione con la chiave nuova, il `400` era sparito e la
-pipeline è arrivata in fondo. È emerso il difetto successivo, che non è nella
-logica ma in ciò che l'utente legge:
-
-```
-status         ESTRAZIONE_FALLITA
-lastErrorCode  contratto.non_conforme
-msg            Estrazione non conforme al contratto dopo 2 tentativi.
-trascrizione   "Sottotitoli creati dalla comunita' Amara.org"
-```
-
-Quella trascrizione è l'allucinazione classica di Whisper sul **silenzio** — i
-sottotitoli di Amara stanno nel suo addestramento. Il modello ha risposto bene
-(`NON_CLASSIFICABILE`, confidenza 0, tutto `null`) e la validazione ha bloccato
-bene, su `titolo.mancante`, che è l'unica regola bloccante di `domainIssues`.
-Niente di rotto: **solo il messaggio non diceva niente.**
-
-E non era una mancanza, era uno spreco: **il motivo era già calcolato, nella riga
-sopra.** `lastIssues` veniva raccolto, passato a `StageFailure`, e buttato via da
-chi costruiva la stringa. Quella stringa non resta nei log — attraversa
-`recordingErrorSchema.message`, `RecordingState.lastError`, `format.ts:231` — e
-finisce stampata sotto l'avviso.
-
-Due decisioni, e la seconda è quella da ricordare:
-
-- **Solo le regole bloccanti.** Una non bloccante, per definizione, non è il
-  motivo per cui ci si è fermati. Prezzo dichiarato: si legge il sintomo
-  (`titolo.mancante`) e non la causa (`meta.tipo_non_procedura`). È il residuo
-  nuovo nei difetti noti — le `issues` sono già nel contratto e **nessuna
-  schermata le mostra**, `grep` fatto: zero occorrenze in tutto `apps/web/src`.
-- **I messaggi di Zod non si citano.** Senza `errorMap` — e non ce n'è uno —
-  sono prosa inglese di libreria. Citarli avrebbe appeso ciò che legge l'utente
-  al testo di un terzo: **lo stesso errore che la correzione del `400` aveva
-  appena rifiutato di fare**, a due giorni di distanza e in un punto diverso del
-  codice. Che nessun test asserisse un messaggio Zod — `extractionValidation.test.ts`
-  guarda sempre e solo `rule@path` — era la prova che la linea era già stata
-  tracciata da qualcuno, e mai scritta.
-
-Una riga di produzione e una funzione nuova, nove casi, da **1056 su 47 file** a
-**1064**, e da **380** d'integrazione a **381**.
-
-Tre cose sul metodo:
-
-- **Una collisione di frase evitata per un soffio.** La coda del messaggio nuovo
-  diceva «con lo stesso esito», ma quella frase è il marcatore che due casi
-  esistenti cercano per dire «rimandarla identica non serve». Riusarla con un
-  terzo significato l'avrebbe resa inutile come indizio, senza rompere nulla e
-  senza che nessun test protestasse. Cambiata in «e non è cambiato niente».
-  **Prima di scrivere una stringa nuova conviene `grep`arla**: nei messaggi
-  all'utente le parole sono interfacce.
-- **Una mutazione di controllo, che deve sopravvivere.** Il primo giro ha dato
-  dodici cadute su dodici mentre il runner stampava `UnicodeDecodeError`, e
-  dodici su dodici è esattamente ciò che si vedrebbe se il comando fallisse
-  *sempre* per un motivo suo. La verifica è una tredicesima mutazione che cambia
-  **solo un commento**: se risulta viva, il meccanismo discrimina. Da mettere in
-  ogni `.muta.json` d'ora in poi — costa una riga e distingue «dodici cadute» da
-  «dodici volte lo stesso guasto».
-- **`guards.test.ts` traballa sotto carico.** Cammina l'albero del repo con il
-  timeout di 5s di default, e dentro `npm test` intero ogni tanto lo sfora: una
-  volta un caso, una volta tre, due volte nessuno, e su `HEAD` pulito nessuno.
-  Non è stato introdotto da questo lavoro e non l'ho toccato, ma è un falso
-  negativo che prima o poi fa perdere mezz'ora a qualcuno.
+`list.test.tsx` («cambiare ambito riporta alla prima pagina») e
+`account.test.tsx` («manda la password attuale e la nuova») vanno in timeout su
+una `findBy*` quando la macchina è occupata; `guards.test.ts` cammina l'albero del
+repo con il timeout di 5s di default e dentro `npm test` intero ogni tanto lo
+sfora. Nessuno dei tre è stato introdotto dal lavoro recente. **Chi vede rosso lì
+rifaccia girare il file da solo** prima di cercare la causa altrove — ma non
+prima di aver escluso di averli rotti davvero, il che vuol dire rifare girare la
+suite **con** le modifiche e vederla verde due volte, non solo sull'albero pulito.
 
 ---
 
