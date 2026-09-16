@@ -651,6 +651,73 @@ test fossero scritti male — provavano esattamente ciò che credevano — ma pe
 nessuno aveva mai visto un fornitore rispondere 400 a un problema di credenziali.
 La tassonomia degli errori altrui non si deduce: si osserva.
 
+### Il secondo, che il primo ha scoperto
+
+`9c5c587`, «il messaggio di un rifiuto dice quale regola ha bloccato».
+
+Rimessa in coda la registrazione con la chiave nuova, il `400` era sparito e la
+pipeline è arrivata in fondo. È emerso il difetto successivo, che non è nella
+logica ma in ciò che l'utente legge:
+
+```
+status         ESTRAZIONE_FALLITA
+lastErrorCode  contratto.non_conforme
+msg            Estrazione non conforme al contratto dopo 2 tentativi.
+trascrizione   "Sottotitoli creati dalla comunita' Amara.org"
+```
+
+Quella trascrizione è l'allucinazione classica di Whisper sul **silenzio** — i
+sottotitoli di Amara stanno nel suo addestramento. Il modello ha risposto bene
+(`NON_CLASSIFICABILE`, confidenza 0, tutto `null`) e la validazione ha bloccato
+bene, su `titolo.mancante`, che è l'unica regola bloccante di `domainIssues`.
+Niente di rotto: **solo il messaggio non diceva niente.**
+
+E non era una mancanza, era uno spreco: **il motivo era già calcolato, nella riga
+sopra.** `lastIssues` veniva raccolto, passato a `StageFailure`, e buttato via da
+chi costruiva la stringa. Quella stringa non resta nei log — attraversa
+`recordingErrorSchema.message`, `RecordingState.lastError`, `format.ts:231` — e
+finisce stampata sotto l'avviso.
+
+Due decisioni, e la seconda è quella da ricordare:
+
+- **Solo le regole bloccanti.** Una non bloccante, per definizione, non è il
+  motivo per cui ci si è fermati. Prezzo dichiarato: si legge il sintomo
+  (`titolo.mancante`) e non la causa (`meta.tipo_non_procedura`). È il residuo
+  nuovo nei difetti noti — le `issues` sono già nel contratto e **nessuna
+  schermata le mostra**, `grep` fatto: zero occorrenze in tutto `apps/web/src`.
+- **I messaggi di Zod non si citano.** Senza `errorMap` — e non ce n'è uno —
+  sono prosa inglese di libreria. Citarli avrebbe appeso ciò che legge l'utente
+  al testo di un terzo: **lo stesso errore che la correzione del `400` aveva
+  appena rifiutato di fare**, a due giorni di distanza e in un punto diverso del
+  codice. Che nessun test asserisse un messaggio Zod — `extractionValidation.test.ts`
+  guarda sempre e solo `rule@path` — era la prova che la linea era già stata
+  tracciata da qualcuno, e mai scritta.
+
+Una riga di produzione e una funzione nuova, nove casi, da **1056 su 47 file** a
+**1064**, e da **380** d'integrazione a **381**.
+
+Tre cose sul metodo:
+
+- **Una collisione di frase evitata per un soffio.** La coda del messaggio nuovo
+  diceva «con lo stesso esito», ma quella frase è il marcatore che due casi
+  esistenti cercano per dire «rimandarla identica non serve». Riusarla con un
+  terzo significato l'avrebbe resa inutile come indizio, senza rompere nulla e
+  senza che nessun test protestasse. Cambiata in «e non è cambiato niente».
+  **Prima di scrivere una stringa nuova conviene `grep`arla**: nei messaggi
+  all'utente le parole sono interfacce.
+- **Una mutazione di controllo, che deve sopravvivere.** Il primo giro ha dato
+  dodici cadute su dodici mentre il runner stampava `UnicodeDecodeError`, e
+  dodici su dodici è esattamente ciò che si vedrebbe se il comando fallisse
+  *sempre* per un motivo suo. La verifica è una tredicesima mutazione che cambia
+  **solo un commento**: se risulta viva, il meccanismo discrimina. Da mettere in
+  ogni `.muta.json` d'ora in poi — costa una riga e distingue «dodici cadute» da
+  «dodici volte lo stesso guasto».
+- **`guards.test.ts` traballa sotto carico.** Cammina l'albero del repo con il
+  timeout di 5s di default, e dentro `npm test` intero ogni tanto lo sfora: una
+  volta un caso, una volta tre, due volte nessuno, e su `HEAD` pulito nessuno.
+  Non è stato introdotto da questo lavoro e non l'ho toccato, ma è un falso
+  negativo che prima o poi fa perdere mezz'ora a qualcuno.
+
 ---
 
 ## Cosa resta scoperto
