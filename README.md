@@ -700,6 +700,23 @@ lista c'è qualcosa che può muoversi da solo: una lista di sole registrazioni
 ferme non cambia finché nessuno preme niente, e continuare a chiederla sarebbe
 una richiesta ogni cinque secondi per ricevere sempre la stessa risposta.
 
+**E quando un vocale diventa una scheda, l'elenco sotto se ne accorge.** Il
+server toglie dai sospesi tutto ciò che è `ESTRATTO`, quindi l'istante in cui
+nasce una scheda è l'istante in cui un id lascia questa lista — e da lì in giù,
+prima, non succedeva più niente: il polling si spegneva perché non c'era più
+nulla in movimento, e l'elenco delle schede aveva chiesto la sua pagina una volta
+sola al montaggio. Il vocale svaniva dallo schermo e la scheda non compariva
+finché qualcuno non ricaricava a mano — cioè esattamente nel momento in cui si
+stava guardando. Adesso la sezione dei sospesi confronta gli id di un giro con
+quelli del giro prima e, se ne manca uno, chiede all'elenco di ricaricarsi.
+L'evento è «un id se n'è andato», non «è passato del tempo»: far ripollare
+l'elenco da sé sarebbe una richiesta paginata ogni cinque secondi per tutta la
+sessione, anche quando non si sta elaborando niente. Il confronto è sugli id e
+non sulla lunghezza, perché se nello stesso giro uno esce e un altro entra la
+lunghezza non cambia e la scheda appena nata resterebbe invisibile. E non si
+distingue «nata» da «cancellata»: la lista si accorcia per due motivi soli, e
+tutti e due cambiano l'elenco sotto.
+
 **La redazione parte con niente selezionato.** Partire con tutto spuntato avrebbe
 reso la schermata un pulsante «conferma» con del testo intorno, e il «una per
 una» della §9 sarebbe rimasto solo nella forma. Ogni proposta mostra il contesto
@@ -1677,6 +1694,21 @@ movimento, non parte affatto su una lista di sole registrazioni ferme, e si
 spegne *da solo* nel momento in cui l'ultima elaborazione finisce. Accanto, che
 un errore lì non produca un avviso rosso in cima a una schermata che funziona, e
 che eliminare chieda il secondo tocco.
+
+E quando avvisa chi sta sopra, che è l'altro guasto senza sintomo: un avviso che
+non parte lascia una schermata corretta e ferma, e chi guarda pensa che il vocale
+sia andato perduto. I casi pilotano i giri di polling uno per uno e guardano una
+spia: un id che sparisce la fa scattare, una lista che resta uguale no, il primo
+giro — che è quello in cui si scopre cosa c'era, non una sparizione — nemmeno, e
+un vocale che si aggiunge e basta neanche. I due casi che tengono su le due
+decisioni sono uno che esce e uno che entra nello stesso giro, che deve scattare
+lo stesso perché la lunghezza non è cambiata; e un giro andato storto, che non
+deve scattare, perché un errore non dice che qualcosa è sparito, dice che non lo
+sappiamo. Dall'altra parte, sull'elenco, che il richiamo arrivi davvero a
+`listProcedures` — e che la pagina richiesta sia **la stessa**, con lo stesso
+ambito e lo stesso offset, perché un ricaricamento che riporta alla prima pagina
+sposterebbe sotto gli occhi di chi legge una lista che non aveva chiesto di
+muovere.
 
 Del dettaglio, quattro punti su cinquecento righe. È la schermata più lunga
 dell'app e quasi tutto quello che contiene è un campo stampato accanto al suo
@@ -3572,6 +3604,20 @@ Non installate, e il perché:
   solo il vocale, e va bene così: quella lista mostra per costruzione ciò che non
   è ancora diventato una scheda. Ma se un giorno cambiasse filtro, quel pulsante
   tornerebbe a promettere più di quello che fa.
+- **La sezione «In lavorazione» si smonta ogni cinque secondi, e con lei le
+  domande aperte.** `ricarica()` di `useAsync` riporta lo stato ad `attesa` prima
+  di rifare la richiesta, e la sezione dei sospesi restituisce `null` quando non
+  è `pronto`: a ogni giro di polling sparisce dal DOM e ricompare un istante
+  dopo. Sullo schermo quasi non si vede — le righe tornano identiche — ma lo
+  stato locale dei riquadri no: `Sospesa` tiene in un `useState` il fatto che si
+  sia già premuto «Elimina», quindi chi preme e poi si ferma a leggere «Elimina
+  davvero» vede la domanda sparire da sola entro cinque secondi, senza aver
+  toccato niente. È il secondo tocco che si annulla da solo, cioè proprio la
+  precauzione per cui esiste. La cura sta in `useAsync`, che lo montano dodici
+  schermate: tenere il dato vecchio mentre arriva il nuovo invece di svuotarlo.
+  Non è una modifica locale a questa sezione, ed è per questo che è scritta qui
+  invece che fatta — ma il conto lo paga solo qui, perché è l'unica lista che si
+  ricarica da sola sotto le mani di chi la guarda.
 - **«Per sempre» è vero per l'applicazione, non per il disco.** Dal cestino la
   scheda sparisce davvero — i figli con lei per il `Cascade`, i vocali con la
   loro trascrizione, i byte dell'audio dal bucket — ma è una `DELETE`, non una

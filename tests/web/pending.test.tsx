@@ -75,7 +75,7 @@ describe("PendingRecordings: quando smette di chiedere", () => {
       },
     });
 
-    montaConApi(client, <PendingRecordings />);
+    montaConApi(client, <PendingRecordings onSparita={() => {}} />);
 
     await avanza(0);
     expect(letture).toBe(1);
@@ -102,7 +102,7 @@ describe("PendingRecordings: quando smette di chiedere", () => {
       },
     });
 
-    montaConApi(client, <PendingRecordings />);
+    montaConApi(client, <PendingRecordings onSparita={() => {}} />);
 
     await avanza(0);
     expect(letture).toBe(1);
@@ -131,7 +131,7 @@ describe("PendingRecordings: quando smette di chiedere", () => {
       },
     });
 
-    montaConApi(client, <PendingRecordings />);
+    montaConApi(client, <PendingRecordings onSparita={() => {}} />);
 
     await avanza(0);
     expect(letture).toBe(1);
@@ -154,7 +154,7 @@ describe("PendingRecordings: quando smette di chiedere", () => {
       },
     });
 
-    const { container } = montaConApi(client, <PendingRecordings />);
+    const { container } = montaConApi(client, <PendingRecordings onSparita={() => {}} />);
 
     await avanza(CINQUE_SECONDI * 3);
     // Ha gia' la sua scheda nell'elenco sotto: mostrarla anche qui la farebbe
@@ -171,7 +171,7 @@ describe("PendingRecordings: quando smette di chiedere", () => {
         ),
     });
 
-    const { container } = montaConApi(client, <PendingRecordings />);
+    const { container } = montaConApi(client, <PendingRecordings onSparita={() => {}} />);
 
     await avanza(0);
     // Questa sezione e' un di piu' sopra l'elenco delle schede. Un avviso rosso
@@ -179,6 +179,142 @@ describe("PendingRecordings: quando smette di chiedere", () => {
     // che funziona.
     expect(container.innerHTML).toBe("");
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+/**
+ * L'avviso a chi sta sopra, e quando NON deve partire.
+ *
+ * Il server toglie dai sospesi tutto cio' che e' `ESTRATTO`: l'unico istante in
+ * cui si sa che un vocale e' appena diventato una scheda e' quello in cui il
+ * suo id sparisce da questa lista. Se l'avviso non parte, la scheda nuova non
+ * compare finche' qualcuno non ricarica la pagina; se parte quando non deve,
+ * ogni tick costa una richiesta paginata in piu'.
+ */
+describe("PendingRecordings: quando avvisa chi sta sopra", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function avanza(ms: number): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  /** Un client che risponde con una lista diversa a ogni giro. */
+  function clienteAGiri(giri: readonly PendingRecordingsResponse["items"][]) {
+    let letture = 0;
+    return creaClienteFinto({
+      listPendingRecordings: () => {
+        const giro = giri[Math.min(letture, giri.length - 1)] ?? [];
+        letture += 1;
+        return Promise.resolve(unaRisposta(giro));
+      },
+    });
+  }
+
+  it("quando un vocale sparisce dalla lista, lo dice a chi sta sopra", async () => {
+    const onSparita = vi.fn();
+    const client = clienteAGiri([[unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" })], []]);
+
+    montaConApi(client, <PendingRecordings onSparita={onSparita} />);
+
+    await avanza(0);
+    expect(onSparita).not.toHaveBeenCalled();
+
+    await avanza(CINQUE_SECONDI);
+    expect(onSparita).toHaveBeenCalledTimes(1);
+  });
+
+  it("finche' sono tutti li', non dice niente", async () => {
+    // L'errore opposto: un avviso a ogni giro farebbe richiedere l'elenco delle
+    // schede ogni cinque secondi per tutto il tempo dell'elaborazione.
+    const onSparita = vi.fn();
+    const client = clienteAGiri([[unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" })]]);
+
+    montaConApi(client, <PendingRecordings onSparita={onSparita} />);
+
+    await avanza(CINQUE_SECONDI * 3);
+    expect(onSparita).not.toHaveBeenCalled();
+  });
+
+  it("il primo giro non e' una sparizione", async () => {
+    const onSparita = vi.fn();
+    const client = clienteAGiri([[unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" })]]);
+
+    montaConApi(client, <PendingRecordings onSparita={onSparita} />);
+
+    await avanza(0);
+    // Prima di questo giro non si sapeva cosa ci fosse: «r1 c'e' adesso e prima
+    // no» non e' un'informazione, e leggerla come tale farebbe ricaricare
+    // l'elenco a ogni apertura della schermata.
+    expect(onSparita).not.toHaveBeenCalled();
+  });
+
+  it("uno che esce e uno che entra nello stesso giro e' comunque una sparizione", async () => {
+    // La lunghezza non cambia: e' il caso in cui un confronto sui numeri invece
+    // che sugli id lascerebbe la scheda appena nata invisibile.
+    const onSparita = vi.fn();
+    const client = clienteAGiri([
+      [unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" })],
+      [unaRegistrazione({ id: "r2", status: "IN_ELABORAZIONE" })],
+    ]);
+
+    montaConApi(client, <PendingRecordings onSparita={onSparita} />);
+
+    await avanza(0);
+    await avanza(CINQUE_SECONDI);
+    expect(onSparita).toHaveBeenCalledTimes(1);
+  });
+
+  it("un vocale che arriva e basta non e' una sparizione", async () => {
+    const onSparita = vi.fn();
+    const client = clienteAGiri([
+      [unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" })],
+      [
+        unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" }),
+        unaRegistrazione({ id: "r2", status: "IN_ELABORAZIONE" }),
+      ],
+    ]);
+
+    montaConApi(client, <PendingRecordings onSparita={onSparita} />);
+
+    await avanza(0);
+    await avanza(CINQUE_SECONDI);
+    expect(onSparita).not.toHaveBeenCalled();
+  });
+
+  it("un giro andato storto non e' una sparizione", async () => {
+    // Un errore non dice che qualcosa e' sparito: dice che non lo sappiamo.
+    // Leggendolo come lista vuota, ogni buco di rete farebbe ricaricare
+    // l'elenco delle schede.
+    const onSparita = vi.fn();
+    let letture = 0;
+    const client = creaClienteFinto({
+      listPendingRecordings: () => {
+        letture += 1;
+        if (letture === 1) {
+          return Promise.resolve(
+            unaRisposta([unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" })]),
+          );
+        }
+        return Promise.reject(
+          new ApiError({ code: "INTERNAL_ERROR", message: "Il server non risponde.", status: 500 }),
+        );
+      },
+    });
+
+    montaConApi(client, <PendingRecordings onSparita={onSparita} />);
+
+    await avanza(0);
+    await avanza(CINQUE_SECONDI);
+    expect(letture).toBe(2);
+    expect(onSparita).not.toHaveBeenCalled();
   });
 });
 
@@ -194,7 +330,7 @@ describe("PendingRecordings: eliminare", () => {
       },
     });
 
-    montaConApi(client, <PendingRecordings />);
+    montaConApi(client, <PendingRecordings onSparita={() => {}} />);
 
     const utente = userEvent.setup();
     await utente.click(await screen.findByRole("button", { name: "Elimina" }));
@@ -228,7 +364,7 @@ describe("PendingRecordings: eliminare", () => {
         ),
     });
 
-    montaConApi(client, <PendingRecordings />);
+    montaConApi(client, <PendingRecordings onSparita={() => {}} />);
 
     const utente = userEvent.setup();
     await utente.click(await screen.findByRole("button", { name: "Elimina" }));

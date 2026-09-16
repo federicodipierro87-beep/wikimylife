@@ -1,5 +1,5 @@
 import type { RecordingState } from "@wikimylife/shared";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApi } from "../api";
 import { avvisoDi, formatDurataAudio, formatQuando } from "../format";
 import { messaggioDi } from "../session";
@@ -18,17 +18,80 @@ import { useAsync } from "../useAsync";
  * Sparisce da sola quando non resta niente in sospeso: una sezione «0 in
  * lavorazione» sarebbe rumore permanente su una schermata che nel caso normale
  * non ha niente da dire.
+ *
+ * ## Perche' avvisa chi sta sopra
+ *
+ * Il server toglie dalla lista dei sospesi tutto cio' che e' `ESTRATTO`.
+ * Quindi nel momento esatto in cui un vocale diventa una scheda, il suo id
+ * sparisce da qui — e da qui in giu' non succede piu' niente: il polling si
+ * spegne (non c'e' piu' niente in movimento) e l'elenco delle schede, che ha
+ * chiesto la sua pagina una volta sola al montaggio, non ha nessun motivo di
+ * richiederla. Il vocale svanisce dallo schermo e la scheda non compare, finche'
+ * qualcuno non ricarica a mano. `onSparita` e' il solo punto in cui
+ * quell'istante e' visibile.
+ *
+ * L'evento e' «un id ha lasciato la lista», non «e' passato del tempo»: far
+ * ripollare l'elenco da se' sarebbe una richiesta paginata ogni cinque secondi
+ * per tutta la sessione, anche quando non si sta elaborando niente.
+ *
+ * Non si distingue «nata» da «cancellata». La lista si accorcia per due motivi
+ * soli, e tutti e due cambiano l'elenco sotto: ricaricare e' giusto in
+ * entrambi i casi, e una cancellazione costa una richiesta di lista in piu'.
  */
 
 /** Ogni quanto si richiede la lista, e solo se qualcosa si sta muovendo. */
 const RITMO_MS = 5000;
 
-export function PendingRecordings(): React.JSX.Element | null {
+export function PendingRecordings({
+  /**
+   * Obbligatoria, non facoltativa. `onSparita?` terrebbe compilante chiunque
+   * monti questa sezione senza pensarci, e il difetto — la scheda che nasce e
+   * non compare — tornerebbe in silenzio, identico a prima e senza un errore.
+   */
+  onSparita,
+}: {
+  onSparita: () => void;
+}): React.JSX.Element | null {
   const apiClient = useApi();
   const { stato, ricarica } = useAsync<readonly RecordingState[]>(
     async () => (await apiClient.listPendingRecordings()).items,
     [apiClient],
   );
+
+  // Gli id dell'ultimo giro andato a buon fine. `null` finche' non ne e'
+  // arrivato nemmeno uno: il primo giro non e' una sparizione, e' il momento in
+  // cui si scopre cosa c'era.
+  const visti = useRef<ReadonlySet<string> | null>(null);
+
+  useEffect(() => {
+    // Solo i giri `pronto`. Un `attesa` ha la lista vuota per costruzione — e'
+    // lo stato in cui `useAsync` si mette a ogni ricaricamento — e un `errore`
+    // non dice che qualcosa e' sparito, dice che non lo sappiamo: leggerli come
+    // sparizioni farebbe ricaricare l'elenco a ogni tick e a ogni guasto di
+    // rete.
+    if (stato.kind !== "pronto") {
+      return;
+    }
+
+    const adesso = new Set(stato.dato.map((r) => r.id));
+    const prima = visti.current;
+    visti.current = adesso;
+
+    if (prima === null) {
+      return;
+    }
+
+    // Per id e non per lunghezza: se nello stesso giro uno esce e un altro
+    // entra, la lunghezza non cambia e la scheda appena nata resterebbe
+    // invisibile — cioe' esattamente il difetto che questo avviso esiste per
+    // togliere.
+    for (const id of prima) {
+      if (!adesso.has(id)) {
+        onSparita();
+        return;
+      }
+    }
+  }, [stato, onSparita]);
 
   // Il polling parte solo se c'e' qualcosa che puo' cambiare da solo. Una lista
   // di sole registrazioni ferme non cambia finche' non si preme un pulsante, e

@@ -30,7 +30,7 @@ export function ListScreen(): React.JSX.Element {
   const [ambito, setAmbito] = useState<(typeof AMBITI)[number]["valore"]>(undefined);
   const [offset, setOffset] = useState(0);
 
-  const { stato } = useAsync<ProcedureList>(
+  const { stato, ricarica } = useAsync<ProcedureList>(
     () =>
       apiClient.listProcedures({
         limit: PROCEDURE_PAGE_SIZE,
@@ -88,7 +88,12 @@ export function ListScreen(): React.JSX.Element {
         ))}
       </div>
 
-      <PendingRecordings />
+      {/* Le dipendenze di `useAsync` qui sopra sono ambito e pagina: nessuna
+          delle due cambia quando un vocale diventa una scheda, quindi senza
+          questo richiamo la scheda nuova non comparirebbe finche' non si tocca
+          un filtro o non si ricarica la pagina a mano. Chi sa che e' successo
+          e' la sezione dei sospesi, perche' l'id le e' sparito da sotto. */}
+      <PendingRecordings onSparita={ricarica} />
 
       {stato.kind === "attesa" && <p className="muto">Carico…</p>}
 

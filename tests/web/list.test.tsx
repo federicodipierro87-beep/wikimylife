@@ -3,15 +3,16 @@ import type {
   ListProceduresQueryInput,
   ProcedureList,
   ProcedureSummary,
+  RecordingState,
 } from "@wikimylife/shared";
 import { ApiError, PROCEDURE_PAGE_SIZE } from "@wikimylife/shared";
-import { screen } from "@testing-library/react";
+import { act, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toHash } from "../../apps/web/src/routes";
 import { ListScreen } from "../../apps/web/src/screens/ListScreen";
 import { creaClienteFinto } from "./helpers/clienteFinto";
-import { unaVoce, unElenco } from "./helpers/dati";
+import { unaRegistrazione, unaVoce, unElenco } from "./helpers/dati";
 import { montaConApi } from "./helpers/render";
 
 /**
@@ -29,11 +30,19 @@ import { montaConApi } from "./helpers/render";
  * Da qui la forma dei casi: non si guarda solo la richiesta che parte, si
  * guarda anche cosa finisce sotto gli occhi di chi ha premuto.
  *
- * `PendingRecordings` e' montata dentro questa schermata e qui risponde vuota
- * in ogni caso: ha i suoi test in `pending.test.tsx`, e vuota non disegna
+ * `PendingRecordings` e' montata dentro questa schermata e quasi ovunque qui
+ * risponde vuota: ha i suoi test in `pending.test.tsx`, e vuota non disegna
  * niente e non accende nessun timer. Darle un contenuto vorrebbe dire rifare
  * quei casi, e per giunta di lato.
+ *
+ * L'eccezione e' l'ultimo gruppo, dove il contenuto dei sospesi e' proprio
+ * l'oggetto del test: il legame fra le due sezioni — un id che sparisce di
+ * sopra e un elenco che si richiede di sotto — non esiste in nessuno dei due
+ * file da solo.
  */
+
+/** Il ritmo del polling dei sospesi, che qui e' l'orologio dell'ultimo gruppo. */
+const CINQUE_SECONDI = 5000;
 
 /** L'ultima cosa che la schermata ha chiesto, che e' quasi sempre quella in causa. */
 function ultima<T>(xs: readonly T[]): T {
@@ -240,6 +249,124 @@ describe("ListScreen: quando il server non risponde", () => {
     // tutta qui: la seconda frase, letta da chi ha ottanta procedure, dice che
     // le ha perse.
     expect(screen.queryByText("Qui non c'e' ancora niente.")).toBeNull();
+  });
+});
+
+/**
+ * Il vocale che diventa scheda, e l'elenco che se ne accorge.
+ *
+ * Senza questo legame la schermata ha un buco che non da' nessun sintomo: il
+ * server toglie dai sospesi tutto cio' che e' `ESTRATTO`, quindi il riquadro «In
+ * lavorazione» svanisce, il polling si spegne — non c'e' piu' niente in
+ * movimento — e l'elenco delle schede, le cui dipendenze sono ambito e pagina,
+ * non ha nessun motivo di richiedersi. Chi ha appena registrato vede il proprio
+ * vocale sparire e nessuna scheda comparire al suo posto.
+ *
+ * Timer finti e `fireEvent` al posto di `userEvent`, per la ragione gia' scritta
+ * in cima a `pending.test.tsx`: i due non si mescolano: `userEvent` aspetta fra
+ * un gesto e l'altro, e con i timer fermi quell'attesa non finisce mai. Qui i
+ * gesti non sono l'oggetto del test — lo e' cosa parte dopo.
+ */
+describe("ListScreen: quando un vocale diventa scheda", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function avanza(ms: number): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  /** Come `clienteElenco`, ma con i sospesi che cambiano di giro in giro. */
+  function clienteConSospesi(
+    giri: readonly RecordingState[][],
+    rispondi: (q: ListProceduresQueryInput) => ProcedureList,
+  ): { client: ApiClient; richieste: ListProceduresQueryInput[] } {
+    const richieste: ListProceduresQueryInput[] = [];
+    let letture = 0;
+    const client = creaClienteFinto({
+      listPendingRecordings: () => {
+        const giro = giri[Math.min(letture, giri.length - 1)] ?? [];
+        letture += 1;
+        return Promise.resolve({ items: giro });
+      },
+      listProcedures: (query = {}) => {
+        richieste.push(query);
+        return Promise.resolve(rispondi(query));
+      },
+    });
+    return { client, richieste };
+  }
+
+  it("quando un vocale diventa scheda, l'elenco si richiede da capo", async () => {
+    const { client, richieste } = clienteConSospesi(
+      [[unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" })], []],
+      archivioDa45,
+    );
+
+    montaConApi(client, <ListScreen />);
+
+    await avanza(0);
+    expect(richieste).toHaveLength(1);
+
+    await avanza(CINQUE_SECONDI);
+    expect(richieste).toHaveLength(2);
+  });
+
+  it("finche' il vocale e' in lavorazione, l'elenco non si richiede", async () => {
+    // L'errore opposto, e costa: una richiesta paginata ogni cinque secondi per
+    // tutto il tempo dell'elaborazione, su una connessione mobile.
+    const { client, richieste } = clienteConSospesi(
+      [[unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" })]],
+      archivioDa45,
+    );
+
+    montaConApi(client, <ListScreen />);
+
+    await avanza(CINQUE_SECONDI * 3);
+    expect(richieste).toHaveLength(1);
+  });
+
+  it("l'elenco richiesto di nuovo e' la stessa pagina e lo stesso ambito", async () => {
+    // Ricaricare riportando alla prima pagina e a «Tutte» sarebbe peggio del
+    // difetto: chi sta leggendo la pagina tre di «Lavoro» si ritroverebbe in
+    // cima all'archivio intero perche' un vocale ha finito di elaborare.
+    const { client, richieste } = clienteConSospesi(
+      [[unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" })], []],
+      archivioDa45,
+    );
+
+    montaConApi(client, <ListScreen />);
+
+    await avanza(0);
+    // `fireEvent` e non `userEvent`: quest'ultimo aspetta fra un gesto e
+    // l'altro su timer che qui sono finti, e il click non torna mai. Il gesto
+    // non e' l'oggetto del caso — lo e' cosa viene richiesto dopo — quindi un
+    // evento sintetico basta.
+    fireEvent.click(screen.getByRole("tab", { name: "Lavoro" }));
+    await avanza(0);
+    fireEvent.click(bottone("Successive"));
+    await avanza(0);
+    expect(ultima(richieste)).toEqual({
+      limit: PROCEDURE_PAGE_SIZE,
+      offset: PROCEDURE_PAGE_SIZE,
+      scope: "LAVORO",
+    });
+
+    const quante = richieste.length;
+    await avanza(CINQUE_SECONDI);
+
+    expect(richieste).toHaveLength(quante + 1);
+    expect(ultima(richieste)).toEqual({
+      limit: PROCEDURE_PAGE_SIZE,
+      offset: PROCEDURE_PAGE_SIZE,
+      scope: "LAVORO",
+    });
   });
 });
 
