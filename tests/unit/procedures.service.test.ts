@@ -220,6 +220,47 @@ describe("update — testo indicizzabile ed embedding", () => {
   });
 });
 
+/**
+ * La dedup dei tag, vista da qui.
+ *
+ * Il difetto vero e' nel database (`@@id([procedureId, tagId])`, P2002) e si
+ * prova nell'integrazione. Questi due casi pinzano che il servizio non lo
+ * *offra* neanche, quel duplicato: il repository in memoria non ha chiavi
+ * composte e accetterebbe qualunque cosa, quindi si guarda cosa gli e' stato
+ * passato.
+ */
+describe("update — le categorie ripetute", () => {
+  it("un aggiornamento con la stessa categoria due volte ne salva una", async () => {
+    const row = h.repo.seed({ userId: USER, tag: [] });
+
+    await h.service.update(USER, row.id, { tag: ["casa", "casa"] });
+
+    expect(h.repo.lastUpdate?.tag).toEqual(["casa"]);
+  });
+
+  it("un aggiornamento con due categorie diverse le salva tutte e due", async () => {
+    // L'errore opposto: una dedup che tagliasse troppo svuoterebbe le categorie
+    // senza che nessun vincolo protesti.
+    const row = h.repo.seed({ userId: USER, tag: [] });
+
+    await h.service.update(USER, row.id, { tag: ["casa", "ufficio"] });
+
+    expect(h.repo.lastUpdate?.tag).toEqual(["casa", "ufficio"]);
+  });
+
+  it("la categoria ripetuta non conta due volte nemmeno nel testo cercabile", async () => {
+    // `searchText` ed embedding leggono i tag prima della scrittura: se la dedup
+    // stesse piu' in basso, questi due vedrebbero una lista che il database non
+    // accettera' mai.
+    const row = h.repo.seed({ userId: USER, tag: [] });
+
+    await h.service.update(USER, row.id, { tag: ["casa", "casa"] });
+
+    const testo = h.repo.lastUpdate?.searchText ?? "";
+    expect(testo.split("casa")).toHaveLength(2);
+  });
+});
+
 describe("addExecution — il diagramma della §8", () => {
   it("CAMBIATA riporta la scheda in DA_RIVEDERE", async () => {
     const row = h.repo.seed({ userId: USER, status: CardStatus.COMPLETA });

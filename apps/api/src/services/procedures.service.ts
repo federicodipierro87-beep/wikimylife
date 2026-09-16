@@ -7,6 +7,7 @@ import {
   embeddingInput,
   isObsoleta,
   searchText,
+  tagUnici,
   type ApplyRedactionBody,
   type CreateExecutionBody,
   type EmbeddingProvider,
@@ -251,7 +252,13 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
       contieneDatiSensibili: patch.contieneDatiSensibili ?? current.contieneDatiSensibili,
     });
 
-    const { tag, steps, prereqs, pitfalls, costs, refs, ...scalars } = patch;
+    const { tag: tagRichiesti, steps, prereqs, pitfalls, costs, refs, ...scalars } = patch;
+
+    // Deduplicati qui e non piu' in basso, perche' da questa riga in poi i tag
+    // finiscono in tre posti — l'embedding, il `searchText` e la scrittura — e
+    // due di quei tre vedrebbero un elenco che il database non accettera' mai.
+    // Il perche' della dedup sta su `tagUnici`.
+    const tag = tagRichiesti === undefined ? undefined : tagUnici(tagRichiesti);
     const nuoviTag = tag ?? current.tag;
     const nuoviPassi = steps ?? current.steps;
     const nuoviPrereq = prereqs ?? current.prereqs;

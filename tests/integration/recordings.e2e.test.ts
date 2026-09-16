@@ -599,6 +599,22 @@ describe("dalla registrazione alla scheda", () => {
     expect(await server.prisma.tagOnProcedure.count()).toBe(2);
   });
 
+  it("un'estrazione che propone due volte lo stesso tag diventa comunque una scheda", async () => {
+    // Un modello che risponde `["casa", "casa"]` e' verosimile e il contratto
+    // §4 non lo vieta: senza dedup prima della scrittura, `@@id([procedureId,
+    // tagId])` fa cadere la transazione e il vocale resta BOZZA_AUDIO per
+    // sempre — cioe' l'utente ha parlato e non e' successo niente.
+    const { token } = await signup();
+    stt.enqueue(TRASCRIZIONE);
+    llm.enqueue(buildExtractionContract({ tag: ["casa", "casa", "ufficio"] }));
+
+    await carica(token);
+    const p = await scheda(procedureIdDi(await elabora()));
+
+    expect(p.tags.map((t) => t.tag.nome).sort()).toEqual(["casa", "ufficio"]);
+    expect(await server.prisma.tagOnProcedure.count()).toBe(2);
+  });
+
   it("fa arrivare il vocabolario dell'utente nel prompt", async () => {
     const { token } = await signup();
     stt.enqueue("prima").enqueue("seconda");

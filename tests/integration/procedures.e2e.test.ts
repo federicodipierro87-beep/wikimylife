@@ -425,6 +425,38 @@ describe("PATCH /api/procedures/:id", () => {
     expect(res.status).toBe(409);
   });
 
+  it("una patch con la categoria ripetuta non fa cadere il salvataggio", async () => {
+    // Il difetto vero e' qui e non in memoria: due nomi uguali si risolvono
+    // nello stesso `Tag`, e la seconda riga di `TagOnProcedure` viola
+    // `@@id([procedureId, tagId])`. Senza dedup questa chiamata risponde 500.
+    const token = await signup();
+    const creata = await creaScheda(token);
+
+    const res = await call(server, "PATCH", `/api/procedures/${creata.id}`, {
+      accessToken: token,
+      body: { tag: ["casa", "casa"] },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it("e la scheda risponde con quella categoria una volta sola", async () => {
+    const token = await signup();
+    const creata = await creaScheda(token);
+
+    await call(server, "PATCH", `/api/procedures/${creata.id}`, {
+      accessToken: token,
+      body: { tag: ["casa", "casa", "ufficio"] },
+    });
+
+    // Non solo «non e' caduta»: il legame scritto e' uno, e le altre categorie
+    // mandate nella stessa patch sono arrivate tutte.
+    expect((await leggi(token, creata.id)).tag).toEqual(["casa", "ufficio"]);
+    expect(
+      await server.prisma.tagOnProcedure.count({ where: { procedureId: creata.id } }),
+    ).toBe(2);
+  });
+
   it("non lascia modificare la scheda di un altro", async () => {
     const mio = await signup();
     const altrui = await signup();

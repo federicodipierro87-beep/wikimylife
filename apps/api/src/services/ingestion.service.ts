@@ -3,6 +3,7 @@ import {
   DEDUP_COSINE_THRESHOLD,
   RecordingStatus,
   embeddingInput,
+  tagUnici,
   type EmbeddingProvider,
   type ExtractionContract,
   type ExtractionIssue,
@@ -374,9 +375,15 @@ export function createIngestionService(deps: IngestionDeps): IngestionService {
     // I passi si rinumerano PRIMA di scrivere: `@@unique([procedureId, ordine])`
     // rifiuterebbe un'estrazione che numera 1, 1, 3, e perderemmo il contenuto
     // per un difetto di forma. L'issue resta negli `issues`, il testo si salva.
+    //
+    // I tag si deduplicano qui e per la stessa ragione: `TagOnProcedure` ha
+    // `@@id([procedureId, tagId])`, quindi un modello che risponde `["casa",
+    // "casa"]` fa cadere la transazione e il vocale non diventa mai una scheda.
+    // Il ragionamento intero sta su `tagUnici`.
     const normalized: ExtractionContract = {
       ...contract,
       passi: normalizeSteps(contract.passi),
+      tag: tagUnici(contract.tag),
     };
 
     let vector: number[];

@@ -29,3 +29,4 @@ export * from "./redaction/assisted.js";
 export * from "./util/deterministicVector.js";
 export * from "./util/embeddingInput.js";
 export * from "./util/searchText.js";
+export * from "./util/tagUnici.js";

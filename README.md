@@ -3397,6 +3397,19 @@ Non installate, e il perché:
   una `PATCH` sulla scheda indicata da `duplicateOfId`, leggendo l'estrazione
   dalla registrazione. Non esiste una rotta che unisca le due in un colpo solo,
   ed è voluto: la fusione è una decisione, e va vista prima di essere scritta.
+- **`"Casa"` e `"casa"` restano due tag.** I tag si deduplicano prima di essere
+  scritti — `tagUnici()`, chiamata dalla `PATCH` e dalla pipeline — perché
+  `TagOnProcedure` ha `@@id([procedureId, tagId])` e due nomi uguali violavano la
+  chiave composta: un `500` sulla modifica, e un vocale che non diventava mai una
+  scheda quando il modello proponeva due volte la stessa parola. La dedup però
+  guarda i nomi alla lettera, maiuscole comprese. Minuscolarli sarebbe una riga,
+  e non si fa per due motivi: i tag sono il vocabolario dell'utente e la §4.2 li
+  rimette dentro il prompt, quindi riscriverli impoverisce le sue parole; e
+  `@@unique([userId, nome])` in Postgres è comunque case-sensitive, quindi una
+  dedup che ignorasse le maiuscole non sarebbe garantita dal database ma solo da
+  una regola da ricordarsi. Il prezzo è che l'archivio può contenere due tag che
+  sullo schermo sembrano lo stesso. La cura non è qui: è far scegliere invece di
+  far riscrivere.
 - **La ricerca pagina fino a cento risultati, e non oltre.** `offset` c'è ed è
   esatto, ma solo dentro la finestra che i due canali restituiscono: una scheda
   che non sta fra le prime cento né per testo né per vettori non compare a nessuna
