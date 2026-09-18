@@ -10,6 +10,7 @@ import { createHealthRouter } from "./routes/health.routes.js";
 import { createProceduresRouter } from "./routes/procedures.routes.js";
 import { createRecordingsRouter } from "./routes/recordings.routes.js";
 import { createSearchRouter } from "./routes/search.routes.js";
+import { createTagsRouter } from "./routes/tags.routes.js";
 import type { AuthService } from "./services/auth.service.js";
 import type { RateLimitStore } from "./services/ports/RateLimitStore.js";
 import type { ProceduresService } from "./services/procedures.service.js";
@@ -136,6 +137,18 @@ export function createApp(deps: AppDeps): Express {
   app.use(
     "/api/procedures",
     createProceduresRouter({
+      proceduresService: deps.proceduresService,
+      requireAuth: deps.requireAuth,
+    }),
+  );
+
+  // Le categorie sono le schede guardate dall'altro verso, quindi dietro c'e' lo
+  // stesso servizio: sta su un percorso suo e non sotto `/api/procedures` solo
+  // perche' li' ci sarebbe `/:id` a raccoglierlo. Il perche' per esteso sta in
+  // `tags.routes.ts`.
+  app.use(
+    "/api/tags",
+    createTagsRouter({
       proceduresService: deps.proceduresService,
       requireAuth: deps.requireAuth,
     }),

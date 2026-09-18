@@ -10,11 +10,13 @@ import type {
   AddExecutionData,
   DeleteProcedureOutcome,
   ListProceduresFilter,
+  ListTagsFilter,
   ProcedureDetailRow,
   ProcedurePage,
   ProcedureRepository,
   ProcedureSummaryRow,
   ScoredProcedureId,
+  TagCountRow,
   UpdateProcedureData,
 } from "../services/ports/ProcedureRepository.js";
 
@@ -163,8 +165,19 @@ function omitUndefined<T extends object>(source: T): Partial<Defined<T>> {
  * `status` assente non significa «tutti gli stati»: significa «tutti tranne
  * ARCHIVIATA». Chiedere esplicitamente `status=ARCHIVIATA` resta possibile, ed
  * e' il cestino.
+ *
+ * Prende i tre filtri e non `ListProceduresFilter` intero perche' `limit` e
+ * `offset` qui non entrano — e perche' `listTags` la chiama con il solo `scope`.
+ * Quella chiamata e' il punto: il conteggio di una categoria nasce dallo stesso
+ * WHERE della lista che la categoria apre, quindi i due numeri non possono
+ * divergere nemmeno se qualcuno cambia idea sul cestino. Una seconda funzione
+ * «come questa ma per i tag» sarebbe stata la stessa regola scritta due volte,
+ * e prima o poi corretta in una copia sola.
  */
-function whereFor(userId: string, filter: ListProceduresFilter): Prisma.ProcedureWhereInput {
+function whereFor(
+  userId: string,
+  filter: Pick<ListProceduresFilter, "scope" | "status" | "tag">,
+): Prisma.ProcedureWhereInput {
   return {
     userId,
     ...(filter.scope === undefined ? {} : { scope: filter.scope }),
@@ -200,6 +213,67 @@ export class PrismaProcedureRepository implements ProcedureRepository {
     ]);
 
     return { items: rows.map(toSummary), total };
+  }
+
+  /**
+   * ## Perche' si parte dalle righe di legame e non dai `Tag`
+   *
+   * La strada breve sarebbe `tag.findMany({ where: { userId }, _count: ... })`:
+   * una query sola, e i nomi arrivano gia' attaccati. Ma restituirebbe anche i
+   * `Tag` senza nessuna scheda — che in questa tabella ci sono apposta, perche'
+   * `update` non li cancella mai quando svuota un'associazione (sono il
+   * vocabolario del prompt §4.2) — e li metterebbe sul filo delle chip con
+   * scritto «0». E soprattutto il `_count` di Prisma non sa del cestino: conta
+   * le associazioni, tutte, e una categoria che vive solo su schede archiviate
+   * comparirebbe con il suo numero pieno.
+   *
+   * Partendo dai legami il filtro passa per `procedure: whereFor(...)`, cioe'
+   * per la stessa condizione che decide cosa la lista mostra. Costa una seconda
+   * query per i nomi — il `groupBy` restituisce `tagId`, non `nome` — ed e' il
+   * prezzo dichiarato. Il precedente e' `PrismaAuthRepository.listOpenSessions`.
+   *
+   * `userId` compare in tutte e due le interrogazioni, ma le due comparse non
+   * pesano uguale, e conviene dirlo invece di lasciarlo credere. Nella prima,
+   * attraverso `whereFor`, e' l'unica cosa che separa il proprio archivio da
+   * quello di tutti: toglierlo si vede subito, e c'e' un caso che lo vede. Nella
+   * seconda **non difende niente, oggi**: la mutazione che lo toglie di li'
+   * sopravvive a tutta la suite, ed e' equivalente per costruzione — `gruppi`
+   * viene da righe gia' filtrate per proprietario, un `Tag` appartiene a un
+   * utente solo (`@@unique([userId, nome])`), e nessuna via di scrittura lega una
+   * scheda al tag di qualcun altro; quegli id non possono essere di un estraneo.
+   * Resta scritto lo stesso perche' e' la forma di tutto il file — nessun `WHERE`
+   * senza proprietario — e perche' il giorno in cui la prima query cambia, «gli
+   * id vengono gia' da un posto sicuro» smette di essere vero senza che nessuno
+   * debba accorgersene. E' una cintura in piu', non una cintura provata: le due
+   * cose sono diverse e il commento non deve confonderle.
+   */
+  async listTags(userId: string, filter: ListTagsFilter): Promise<readonly TagCountRow[]> {
+    const gruppi = await this.#prisma.tagOnProcedure.groupBy({
+      by: ["tagId"],
+      where: { procedure: whereFor(userId, filter) },
+      _count: { procedureId: true },
+    });
+
+    if (gruppi.length === 0) {
+      return [];
+    }
+
+    const nomi = await this.#prisma.tag.findMany({
+      where: { userId, id: { in: gruppi.map((g) => g.tagId) } },
+      select: { id: true, nome: true },
+    });
+    const nomePerId = new Map(nomi.map((t) => [t.id, t.nome]));
+
+    return gruppi
+      .flatMap((g) => {
+        const nome = nomePerId.get(g.tagId);
+        // Un id senza nome non puo' succedere — la chiave esterna e' `Cascade` —
+        // ma scartarlo costa una riga e l'alternativa sarebbe una chip chiamata
+        // «undefined». Non e' una guardia su un caso possibile: e' il modo di
+        // non inventare un dato quando il tipo ammette che manchi.
+        return nome === undefined ? [] : [{ nome, conteggio: g._count.procedureId }];
+      })
+      .sort((a, b) => b.conteggio - a.conteggio || a.nome.localeCompare(b.nome, "it"));
   }
 
   async findById(userId: string, id: string): Promise<ProcedureDetailRow | null> {

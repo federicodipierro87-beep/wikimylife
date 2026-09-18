@@ -13,6 +13,7 @@ import {
   type EmbeddingProvider,
   type EmptyTrashResult,
   type ListProceduresQuery,
+  type ListTagsQuery,
   type ProcedureDetail,
   type ProcedureList,
   type ProcedureSummary,
@@ -21,6 +22,7 @@ import {
   type RedactionProvider,
   type RedactionReport,
   type StorageProvider,
+  type TagList,
   type UpdateProcedureBody,
 } from "@wikimylife/shared";
 import { AppError } from "../errors/AppError.js";
@@ -160,6 +162,7 @@ export function verificaVisibilita(risultante: {
 
 export interface ProceduresService {
   list(userId: string, query: ListProceduresQuery): Promise<ProcedureList>;
+  listTags(userId: string, query: ListTagsQuery): Promise<TagList>;
   find(userId: string, id: string): Promise<ProcedureDetail>;
   update(userId: string, id: string, patch: UpdateProcedureBody): Promise<ProcedureDetail>;
   archive(userId: string, id: string): Promise<ProcedureDetail>;
@@ -395,6 +398,21 @@ export function createProceduresService(deps: ProceduresServiceDeps): Procedures
         limit: query.limit,
         offset: query.offset,
       };
+    },
+
+    /**
+     * Nessuna regola qui, ed e' giusto cosi'.
+     *
+     * L'ordine, l'esclusione del cestino e l'esclusione delle categorie vuote
+     * stanno tutti dentro la query, dove si applicano alle righe invece che a
+     * una pagina di righe gia' lette: rifarli in memoria vorrebbe dire leggere
+     * tutto l'archivio per ordinarne venti nomi. Questo metodo esiste per la
+     * ragione per cui esistono gli altri — la rotta non parla col repository — e
+     * per tenere `clock` fuori da una risposta che non ha date dentro.
+     */
+    async listTags(userId: string, query: ListTagsQuery): Promise<TagList> {
+      const righe = await repo.listTags(userId, { scope: query.scope });
+      return { items: righe.map((r) => ({ nome: r.nome, conteggio: r.conteggio })) };
     },
 
     async find(userId: string, id: string): Promise<ProcedureDetail> {

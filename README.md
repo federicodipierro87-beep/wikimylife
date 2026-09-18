@@ -717,6 +717,63 @@ lunghezza non cambia e la scheda appena nata resterebbe invisibile. E non si
 distingue «nata» da «cancellata»: la lista si accorcia per due motivi soli, e
 tutti e due cambiano l'elenco sotto.
 
+**Le categorie sono i tag, esposti — e sono un indice, non un raggruppamento.**
+A schermo si legge «categoria»; nel database, nel contratto e in tutto il resto
+del codice la stessa cosa si chiama `tag`. Sono due parole per una cosa sola, e
+il prezzo è che chi cerca «categoria» nel codice non trova niente: i due capi del
+filo stanno in `packages/shared/src/api/tags.ts` e in `ListScreen.tsx`, e lo
+dicono.
+
+La riga delle chip **non** divide l'elenco in sezioni, e non è una
+semplificazione: non si può. Una scheda porta fino a trenta tag, quindi non
+appartiene a *una* categoria e non c'è una sezione in cui metterla; e le sezioni
+giuste si potrebbero disegnare solo avendo davanti tutte le schede, mentre qui ne
+arrivano venti per volta — un raggruppamento costruito su una pagina direbbe
+«Casa (3)» guardando tre schede su quaranta. Le alternative erano raggruppare nel
+client, che mentirebbe su ciò che non è ancora caricato e sarebbe una regola di
+dominio nel frontend, o una colonna `categoriaPrincipale`, che vuole una
+migrazione, un concetto che la §4 non produce e la domanda «chi la sceglie» su
+ogni scheda già esistente.
+
+Quindi le chip sono un **filtro**, e il numero dice quanto c'è dietro. Il
+conteggio lo fa il server sull'archivio intero con lo **stesso `whereFor`** della
+lista: se una chip dicesse «7» e la lista che apre ne mostrasse 6, l'utente non si
+fiderebbe più di nessuno dei due numeri, e riusando la stessa funzione il
+disaccordo diventa impossibile per costruzione — il cestino resta fuori da solo,
+perché `whereFor` senza `status` esclude già le archiviate. Il conteggio nasce da
+un `groupBy` sulle righe di legame e non da un `tag.findMany` con `_count`, per
+due ragioni indipendenti: i `Tag` rimasti orfani si tengono apposta, perché sono
+il vocabolario che il prompt della §4.2 propone al modello, e finirebbero sul filo
+con uno zero; e `_count` conterebbe anche le schede nel cestino.
+
+Vive su una rotta sua, `GET /api/tags` e non `GET /api/procedures/tags`: la
+seconda forma funziona solo se dichiarata *prima* di `router.get("/:id")`, cioè si
+reggerebbe sull'ordine delle righe di un file — spostata di dieci righe più in
+giù, «tags» diventerebbe un id di scheda. Nella query c'è solo `scope`, e non
+`status`: un parametro che entra nel contratto prima del gesto che lo consuma è
+solo un parametro che qualcuno interpreterà male, ed è la lezione già pagata su
+`revoke-one`. L'ordine è per conteggio decrescente e, a parità, per nome — senza
+il secondo criterio Postgres non promette niente e due chip si scambiano di posto
+fra un caricamento e l'altro, cioè una riga di comandi che si muove da sola.
+
+Le due file di chip sono due `role="tablist"` separati con la loro `aria-label`, e
+non una fila sola: per chi legge con uno screen reader due gruppi senza nome
+sarebbero una lista unica di otto voci in cui «Tutte» compare due volte senza che
+si capisca a cosa si riferisca nessuna delle due. La fila delle categorie non
+compare quando non c'è niente da filtrare — sarebbe un «Tutte» solitario, cioè un
+comando che non fa niente — e la «Tutte» che c'è è scritta a mano e non arriva dal
+server, perché senza non si tornerebbe indietro da una categoria se non
+ricaricando la pagina. Cambiare ambito lascia andare la categoria scelta: la fila
+si ricarica sul nuovo ambito, quindi una categoria che lì non esiste sparisce
+dalla riga, ma il filtro resterebbe applicato — si guarderebbe una lista vuota
+senza nessuna chip accesa e niente da premere per capire perché. Si perde «Casa»
+anche quando in Lavoro «Casa» c'è; si guadagna che ciò che è acceso a schermo e
+ciò che è nella query siano sempre la stessa cosa. E quando un vocale diventa
+scheda si ricaricano tutte e due le cose, non solo l'elenco: una scheda che nasce
+può portarsi dietro una categoria che non esisteva, o far salire di uno un
+conteggio già a schermo — cioè proprio il numero su cui questa schermata chiede di
+fidarsi.
+
 **La redazione parte con niente selezionato.** Partire con tutto spuntato avrebbe
 reso la schermata un pulsante «conferma» con del testo intorno, e il «una per
 una» della §9 sarebbe rimasto solo nella forma. Ogni proposta mostra il contesto
@@ -1708,7 +1765,9 @@ sappiamo. Dall'altra parte, sull'elenco, che il richiamo arrivi davvero a
 `listProcedures` — e che la pagina richiesta sia **la stessa**, con lo stesso
 ambito e lo stesso offset, perché un ricaricamento che riporta alla prima pagina
 sposterebbe sotto gli occhi di chi legge una lista che non aveva chiesto di
-muovere.
+muovere. E che a ricaricarsi siano tutte e due le cose, l'elenco e le categorie:
+ricaricare solo l'elenco lascerebbe le chip a raccontare l'archivio di prima, che
+è il numero su cui quella riga chiede di fidarsi.
 
 Del dettaglio, quattro punti su cinquecento righe. È la schermata più lunga
 dell'app e quasi tutto quello che contiene è un campo stampato accanto al suo
@@ -1799,6 +1858,46 @@ caso in più: che ci sia anche quando l'elenco è vuoto. Dentro il ramo che dise
 le schede — dove sta la paginazione, e dove sarebbe finito senza pensarci —
 sparirebbe proprio a chi ha archiviato tutto e sta cercando dove sia finito
 l'archivio, e «Qui non c'è ancora niente» diventerebbe l'ultima parola dell'app.
+
+Delle categorie, il numero e ciò che il numero apre. È una promessa scritta a
+schermo — «premimi e trovi sette schede» — e mantenerla dipende da due
+interrogazioni che devono restare d'accordo, quindi i casi la controllano su tutti
+e tre i piani. In memoria, che il conteggio sia quello di chi chiede e non
+dell'archivio di tutti, che il cestino non lo gonfi, che una categoria rimasta
+solo nel cestino non compaia affatto invece di comparire con uno zero, che
+l'ambito filtri e che senza ambito non filtri, che l'ordine sia per conteggio
+decrescente — i nomi dei casi sono scelti perché l'ordine giusto è il contrario
+dell'alfabeto, o un ordinamento qualunque passerebbe — e che a parità decida
+l'alfabeto, perché senza il secondo criterio due chip si scambiano di posto fra un
+caricamento e l'altro. Sul contratto del client, che il percorso sia `/api/tags`
+scritto per esteso, che l'ambito viaggi nella query e non in un corpo che una
+`GET` non porta, che senza ambito non parta nessun `?scope=undefined`, e che una
+risposta senza conteggio o con un conteggio scritto come stringa non passi — «7»
+di testo si ordinerebbe mettendo 10 prima di 9. Sulla schermata, che le chip
+compaiano col loro numero, che la fila non si disegni quando non c'è niente da
+filtrare, che premerne una la chieda al server e riporti alla prima pagina, che
+«Tutte» tolga il filtro invece di mandarne uno vuoto, e che cambiare ambito
+ricarichi anche le categorie e lasci andare quella scelta.
+
+E in fondo a tutto, il caso che tiene in piedi la decisione: contro Postgres vero,
+che il numero sulla chip sia lo stesso `total` che la lista restituisce filtrando
+per quella categoria. È l'unico modo di provare che il conteggio e l'elenco
+condividono davvero `whereFor` e non solo si assomigliano — la mutazione che
+toglie l'esclusione del cestino da una parte sola cade lì, e da nessun'altra
+parte. Accanto, le due cose che in memoria non esistono: che i `Tag` di un altro
+utente non si vedano, e che un tag rimasto orfano — che si tiene apposta, perché è
+il vocabolario del prompt — non finisca sul filo con uno zero.
+
+Di quel `userId` va detta una cosa che le mutazioni hanno costretto a scoprire.
+Nel repository compare in tutte e due le interrogazioni, e sembra la solita
+precauzione scritta due volte da mutare in tre modi. Mutandola in tre modi si vede
+che non lo è: toglierlo dal `groupBy` cade, toglierlo da tutti e due cade,
+toglierlo dalla sola lettura dei nomi **sopravvive** — ed è equivalente, perché
+quegli id arrivano già da righe filtrate per proprietario e un `Tag` appartiene a
+un utente solo. Non si è aggiunto un caso per coprirla: non c'è nessun difetto da
+descrivere. Si è corretto ciò che il commento prometteva, che diceva «nessun
+`WHERE` senza proprietario» lasciando credere che tutti e due stessero difendendo
+qualcosa. Uno difende; l'altro è la forma del file, e adesso lo dice.
 
 Del cestino, la conferma. È l'unica schermata da cui si perde qualcosa, e un
 `deleteProcedureForever` partito per sbaglio non si vede, non dà errore e non si
@@ -3440,8 +3539,11 @@ Non installate, e il perché:
   `@@unique([userId, nome])` in Postgres è comunque case-sensitive, quindi una
   dedup che ignorasse le maiuscole non sarebbe garantita dal database ma solo da
   una regola da ricordarsi. Il prezzo è che l'archivio può contenere due tag che
-  sullo schermo sembrano lo stesso. La cura non è qui: è far scegliere invece di
-  far riscrivere.
+  sullo schermo sembrano lo stesso — e da quando esiste la riga delle categorie si
+  vede: due chip quasi identiche, una accanto all'altra, che dividono in due
+  mucchi le schede che dovrebbero stare insieme, e nessuna delle due dice il
+  numero che l'utente si aspetta. La cura non è qui: è far scegliere invece di far
+  riscrivere.
 - **La ricerca pagina fino a cento risultati, e non oltre.** `offset` c'è ed è
   esatto, ma solo dentro la finestra che i due canali restituiscono: una scheda
   che non sta fra le prime cento né per testo né per vettori non compare a nessuna
@@ -3618,6 +3720,26 @@ Non installate, e il perché:
   Non è una modifica locale a questa sezione, ed è per questo che è scritta qui
   invece che fatta — ma il conto lo paga solo qui, perché è l'unica lista che si
   ricarica da sola sotto le mani di chi la guarda.
+- **Le categorie sono un indice travestito da gruppo: non se ne vedono mai due
+  insieme, e una scheda con cinque tag non ha una casa.** La riga delle chip
+  filtra, e i filtri sono mutuamente esclusivi: non si può chiedere «Casa *e*
+  Bollette», né vedere l'archivio diviso in scaffali con ogni scheda al suo posto.
+  Chi guarda una fila di chip però *vede* degli scaffali, perché è quello che una
+  fila di etichette con un numero accanto ha sempre significato altrove. La
+  distanza fra ciò che sembra e ciò che fa non è colmabile senza scegliere: un
+  raggruppamento vero vuole che ogni scheda abbia una categoria sola — cioè un
+  concetto che la §4 non produce e che qualcuno dovrebbe assegnare a mano a tutto
+  ciò che esiste già — oppure vuole tutte le schede in memoria, che è il contrario
+  della paginazione. Il residuo più piccolo e realistico è la selezione multipla:
+  il contratto oggi accetta un `tag` solo, e passare a molti significa decidere se
+  due categorie si sommano o si intersecano, che è una domanda con due risposte
+  ragionevoli e nessun modo di porla in una chip.
+- **Dalla lista non si filtra toccando la categoria sulla scheda**, perché sulla
+  scheda le categorie non ci sono affatto: l'elenco mostra titolo, ambito e meta, e
+  le chip stanno solo in cima. Quando ci saranno, non saranno comunque premibili:
+  `ProcedureCard` **è** un `<button>`, e un bottone dentro un bottone è HTML non
+  valido. Renderle premibili vorrebbe dire smontare la scheda-bottone e rifare la
+  navigazione con un `<div>`, perdendo la tastiera e il ruolo.
 - **«Per sempre» è vero per l'applicazione, non per il disco.** Dal cestino la
   scheda sparisce davvero — i figli con lei per il `Cascade`, i vocali con la
   loro trascrizione, i byte dell'audio dal bucket — ma è una `DELETE`, non una

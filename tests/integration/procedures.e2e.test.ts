@@ -14,6 +14,7 @@ import {
   recordingStateSchema,
   redactionReportSchema,
   searchResultSchema,
+  tagListSchema,
   type ProcedureDetail,
 } from "@wikimylife/shared";
 import { buildExtractionContract } from "@wikimylife/shared/testing";
@@ -227,6 +228,150 @@ describe("GET /api/procedures", () => {
     const res = await call(server, "GET", "/api/procedures?limit=5000", { accessToken: token });
 
     expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/tags
+// ---------------------------------------------------------------------------
+
+/**
+ * Le categorie, contate dal database vero.
+ *
+ * `procedures.service.test.ts` prova gia' le stesse regole in memoria. Qui si
+ * prova cio' che in memoria non esiste:
+ *
+ *  1. che il `groupBy` su `TagOnProcedure` sia filtrato per proprietario. In
+ *     memoria i tag non hanno una tabella propria, quindi non c'e' nemmeno un
+ *     posto in cui dimenticarsene. Il `userId` scritto anche nella seconda
+ *     interrogazione, quella dei nomi, **non e' provato da nessun caso e non lo
+ *     puo' essere**: gli id arrivano da righe gia' filtrate, quindi toglierlo di
+ *     li' non cambia nessuna risposta. E' una cintura in piu', dichiarata nel
+ *     commento del repository;
+ *  2. che un `Tag` rimasto senza schede non finisca sul filo con uno zero. In
+ *     memoria un tag orfano non e' nemmeno rappresentabile: nasce e muore con la
+ *     scheda. Qui invece sopravvive apposta, perche' e' il vocabolario che la
+ *     §4.2 mette dentro il prompt;
+ *  3. che il numero scritto sulla chip sia lo stesso numero di schede che la
+ *     chip apre — con la stessa `WHERE` calcolata da Postgres due volte, in due
+ *     interrogazioni diverse, sulle stesse righe.
+ */
+describe("GET /api/tags", () => {
+  it("richiede l'autenticazione", async () => {
+    const res = await call(server, "GET", "/api/tags");
+
+    expect(res.status).toBe(401);
+    expect(errorCode(res.body)).toBe("UNAUTHORIZED");
+  });
+
+  it("restituisce le categorie con quante schede ci sono dentro", async () => {
+    const token = await signup();
+    await creaScheda(token, { titolo: "Prima", tag: ["casa", "bollette"] });
+    await creaScheda(token, { titolo: "Seconda", tag: ["casa"] });
+
+    const res = await call(server, "GET", "/api/tags", { accessToken: token });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(tagListSchema.parse(res.body).items).toEqual([
+      { nome: "casa", conteggio: 2 },
+      { nome: "bollette", conteggio: 1 },
+    ]);
+  });
+
+  it("le categorie di un altro utente non si vedono", async () => {
+    const mio = await signup();
+    const altrui = await signup();
+    await creaScheda(altrui, { titolo: "Scheda di un altro", tag: ["casa"] });
+    await creaScheda(mio, { titolo: "Scheda mia", tag: ["ufficio"] });
+
+    const res = await call(server, "GET", "/api/tags", { accessToken: mio });
+
+    // Non «casa con zero» e non «casa con uno»: la categoria dell'altro non
+    // deve esistere affatto. A tenerla fuori e' il `userId` dentro `whereFor`,
+    // sul `groupBy`: toglierlo di li' si vede qui. Quello scritto sulla lettura
+    // dei nomi no — e' ridondante, e il repository lo dice.
+    expect(tagListSchema.parse(res.body).items).toEqual([{ nome: "ufficio", conteggio: 1 }]);
+  });
+
+  it("una scheda archiviata non conta nella sua categoria", async () => {
+    const token = await signup();
+    const viva = await creaScheda(token, { titolo: "Viva", tag: ["casa"] });
+    const cestinata = await creaScheda(token, { titolo: "Cestinata", tag: ["casa"] });
+
+    expect(viva.id).not.toBe(cestinata.id);
+    const cestino = await call(server, "DELETE", `/api/procedures/${cestinata.id}`, {
+      accessToken: token,
+    });
+    expect(cestino.status, JSON.stringify(cestino.body)).toBe(200);
+
+    const res = await call(server, "GET", "/api/tags", { accessToken: token });
+
+    expect(tagListSchema.parse(res.body).items).toEqual([{ nome: "casa", conteggio: 1 }]);
+  });
+
+  it("una categoria rimasta senza schede non compare, pur restando nel vocabolario", async () => {
+    // `PrismaProcedureRepository` non cancella i `Tag` diventati orfani: sono la
+    // lista di parole che il prompt §4.2 propone al modello, e buttarli via
+    // vorrebbe dire che il modello reinventa ogni volta le stesse categorie con
+    // nomi diversi. Il prezzo e' che sul filo delle chip ci potrebbero finire
+    // nomi con conteggio zero, e questo caso e' cio' che lo impedisce.
+    const token = await signup();
+    const scheda = await creaScheda(token, { titolo: "Cambio idea", tag: ["ufficio"] });
+
+    const patch = await call(server, "PATCH", `/api/procedures/${scheda.id}`, {
+      accessToken: token,
+      body: { tag: ["casa"] },
+    });
+    expect(patch.status, JSON.stringify(patch.body)).toBe(200);
+
+    const res = await call(server, "GET", "/api/tags", { accessToken: token });
+
+    expect(tagListSchema.parse(res.body).items).toEqual([{ nome: "casa", conteggio: 1 }]);
+  });
+
+  it("con un ambito, il conteggio e' quello dell'ambito", async () => {
+    const token = await signup();
+    await creaScheda(token, { titolo: "VPN", ambitoSuggerito: Scope.LAVORO, tag: ["it"] });
+    await creaScheda(token, { titolo: "Router", tag: ["it"] });
+
+    const conAmbito = await call(server, "GET", "/api/tags?scope=LAVORO", { accessToken: token });
+    const senza = await call(server, "GET", "/api/tags", { accessToken: token });
+
+    expect(tagListSchema.parse(conAmbito.body).items).toEqual([{ nome: "it", conteggio: 1 }]);
+    // L'errore opposto: un ambito applicato anche a chi non l'ha chiesto.
+    expect(tagListSchema.parse(senza.body).items).toEqual([{ nome: "it", conteggio: 2 }]);
+  });
+
+  it("il conteggio della chip e' lo stesso numero di schede che la chip apre", async () => {
+    // Il caso che tiene in piedi tutta la decisione: il conteggio e la lista
+    // nascono dallo stesso `whereFor`, quindi non possono essere in disaccordo.
+    // Se qualcuno li separa — anche solo dimenticando `status` di qua — la chip
+    // dira' «3» e aprira' due schede, e da quel momento l'utente non si fida
+    // piu' di nessuno dei due numeri.
+    const token = await signup();
+    await creaScheda(token, { titolo: "Una", tag: ["casa"] });
+    await creaScheda(token, { titolo: "Due", tag: ["casa"] });
+    const terza = await creaScheda(token, { titolo: "Tre", tag: ["casa"] });
+    await call(server, "DELETE", `/api/procedures/${terza.id}`, { accessToken: token });
+
+    const chip = await call(server, "GET", "/api/tags", { accessToken: token });
+    const aperta = await call(server, "GET", "/api/procedures?tag=casa", { accessToken: token });
+
+    const casa = tagListSchema.parse(chip.body).items.find((t) => t.nome === "casa");
+    expect(casa).toBeDefined();
+    const pagina = procedureListSchema.parse(aperta.body);
+
+    expect(casa?.conteggio).toBe(pagina.total);
+    expect(pagina.items).toHaveLength(2);
+  });
+
+  it("rifiuta un parametro sconosciuto invece di ignorarlo", async () => {
+    const token = await signup();
+
+    const res = await call(server, "GET", "/api/tags?ambito=LAVORO", { accessToken: token });
+
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
   });
 });
 

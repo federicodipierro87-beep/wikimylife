@@ -46,6 +46,7 @@ import {
   type RevokeSessionResponse,
   type SignupRequest,
 } from "./schemas.js";
+import { tagListSchema, type ListTagsQueryInput, type TagList } from "./tags.js";
 
 /**
  * Client HTTP tipizzato, costruito solo su `fetch`.
@@ -261,6 +262,15 @@ export interface ApiClient {
   getRecordingAudio(id: string): Promise<Blob>;
 
   listProcedures(query?: ListProceduresQueryInput): Promise<ProcedureList>;
+  /**
+   * Le categorie che esistono davvero, con quante schede ci sono dentro.
+   *
+   * Non e' un sottoinsieme di `listProcedures`: quella risponde una pagina di
+   * venti, e da venti schede non si sa quali categorie esistano — solo quali
+   * compaiono li'. La domanda «cosa c'e' nell'archivio» si fa al database, che
+   * e' l'unico a vederlo tutto.
+   */
+  listTags(query?: ListTagsQueryInput): Promise<TagList>;
   getProcedure(id: string): Promise<ProcedureDetail>;
   updateProcedure(id: string, patch: UpdateProcedureBodyInput): Promise<ProcedureDetail>;
   /**
@@ -783,6 +793,23 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
             offset: query.offset,
           })}`,
           schema: procedureListSchema,
+          auth: true,
+        },
+        true,
+      );
+    },
+
+    listTags(query: ListTagsQueryInput = {}): Promise<TagList> {
+      return send(
+        {
+          method: "GET",
+          // `/api/tags` e non `/api/procedures/tags`: quel percorso combacerebbe
+          // con `router.get("/:id")` a meno di dichiararlo prima nel file, e una
+          // rotta che funziona per l'ordine delle righe e' una rotta che smette
+          // di funzionare quando qualcuno riordina. Costa un file di rotte e un
+          // `app.use` in piu' per una rotta sola.
+          path: `/api/tags${queryString({ scope: query.scope })}`,
+          schema: tagListSchema,
           auth: true,
         },
         true,

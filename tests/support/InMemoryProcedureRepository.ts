@@ -3,11 +3,13 @@ import type {
   AddExecutionData,
   DeleteProcedureOutcome,
   ListProceduresFilter,
+  ListTagsFilter,
   ProcedureDetailRow,
   ProcedurePage,
   ProcedureRepository,
   ProcedureSummaryRow,
   ScoredProcedureId,
+  TagCountRow,
   UpdateProcedureData,
 } from "../../apps/api/src/services/ports/ProcedureRepository.js";
 
@@ -159,6 +161,46 @@ export class InMemoryProcedureRepository implements ProcedureRepository {
 
     const items: ProcedureSummaryRow[] = tutte.slice(filter.offset, filter.offset + filter.limit);
     return { items, total: tutte.length };
+  }
+
+  /**
+   * Gli stessi tre filtri di `list`, riscritti — ed e' proprio la ripetizione
+   * che li rende utili qui.
+   *
+   * Contro Prisma il conteggio e la lista condividono `whereFor`, quindi non
+   * possono essere in disaccordo nemmeno sbagliando. Quel controllo, in memoria,
+   * non ci sarebbe piu' se questo metodo chiamasse `this.list(...)`: il doppio
+   * direbbe «uguali» perche' sono lo stesso codice, non perche' la regola sia
+   * scritta bene. Scrivendoli due volte, un test che pinza il conteggio contro
+   * la lista qui trova davvero un disaccordo — e la mutazione che toglie il
+   * filtro dell'archiviata da uno solo dei due punti cade invece di
+   * sopravvivere.
+   */
+  async listTags(userId: string, filter: ListTagsFilter): Promise<readonly TagCountRow[]> {
+    const conteggi = new Map<string, number>();
+
+    for (const r of this.#rows.values()) {
+      if (this.#owners.get(r.id) !== userId) {
+        continue;
+      }
+      if (r.status === CardStatus.ARCHIVIATA) {
+        continue;
+      }
+      if (filter.scope !== undefined && r.scope !== filter.scope) {
+        continue;
+      }
+      // `new Set`: una scheda che avesse per sbaglio due volte la stessa
+      // categoria conterebbe due, e il numero della chip non tornerebbe con le
+      // schede che apre. Contro il database non puo' succedere — c'e'
+      // `@@id([procedureId, tagId])` — ma qui le righe le scrive un seed.
+      for (const nome of new Set(r.tag)) {
+        conteggi.set(nome, (conteggi.get(nome) ?? 0) + 1);
+      }
+    }
+
+    return [...conteggi]
+      .map(([nome, conteggio]) => ({ nome, conteggio }))
+      .sort((a, b) => b.conteggio - a.conteggio || a.nome.localeCompare(b.nome, "it"));
   }
 
   async findById(userId: string, id: string): Promise<ProcedureDetailRow | null> {

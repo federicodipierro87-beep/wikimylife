@@ -4,6 +4,7 @@ import {
   createApiClient,
   emptyTrashQuerySchema,
   listProceduresQuerySchema,
+  listTagsQuerySchema,
   searchQuerySchema,
   type AuthSession,
   type FetchImpl,
@@ -592,6 +593,129 @@ describe("query string — nessun parametro si perde per strada", () => {
     expect(parametriDi(calls[0]?.url ?? "")).toEqual(
       Object.keys(listProceduresQuerySchema.shape).sort(),
     );
+  });
+
+  it("manda ogni campo di listTagsQuerySchema", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      "GET /api/tags?scope=LAVORO": () => ({ status: 200, payload: { items: [] } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await client.listTags({ scope: "LAVORO" });
+
+    expect(parametriDi(calls[0]?.url ?? "")).toEqual(
+      Object.keys(listTagsQuerySchema.shape).sort(),
+    );
+  });
+});
+
+/**
+ * Le categorie, che sono la terza rotta con una query string.
+ *
+ * Il percorso conta piu' del solito: `/api/tags` e non
+ * `/api/procedures/tags`. La seconda forma sembrerebbe piu' ordinata e
+ * funzionerebbe, ma solo finche' resta dichiarata *prima* di
+ * `router.get("/:id")` dentro `procedures.routes.ts` — cioe' si reggerebbe
+ * sull'ordine delle righe di un file. Spostata di dieci righe piu' in giu',
+ * «tags» diventerebbe un id di scheda e la risposta un 404. Qui il percorso e'
+ * scritto per esteso apposta: se qualcuno lo cambia, questo caso lo dice.
+ */
+describe("listTags — dove si chiedono le categorie", () => {
+  it("le chiede in GET, a /api/tags, e non tocca le schede", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      "GET /api/tags": () => ({
+        status: 200,
+        payload: { items: [{ nome: "casa", conteggio: 7 }] },
+      }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(client.listTags()).resolves.toEqual({
+      items: [{ nome: "casa", conteggio: 7 }],
+    });
+    expect(calls[0]?.method).toBe("GET");
+    expect(calls[0]?.url).toBe(`${BASE}/api/tags`);
+  });
+
+  it("senza ambito la query e' vuota, e non «?scope=undefined»", async () => {
+    // `queryString` salta i campi non definiti: se non lo facesse, il server
+    // riceverebbe la stringa «undefined» dentro un enum e risponderebbe 400 a
+    // chi non ha chiesto nessun filtro, cioe' a tutti.
+    const { fetchImpl, calls } = stubFetch({
+      "GET /api/tags": () => ({ status: 200, payload: { items: [] } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await client.listTags({});
+
+    expect(calls[0]?.url).not.toContain("?");
+  });
+
+  it("l'ambito viaggia nella query e non nel corpo", async () => {
+    // Una GET con un corpo non arriva: `fetch` lo scarta, i proxy pure. Il
+    // filtro sparirebbe in silenzio e la riga delle chip mostrerebbe le
+    // categorie di tutto l'archivio dicendo di mostrare quelle di «Lavoro».
+    const { fetchImpl, calls } = stubFetch({
+      "GET /api/tags?scope=PERSONALE": () => ({ status: 200, payload: { items: [] } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await client.listTags({ scope: "PERSONALE" });
+
+    expect(calls[0]?.url).toBe(`${BASE}/api/tags?scope=PERSONALE`);
+    expect(calls[0]?.body).toBeUndefined();
+  });
+
+  it("una categoria senza conteggio non passa il contratto", async () => {
+    // Il conteggio e' l'unica ragione per cui questa rotta esiste: i soli nomi
+    // si potrebbero gia' raccogliere dalle schede. Un corpo che lo dimentica
+    // diventerebbe `undefined` dentro un `String()` e la chip direbbe
+    // «Casa undefined» invece di rompersi qui.
+    const { fetchImpl } = stubFetch({
+      "GET /api/tags": () => ({ status: 200, payload: { items: [{ nome: "casa" }] } }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(client.listTags()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("un conteggio che non e' un numero intero non passa il contratto", async () => {
+    // L'errore opposto del caso sopra: un campo presente ma della forma
+    // sbagliata. «7» scritto come stringa passerebbe un controllo di presenza e
+    // si ordinerebbe come testo, mettendo 10 prima di 9.
+    const { fetchImpl } = stubFetch({
+      "GET /api/tags": () => ({
+        status: 200,
+        payload: { items: [{ nome: "casa", conteggio: "7" }] },
+      }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await expect(client.listTags()).rejects.toBeInstanceOf(ApiError);
   });
 });
 

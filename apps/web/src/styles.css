@@ -270,6 +270,13 @@ button:focus-visible {
   color: var(--text);
 }
 
+/* Il numero dentro una chip di categoria. Piu' piccolo e piu' smorto del nome:
+   la cosa da leggere e' «Casa», il «7» serve solo a decidere fra due chip. */
+.chip__conteggio {
+  font-size: 0.8em;
+  opacity: 0.7;
+}
+
 .elenco {
   list-style: none;
   margin: 0;

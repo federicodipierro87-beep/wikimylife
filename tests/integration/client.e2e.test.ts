@@ -588,6 +588,16 @@ describe("il ponte: dalla voce alla scheda e ritorno", () => {
     expect(scheda.titolo).toBe("Rinnovare il passaporto elettronico");
     expect(scheda.steps).toHaveLength(2);
 
+    // Le categorie, che sul filo sono i tag della scheda contati dal server. Il
+    // numero e' il punto: la riga delle chip promette che premendo «burocrazia»
+    // si trova una scheda, e qui quella promessa attraversa HTTP invece di
+    // essere un `groupBy` provato contro se stesso.
+    const categorie = await client.listTags();
+    expect(categorie.items).toEqual([
+      { nome: "burocrazia", conteggio: 1 },
+      { nome: "certificati", conteggio: 1 },
+    ]);
+
     const aggiornata = await client.updateProcedure(idScheda, { status: CardStatus.COMPLETA });
     expect(aggiornata.status).toBe(CardStatus.COMPLETA);
 
@@ -626,6 +636,12 @@ describe("il ponte: dalla voce alla scheda e ritorno", () => {
 
     const archiviata = await client.archiveProcedure(idScheda);
     expect(archiviata.status).toBe(CardStatus.ARCHIVIATA);
+
+    // E le categorie si svuotano con lei. E' l'errore opposto del controllo di
+    // sopra, ed e' il solo posto in cui si vede che `listTags` e `listProcedures`
+    // condividono davvero lo stesso filtro sul cestino: se `listTags` lo
+    // dimenticasse, qui resterebbero due chip che non aprono niente.
+    expect((await client.listTags()).items).toEqual([]);
 
     // Solo su una `ARCHIVIATA`: e' l'unica difesa che il server ha contro una
     // cancellazione definitiva partita per sbaglio.
@@ -991,7 +1007,7 @@ describe("il ponte: guardia", () => {
     // del client da oggetto letterale a classe, che e' una riscrittura
     // plausibile — renderebbe la guardia sopra verde per sempre, e nessuno se ne
     // accorgerebbe perche' i test verdi non si rileggono.
-    expect(tuttiIMetodi()).toHaveLength(28);
+    expect(tuttiIMetodi()).toHaveLength(29);
     expect(attraversati.size).toBeGreaterThan(0);
   });
 });

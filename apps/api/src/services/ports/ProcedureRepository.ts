@@ -138,6 +138,28 @@ export interface ProcedurePage {
 }
 
 // ---------------------------------------------------------------------------
+// Categorie
+// ---------------------------------------------------------------------------
+
+/**
+ * Lo stesso `scope` della lista, e apposta.
+ *
+ * E' un sottoinsieme di `ListProceduresFilter` e non un tipo indipendente:
+ * `listTags` conta cio' che `list` mostrerebbe, quindi i due filtri devono
+ * essere la stessa cosa o il conteggio di una chip e la lista che apre
+ * finirebbero per rispondere a due domande diverse. Mancano `limit` e `offset`
+ * perche' le categorie non si paginano — sono poche per costruzione, e una
+ * seconda pagina di un indice sarebbe un indice che non indicizza.
+ */
+export type ListTagsFilter = Pick<ListProceduresFilter, "scope">;
+
+export interface TagCountRow {
+  readonly nome: string;
+  /** Sempre almeno uno: una categoria con zero schede non esce da qui. */
+  readonly conteggio: number;
+}
+
+// ---------------------------------------------------------------------------
 // Modifica
 // ---------------------------------------------------------------------------
 
@@ -250,6 +272,22 @@ export interface ScoredProcedureId {
 
 export interface ProcedureRepository {
   list(userId: string, filter: ListProceduresFilter): Promise<ProcedurePage>;
+
+  /**
+   * Quali categorie esistono, e quante schede ci sono sotto ciascuna.
+   *
+   * Ordinate per conteggio decrescente e, a parita', per nome crescente. Il
+   * secondo criterio non e' un vezzo: senza, l'ordine fra due categorie con lo
+   * stesso numero non lo promette nessuno, e due chip si scambierebbero di
+   * posto fra un caricamento e l'altro — un'interfaccia che si muove da sola
+   * sembra rotta anche quando e' corretta.
+   *
+   * Le categorie senza nessuna scheda **non** compaiono. I `Tag` orfani restano
+   * in tabella apposta (si veda `update` in `PrismaProcedureRepository`), perche'
+   * sono il vocabolario che la §4.2 rimanda dentro il prompt: ma una chip con
+   * scritto «0» e' un filo che non apre niente.
+   */
+  listTags(userId: string, filter: ListTagsFilter): Promise<readonly TagCountRow[]>;
 
   findById(userId: string, id: string): Promise<ProcedureDetailRow | null>;
 

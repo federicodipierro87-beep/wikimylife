@@ -109,16 +109,24 @@ Il caso da cui viene ciascuna sta in `docs/diario.md`.
 
 ### Sulle mutazioni
 
-- **Una mutazione di controllo in ogni `.muta.json`**, che cambia *solo un
-  commento* e quindi **deve sopravvivere**. Senza, «dodici cadute su dodici» è
-  indistinguibile da «dodici volte lo stesso guasto del runner» — è già successo,
-  con un `UnicodeDecodeError` che faceva fallire il comando sempre.
+- **Una mutazione di controllo per ogni comando diverso** che compare nel
+  `.muta.json`, non una per file: cambia *solo un commento* e quindi **deve
+  sopravvivere**. Senza, «dodici cadute su dodici» è indistinguibile da «dodici
+  volte lo stesso guasto del runner» — è già successo **due volte**: un
+  `UnicodeDecodeError` che faceva fallire il comando sempre, e un prefisso
+  `VAR="x" comando` dato a `subprocess(shell=True)`, che su Windows è `cmd.exe` e
+  non è sintassi valida. La seconda l'ha trovata un controllo aggiunto *dopo* aver
+  già riportato ventisei cadute, sette delle quali false. L'ambiente si passa da
+  Python; e conviene che il runner tratti «fallito senza che nessun test sia
+  girato» come guasto e non come caduta.
 - **Una precauzione scritta due volte va mutata in tre modi**: tutti e due i
   punti insieme, e poi **uno per volta**. La congiunta da sola non basta (cade
   anche se un solo punto è pinzato, e fa da copertura all'altro); le singole da
   sole neanche (una può essere equivalente). Vale per i filtri ripetuti fra Prisma
   e doppio in memoria, per lo `userId` scritto in due interrogazioni, per i
-  messaggi costruiti in due rami gemelli.
+  messaggi costruiti in due rami gemelli. In `listTags` le tre mutazioni hanno
+  dato esattamente il caso previsto dalla regola: due cadute e una equivalente,
+  dichiarata invece che coperta.
 - **`.muta.json` accetta una lista di sostituzioni per mutazione**, con un
   conteggio atteso per ciascuna. Serve per le mutazioni che altrimenti non
   compilerebbero (`<button>` → `<div>` vuole anche il tag di chiusura) e per
@@ -207,9 +215,8 @@ rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
 deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
-**Stato all'ultimo commit** (`cfe5351`): typecheck verde sui quattro passaggi,
-**1064 test** unit + web su 47 file, **381** d'integrazione su 14 file, albero
-pulito.
+**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1110 test**
+unit + web su 48 file, **392** d'integrazione su 14 file, albero pulito.
 
 ### Cosa gira, e dove
 

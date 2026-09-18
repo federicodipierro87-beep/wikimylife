@@ -430,6 +430,136 @@ describe("list — il soft delete visto da fuori", () => {
   });
 });
 
+/**
+ * Le categorie, che sono i tag contati.
+ *
+ * Il numero dentro una chip e' una promessa: «premimi e trovi sette schede». La
+ * promessa si mantiene per costruzione, perche' il conteggio nasce dallo stesso
+ * filtro della lista — ma «per costruzione» e' una frase, e questi casi sono il
+ * modo di sapere se e' ancora vera. Ognuno di loro guarda il conteggio *e* il
+ * fatto che il filtro corrispondente escluda davvero qualcosa.
+ *
+ * Il caso «una categoria orfana non compare» non sta qui e non ci puo' stare: in
+ * memoria i tag non hanno una vita propria, vivono attaccati alle schede, quindi
+ * una categoria rimasta senza schede non e' rappresentabile. Sta
+ * nell'integrazione, dove la riga `Tag` sopravvive apposta alla scheda per
+ * restare nel vocabolario del prompt §4.2.
+ */
+describe("listTags — il numero che la chip promette", () => {
+  it("conta solo le schede di chi chiede", async () => {
+    h.repo.seed({ userId: USER, tag: ["casa"] });
+    h.repo.seed({ userId: ALTRO, tag: ["casa"] });
+
+    const { items } = await h.service.listTags(USER, {});
+
+    // Non «due»: la scheda dell'altro non deve nemmeno sollevare il conteggio di
+    // una categoria che per caso si chiama uguale.
+    expect(items).toEqual([{ nome: "casa", conteggio: 1 }]);
+  });
+
+  it("una categoria che sta solo su schede di altri non compare affatto", async () => {
+    // L'errore opposto del caso sopra: un filtro applicato al conteggio ma non
+    // all'elenco dei nomi lascerebbe passare la chip con lo zero.
+    h.repo.seed({ userId: ALTRO, tag: ["ufficio"] });
+
+    await expect(h.service.listTags(USER, {})).resolves.toEqual({ items: [] });
+  });
+
+  it("il cestino non gonfia il conteggio", async () => {
+    h.repo.seed({ userId: USER, tag: ["casa"], status: CardStatus.COMPLETA });
+    h.repo.seed({ userId: USER, tag: ["casa"], status: CardStatus.ARCHIVIATA });
+
+    const { items } = await h.service.listTags(USER, {});
+
+    // Se dicesse «2», premendo la chip se ne vedrebbe una: il cestino e' escluso
+    // dalla lista, quindi dev'essere escluso anche di qua.
+    expect(items).toEqual([{ nome: "casa", conteggio: 1 }]);
+  });
+
+  it("una categoria rimasta solo nel cestino non compare", async () => {
+    h.repo.seed({ userId: USER, tag: ["ufficio"], status: CardStatus.ARCHIVIATA });
+
+    await expect(h.service.listTags(USER, {})).resolves.toEqual({ items: [] });
+  });
+
+  it("con un ambito, il conteggio e' quello dell'ambito", async () => {
+    h.repo.seed({ userId: USER, tag: ["casa"], scope: Scope.PERSONALE });
+    h.repo.seed({ userId: USER, tag: ["casa"], scope: Scope.PERSONALE });
+    h.repo.seed({ userId: USER, tag: ["casa"], scope: Scope.LAVORO });
+
+    const { items } = await h.service.listTags(USER, { scope: Scope.PERSONALE });
+
+    expect(items).toEqual([{ nome: "casa", conteggio: 2 }]);
+  });
+
+  it("senza ambito le conta tutte", async () => {
+    // L'errore opposto: un filtro di ambito applicato anche quando nessuno l'ha
+    // chiesto farebbe sparire meta' archivio dalla riga delle chip.
+    h.repo.seed({ userId: USER, tag: ["casa"], scope: Scope.PERSONALE });
+    h.repo.seed({ userId: USER, tag: ["casa"], scope: Scope.LAVORO });
+
+    const { items } = await h.service.listTags(USER, {});
+
+    expect(items).toEqual([{ nome: "casa", conteggio: 2 }]);
+  });
+
+  it("esce prima la categoria con piu' schede dentro", async () => {
+    // I nomi sono scelti perche' l'ordine giusto e' quello *contrario*
+    // all'alfabeto: con «casa» in testa non si distinguerebbe un ordinamento per
+    // conteggio da nessun ordinamento.
+    h.repo.seed({ userId: USER, tag: ["ufficio"] });
+    h.repo.seed({ userId: USER, tag: ["ufficio"] });
+    h.repo.seed({ userId: USER, tag: ["casa"] });
+
+    const { items } = await h.service.listTags(USER, {});
+
+    expect(items.map((t) => t.nome)).toEqual(["ufficio", "casa"]);
+  });
+
+  it("a parita' di schede decide l'alfabeto, invece di lasciar decidere al caso", async () => {
+    // Senza il secondo criterio Postgres non promette nessun ordine, e due chip
+    // con lo stesso numero si scambiano di posto fra un caricamento e l'altro:
+    // una riga di comandi che si muove da sola sembra rotta.
+    h.repo.seed({ userId: USER, tag: ["ufficio"] });
+    h.repo.seed({ userId: USER, tag: ["casa"] });
+
+    const { items } = await h.service.listTags(USER, {});
+
+    expect(items.map((t) => t.nome)).toEqual(["casa", "ufficio"]);
+  });
+
+  it("una scheda con due categorie conta in tutte e due", async () => {
+    // E' il prezzo dichiarato dell'indice: una scheda non ha una casa sola,
+    // quindi la somma dei conteggi non e' il numero di schede.
+    h.repo.seed({ userId: USER, tag: ["casa", "ufficio"] });
+
+    const { items } = await h.service.listTags(USER, {});
+
+    expect(items).toEqual([
+      { nome: "casa", conteggio: 1 },
+      { nome: "ufficio", conteggio: 1 },
+    ]);
+  });
+
+  it("il conteggio della chip e' lo stesso numero di schede che la chip apre", async () => {
+    // Il caso che tiene insieme le due rotte. Se un giorno il conteggio e la
+    // lista smettessero di condividere il filtro, qui si vedrebbe come un
+    // disaccordo fra due numeri, che e' il modo in cui lo vedrebbe l'utente.
+    h.repo.seed({ userId: USER, tag: ["casa"], status: CardStatus.COMPLETA });
+    h.repo.seed({ userId: USER, tag: ["casa"], status: CardStatus.COMPLETA });
+    h.repo.seed({ userId: USER, tag: ["casa"], status: CardStatus.ARCHIVIATA });
+    h.repo.seed({ userId: USER, tag: ["ufficio"] });
+
+    const { items } = await h.service.listTags(USER, {});
+    const casa = items.find((t) => t.nome === "casa");
+    expect(casa).toBeDefined();
+
+    const pagina = await h.service.list(USER, { ...LISTA, tag: "casa" });
+
+    expect(casa?.conteggio).toBe(pagina.total);
+  });
+});
+
 describe("proprieta' della risorsa", () => {
   it("risponde 404, non 403, sulla scheda di un altro", async () => {
     const row = h.repo.seed({ userId: ALTRO });

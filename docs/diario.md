@@ -582,3 +582,125 @@ Sul metodo, il caso concreto dietro due regole che ora stanno in `CLAUDE.md`:
   dodici cadute su dodici mentre il runner stampava `UnicodeDecodeError`, e
   dodici su dodici è esattamente ciò che si vedrebbe se il comando fallisse
   *sempre* per un motivo suo.
+
+---
+
+## Giro 4 — i tag duplicati, l'elenco che si accorge, le categorie
+
+Tre commit su quattro di un piano che ne prevedeva cinque; il quinto — il
+microfono su iOS — resta fermo, perché comincia con una misura da fare su un
+iPhone vero e quella la fa l'utente.
+
+### `2c184ba` — i tag duplicati fanno morire il salvataggio
+
+Difetto **dedotto leggendo, non osservato**: `TagOnProcedure` ha
+`@@id([procedureId, tagId])`, l'`upsert` per nome risolve due nomi uguali nello
+stesso `tag.id`, e il `createMany` successivo viola la chiave composta. P2002,
+cioè 500 in faccia a chi ha premuto salva; e sulla pipeline, un vocale che resta
+`BOZZA_AUDIO` per sempre perché il modello ha proposto `["casa", "casa"]`.
+Nessuno dei tre punti in cui si poteva deduplicare lo faceva.
+
+I due casi d'integrazione sono stati scritti **prima** della correzione e hanno
+risposto 500 e `persistenza.fallita`. Se fossero passati subito, la diagnosi era
+sbagliata e andava detto.
+
+Una funzione sola, `tagUnici`, chiamata da tutte e due le vie di scrittura. Non
+un `.transform` di zod: `extractionContractSchema` è il contratto §4 e deve dire
+alla lettera cosa ha risposto il modello. Il vincolo del database non si rilassa —
+è lui che ha trovato il difetto.
+
+### `399d9a8` — l'elenco si ricarica quando un vocale diventa scheda
+
+`listPending` filtra `status: { not: ESTRATTO }`, quindi l'istante in cui nasce
+una scheda è l'istante in cui un id lascia la lista dei sospesi. Da lì in giù non
+succedeva niente: il polling si spegneva perché non c'era più nulla in movimento,
+e `ListScreen` aveva chiesto la sua pagina una volta sola al montaggio. Il vocale
+spariva e la scheda non compariva — proprio mentre si stava guardando.
+
+Le decisioni, e i loro prezzi:
+
+- **L'evento è «un id se n'è andato», non «è passato del tempo».** Far ripollare
+  l'elenco da sé sarebbe una richiesta paginata ogni cinque secondi per tutta la
+  sessione. Prezzo: se la scheda nascesse con `PendingRecordings` non montata —
+  oggi non succede mai — nessuno ricaricherebbe.
+- **Confronto di id, non di lunghezza.** Uno che esce e uno che entra nello stesso
+  giro lascia la lunghezza invariata, e la scheda nuova resterebbe invisibile:
+  cioè esattamente il difetto da togliere.
+- **Prop obbligatoria.** `onSparita?` avrebbe tenuto compilanti i sette montaggi
+  esistenti, ma una prop facoltativa è una porta aperta. Prezzo: sette righe di
+  test toccate.
+
+Un difetto **trovato progettando**, scritto nei difetti noti e non corretto qui:
+`ricarica()` di `useAsync` riporta lo stato ad `attesa`, e la sezione dei sospesi
+restituisce `null` quando non è `pronto` — quindi si smonta e rimonta a ogni tick
+di cinque secondi, e la conferma di «Elimina» su un vocale sospeso sparisce da
+sola. La cura sta in `useAsync`, che lo montano dodici schermate: non si infila di
+straforo in un commit che parla d'altro.
+
+### Le categorie: `GET /api/tags` e l'indice in dashboard
+
+La tensione dichiarata prima del codice: una scheda porta fino a trenta tag,
+quindi non appartiene a *una* categoria; e le sezioni giuste si disegnerebbero
+solo avendo davanti tutte le schede, mentre ne arrivano venti per volta. Quindi
+**non un raggruppamento: un indice.** Le chip filtrano la lista già paginata dal
+server, e il numero dice quanto c'è dietro.
+
+Scartate: raggruppare nel client (mentirebbe su ciò che non è caricato, e sarebbe
+una regola di dominio nel frontend); una colonna `categoriaPrincipale` (una
+migrazione, un concetto che la §4 non produce, e la domanda «chi la sceglie» su
+ogni scheda già esistente).
+
+Le decisioni che è servito difendere:
+
+- **Lo stesso `whereFor` per il conteggio e per la lista.** Se una chip dicesse
+  «7» e ne aprisse 6, l'utente non si fiderebbe più di nessuno dei due numeri.
+  Riusando la stessa funzione il disaccordo diventa impossibile per costruzione,
+  e il cestino resta fuori da solo. La mutazione che separa i due `WHERE` cade
+  **solo** sul caso d'integrazione che li confronta.
+- **`groupBy` sui legami, non `tag.findMany` con `_count`.** Due ragioni
+  indipendenti, e la seconda è emersa leggendo il codice e non dal piano: i `Tag`
+  orfani si tengono apposta (vocabolario del prompt §4.2) e finirebbero sul filo
+  con uno zero; e `_count` conta tutte le associazioni, cestino compreso.
+- **Router suo a `/api/tags`.** `procedures.routes.ts` dichiara
+  `router.get("/:id")`: `GET /api/procedures/tags` funzionerebbe solo se
+  dichiarata prima, cioè si reggerebbe sull'ordine delle righe di un file.
+- **Niente `status` nella query.** Lezione di `revoke-one`: un parametro che gira
+  nel contratto prima del gesto che lo consuma è un parametro che qualcuno
+  interpreterà male.
+- **Cambiare ambito lascia andare la categoria.** Non era nel piano. La fila si
+  ricarica sul nuovo ambito, quindi una categoria che lì non esiste sparisce dalla
+  riga — ma il filtro resterebbe applicato: lista vuota, nessuna chip accesa,
+  niente da premere per capire perché. Prezzo: si perde «Casa» anche quando in
+  Lavoro «Casa» c'è.
+
+Il doppio in memoria **riscrive i tre filtri invece di chiamare `this.list`**,
+apposta: delegando, il caso che confronta il conteggio con ciò che la chip apre
+sarebbe stato vero per costruzione anche in memoria, cioè non avrebbe pinzato
+niente.
+
+### Sul metodo, due cose che questo giro ha insegnato
+
+**La mutazione di controllo serve per ogni comando, non per ogni file.** Il primo
+giro di mutazioni ha dato 26 cadute su 27 con l'unico controllo vivo, e sembrava
+un risultato pulito. Il controllo però girava il comando *unit*; aggiungendone uno
+sul comando d'integrazione, quello è **caduto** — e la causa era che il prefisso
+`VAR="x" comando` passato a `subprocess(shell=True)` su Windows finisce in
+`cmd.exe`, dove non è sintassi valida. Il comando non partiva affatto: sette
+mutazioni «cadute» non avevano mai fatto girare un test. È la stessa lezione
+dell'`UnicodeDecodeError`, ripetuta in un punto in cui sembrava già imparata.
+Il runner adesso distingue «fallito» da «fallito senza che nessun test sia
+girato».
+
+**Una precauzione scritta due volte, e la terza mutazione che dà ragione alla
+regola.** `userId` compare in tutte e due le interrogazioni di `listTags`.
+Mutandola nei tre modi previsti: toglierla dal `groupBy` cade, toglierla da tutti
+e due cade, toglierla dalla sola lettura dei nomi **sopravvive**. Ed è
+equivalente: gli id arrivano da righe già filtrate per proprietario, e un `Tag`
+appartiene a un utente solo. Non si è aggiunto un caso per coprirla — non c'è
+nessun difetto da descrivere. Si è corretto il commento, che dicendo «nessun
+`WHERE` senza proprietario» lasciava credere che tutti e due stessero difendendo
+qualcosa.
+
+Da **1064** test unit + web su 47 file a **1110** su 48, e da **381**
+d'integrazione a **392**. Ventinove mutazioni sul solo commit delle categorie:
+26 cadute, due controlli vivi come devono, una equivalente dichiarata.

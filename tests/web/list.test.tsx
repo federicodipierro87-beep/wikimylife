@@ -1,12 +1,14 @@
 import type {
   ApiClient,
   ListProceduresQueryInput,
+  ListTagsQueryInput,
   ProcedureList,
   ProcedureSummary,
   RecordingState,
+  TagList,
 } from "@wikimylife/shared";
 import { ApiError, PROCEDURE_PAGE_SIZE } from "@wikimylife/shared";
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toHash } from "../../apps/web/src/routes";
@@ -53,19 +55,50 @@ function ultima<T>(xs: readonly T[]): T {
   return x;
 }
 
-function clienteElenco(rispondi: (q: ListProceduresQueryInput) => ProcedureList): {
+/**
+ * `categorie` ha un valore predefinito vuoto, e non per pigrizia.
+ *
+ * Un archivio senza nessun tag non disegna la seconda fila di chip, quindi i
+ * casi che parlano di ambito, di pagine e di porte restano davanti alla
+ * schermata che avevano prima: se dovessero dichiarare delle categorie di cui
+ * non gliene importa niente, la fila comparirebbe e ogni ricerca per ruolo
+ * `tab` troverebbe il doppio delle voci — a partire da «Tutte», che nelle due
+ * file c'e' due volte.
+ */
+function clienteElenco(
+  rispondi: (q: ListProceduresQueryInput) => ProcedureList,
+  categorie: (q: ListTagsQueryInput) => TagList = () => ({ items: [] }),
+): {
   client: ApiClient;
   richieste: ListProceduresQueryInput[];
+  richiesteTag: ListTagsQueryInput[];
 } {
   const richieste: ListProceduresQueryInput[] = [];
+  const richiesteTag: ListTagsQueryInput[] = [];
   const client = creaClienteFinto({
     listPendingRecordings: () => Promise.resolve({ items: [] }),
     listProcedures: (query = {}) => {
       richieste.push(query);
       return Promise.resolve(rispondi(query));
     },
+    listTags: (query = {}) => {
+      richiesteTag.push(query);
+      return Promise.resolve(categorie(query));
+    },
   });
-  return { client, richieste };
+  return { client, richieste, richiesteTag };
+}
+
+/**
+ * Una delle due file di chip, per nome.
+ *
+ * Senza, «Tutte» e' ambigua: c'e' negli ambiti e c'e' nelle categorie, e
+ * `screen.getByRole("tab", { name: "Tutte" })` con tutte e due le file a schermo
+ * fallisce per troppi risultati — oppure, peggio, un `queryBy` trova quella
+ * sbagliata e il caso passa guardando l'altra fila.
+ */
+function fila(etichetta: string): HTMLElement {
+  return screen.getByRole("tablist", { name: etichetta });
 }
 
 /**
@@ -171,6 +204,188 @@ describe("ListScreen: il filtro di ambito", () => {
   });
 });
 
+/**
+ * Le categorie, che a schermo sono chip e nel contratto sono tag.
+ *
+ * Il guasto da cui nascono questi casi non e' una schermata rotta ma una
+ * schermata che mente: una chip dice «Casa 7» e apre sei schede, oppure dice
+ * «Casa» e non filtra niente, oppure filtra e resta spenta. Sono tutte cose che
+ * si vedono solo contando, e chi guarda non conta.
+ *
+ * L'altra meta' sta sull'indice: quando la fila delle categorie si ricarica e
+ * quando no. Sbagliare in eccesso non da' nessun sintomo — solo una richiesta in
+ * piu' a ogni tocco — mentre sbagliare per difetto lascia a schermo il conteggio
+ * di un minuto fa, cioe' il numero su cui la schermata chiede di fidarsi.
+ */
+describe("ListScreen: le categorie", () => {
+  const DUE_CATEGORIE: TagList = {
+    items: [
+      { nome: "Casa", conteggio: 7 },
+      { nome: "Ufficio", conteggio: 2 },
+    ],
+  };
+
+  it("compaiono come chip, e ognuna dice quante schede ci sono dentro", async () => {
+    const { client } = clienteElenco(archivioDa45, () => DUE_CATEGORIE);
+
+    montaConApi(client, <ListScreen />);
+    await screen.findByText("Procedura 1");
+
+    const categorie = fila("Categoria");
+    // Il numero sta nel nome accessibile della chip e non solo in un attributo:
+    // una fila di nomi nudi non dice quale valga la pena di premere, e quella
+    // con una scheda sola si presenta identica a quella con quaranta.
+    expect(within(categorie).getByRole("tab", { name: "Casa 7" })).toBeTruthy();
+    expect(within(categorie).getByRole("tab", { name: "Ufficio 2" })).toBeTruthy();
+  });
+
+  it("senza nessuna categoria la fila non compare, invece di un «Tutte» solitario", async () => {
+    const { client } = clienteElenco(archivioDa45);
+
+    montaConApi(client, <ListScreen />);
+    await screen.findByText("Procedura 1");
+
+    expect(screen.queryByRole("tablist", { name: "Categoria" })).toBeNull();
+    // E l'errore opposto, che qui e' la parte che conta: la fila degli ambiti
+    // c'e' lo stesso. Senza questa riga il caso sopra passerebbe anche se la
+    // schermata non disegnasse piu' nessun filtro.
+    expect(fila("Ambito")).toBeTruthy();
+  });
+
+  it("premere una categoria la chiede al server, e la accende", async () => {
+    const { client, richieste } = clienteElenco(archivioDa45, () => DUE_CATEGORIE);
+
+    montaConApi(client, <ListScreen />);
+    await screen.findByText("Procedura 1");
+    const utente = userEvent.setup();
+
+    await utente.click(within(fila("Categoria")).getByRole("tab", { name: "Casa 7" }));
+    await screen.findByText("Procedura 1");
+
+    expect(ultima(richieste).tag).toBe("Casa");
+    // Il filtro applicato e la chip accesa sono due cose diverse, e una
+    // schermata che filtra senza dirlo e' una schermata che nasconde schede
+    // senza motivo apparente.
+    expect(
+      within(fila("Categoria")).getByRole("tab", { name: "Casa 7" }).getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      within(fila("Categoria")).getByRole("tab", { name: "Tutte" }).getAttribute("aria-selected"),
+    ).toBe("false");
+  });
+
+  it("premere una categoria riporta alla prima pagina", async () => {
+    const { client, richieste } = clienteElenco(archivioDa45, () => DUE_CATEGORIE);
+
+    montaConApi(client, <ListScreen />);
+    const utente = userEvent.setup();
+
+    await utente.click(await screen.findByRole("button", { name: "Successive" }));
+    await screen.findByText("Procedura 21");
+    expect(ultima(richieste).offset).toBe(PROCEDURE_PAGE_SIZE);
+
+    await utente.click(within(fila("Categoria")).getByRole("tab", { name: "Casa 7" }));
+
+    // Stesso ragionamento dell'ambito: sette schede in «Casa» non hanno una
+    // pagina due, e restare all'offset 20 risponde una lista vuota sotto una
+    // chip che dice sette.
+    await screen.findByText("Procedura 1");
+    expect(ultima(richieste)).toEqual({
+      limit: PROCEDURE_PAGE_SIZE,
+      offset: 0,
+      tag: "Casa",
+    });
+  });
+
+  it("«Tutte» toglie la categoria dalla query, e non ne manda una vuota", async () => {
+    const { client, richieste } = clienteElenco(archivioDa45, () => DUE_CATEGORIE);
+
+    montaConApi(client, <ListScreen />);
+    await screen.findByText("Procedura 1");
+    const utente = userEvent.setup();
+
+    await utente.click(within(fila("Categoria")).getByRole("tab", { name: "Casa 7" }));
+    await screen.findByText("Procedura 1");
+    expect(ultima(richieste).tag).toBe("Casa");
+
+    await utente.click(within(fila("Categoria")).getByRole("tab", { name: "Tutte" }));
+    await screen.findByText("Procedura 1");
+
+    // `tag: ""` sarebbe rifiutato dal contratto (`min(1)`) e chi ha premuto
+    // «Tutte» si ritroverebbe un avviso rosso: l'assenza di filtro e' l'assenza
+    // del parametro.
+    expect(ultima(richieste)).toEqual({ limit: PROCEDURE_PAGE_SIZE, offset: 0 });
+  });
+
+  it("cambiare ambito richiede anche le categorie di quell'ambito", async () => {
+    const { client, richiesteTag } = clienteElenco(archivioDa45, () => DUE_CATEGORIE);
+
+    montaConApi(client, <ListScreen />);
+    await screen.findByText("Procedura 1");
+    expect(richiesteTag).toEqual([{}]);
+
+    const utente = userEvent.setup();
+    await utente.click(within(fila("Ambito")).getByRole("tab", { name: "Lavoro" }));
+    await screen.findByText("Procedura 1");
+
+    // Una categoria che vive solo fra le schede personali, mostrata con il suo
+    // conteggio intero sotto l'ambito «Lavoro», sarebbe un filo che non apre
+    // niente e un numero falso.
+    expect(richiesteTag).toHaveLength(2);
+    expect(ultima(richiesteTag)).toEqual({ scope: "LAVORO" });
+  });
+
+  it("scegliere una categoria non richiede le categorie da capo", async () => {
+    const { client, richiesteTag } = clienteElenco(archivioDa45, () => DUE_CATEGORIE);
+
+    montaConApi(client, <ListScreen />);
+    await screen.findByText("Procedura 1");
+    const utente = userEvent.setup();
+
+    await utente.click(within(fila("Categoria")).getByRole("tab", { name: "Casa 7" }));
+    await screen.findByText("Procedura 1");
+
+    // L'errore opposto del caso qui sopra, e non e' solo una richiesta di
+    // troppo: le categorie di un archivio gia' filtrato per «Casa» sono quelle
+    // che convivono con «Casa», quindi la fila si accorcerebbe sotto le dita di
+    // chi ha appena premuto — il filtro si mangerebbe il menu da cui e' stato
+    // scelto, «Tutte» compresa.
+    expect(richiesteTag).toEqual([{}]);
+    expect(within(fila("Categoria")).getByRole("tab", { name: "Ufficio 2" })).toBeTruthy();
+  });
+
+  it("cambiare ambito lascia andare la categoria, invece di filtrare di nascosto", async () => {
+    const { client, richieste } = clienteElenco(archivioDa45, (q) =>
+      // In «Lavoro» «Casa» non esiste: e' il caso in cui tenersi la categoria
+      // scelta produce una lista vuota con nessuna chip accesa e niente da
+      // premere per capire perche'.
+      q.scope === "LAVORO" ? { items: [{ nome: "Fatture", conteggio: 4 }] } : DUE_CATEGORIE,
+    );
+
+    montaConApi(client, <ListScreen />);
+    await screen.findByText("Procedura 1");
+    const utente = userEvent.setup();
+
+    await utente.click(within(fila("Categoria")).getByRole("tab", { name: "Casa 7" }));
+    await screen.findByText("Procedura 1");
+    expect(ultima(richieste).tag).toBe("Casa");
+
+    await utente.click(within(fila("Ambito")).getByRole("tab", { name: "Lavoro" }));
+    await screen.findByText("Procedura 1");
+
+    expect(ultima(richieste)).toEqual({
+      limit: PROCEDURE_PAGE_SIZE,
+      offset: 0,
+      scope: "LAVORO",
+    });
+    // Cio' che e' acceso a schermo e cio' che e' nella query sono la stessa
+    // cosa: la chip che dice «nessuna categoria» e' quella accesa.
+    expect(
+      within(fila("Categoria")).getByRole("tab", { name: "Tutte" }).getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+});
+
 describe("ListScreen: sfogliare", () => {
   it("«Successive» chiede la pagina dopo, contata su cio' che il server ha risposto", async () => {
     const { client, richieste } = clienteElenco(archivioDa45);
@@ -235,6 +450,10 @@ describe("ListScreen: quando il server non risponde", () => {
   it("un guasto si vede come un guasto, e non come un archivio vuoto", async () => {
     const client = creaClienteFinto({
       listPendingRecordings: () => Promise.resolve({ items: [] }),
+      // Le categorie rispondono, e sono vuote: l'unico avviso a schermo deve
+      // venire dall'elenco, o `findByRole("alert")` non saprebbe quale dei due
+      // ha trovato.
+      listTags: () => Promise.resolve({ items: [] }),
       listProcedures: () =>
         Promise.reject(
           new ApiError({ code: "INTERNAL_ERROR", message: "Il server non risponde.", status: 500 }),
@@ -286,8 +505,14 @@ describe("ListScreen: quando un vocale diventa scheda", () => {
   function clienteConSospesi(
     giri: readonly RecordingState[][],
     rispondi: (q: ListProceduresQueryInput) => ProcedureList,
-  ): { client: ApiClient; richieste: ListProceduresQueryInput[] } {
+    categorie: (q: ListTagsQueryInput) => TagList = () => ({ items: [] }),
+  ): {
+    client: ApiClient;
+    richieste: ListProceduresQueryInput[];
+    richiesteTag: ListTagsQueryInput[];
+  } {
     const richieste: ListProceduresQueryInput[] = [];
+    const richiesteTag: ListTagsQueryInput[] = [];
     let letture = 0;
     const client = creaClienteFinto({
       listPendingRecordings: () => {
@@ -299,8 +524,12 @@ describe("ListScreen: quando un vocale diventa scheda", () => {
         richieste.push(query);
         return Promise.resolve(rispondi(query));
       },
+      listTags: (query = {}) => {
+        richiesteTag.push(query);
+        return Promise.resolve(categorie(query));
+      },
     });
-    return { client, richieste };
+    return { client, richieste, richiesteTag };
   }
 
   it("quando un vocale diventa scheda, l'elenco si richiede da capo", async () => {
@@ -316,6 +545,27 @@ describe("ListScreen: quando un vocale diventa scheda", () => {
 
     await avanza(CINQUE_SECONDI);
     expect(richieste).toHaveLength(2);
+  });
+
+  it("quando un vocale diventa scheda, anche le categorie si richiedono da capo", async () => {
+    const { client, richiesteTag } = clienteConSospesi(
+      [[unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" })], []],
+      archivioDa45,
+      () => ({ items: [{ nome: "Casa", conteggio: 7 }] }),
+    );
+
+    montaConApi(client, <ListScreen />);
+
+    await avanza(0);
+    expect(richiesteTag).toHaveLength(1);
+
+    await avanza(CINQUE_SECONDI);
+
+    // Una scheda che nasce porta le sue categorie: o una che non c'era, o un
+    // conteggio che sale di uno. Ricaricare solo l'elenco lascerebbe la fila
+    // delle chip a raccontare l'archivio di prima — cioe' proprio il numero su
+    // cui questa schermata chiede di fidarsi.
+    expect(richiesteTag).toHaveLength(2);
   });
 
   it("finche' il vocale e' in lavorazione, l'elenco non si richiede", async () => {
