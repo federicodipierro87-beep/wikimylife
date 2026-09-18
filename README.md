@@ -774,6 +774,50 @@ può portarsi dietro una categoria che non esisteva, o far salire di uno un
 conteggio già a schermo — cioè proprio il numero su cui questa schermata chiede di
 fidarsi.
 
+**Le categorie si vedono sulla scheda, e si scrivono solo dal dettaglio.** In
+elenco stanno sotto la riga di mezzo, e sono `<span>` e non `<button>`: la riga
+dell'elenco *è* un `<button>`, e un bottone dentro un bottone è HTML non valido
+con un comportamento che ogni browser inventa per conto suo — quello più
+probabile è che premere la categoria smetta di aprire la scheda. Renderle
+premibili vorrebbe dire smontare la riga-bottone e rifarla con un `<div>`, cioè
+rimettere a mano il `tabIndex`, il ruolo e l'attivazione da tastiera che oggi
+arrivano gratis. Si perderebbe una cosa che funziona per tutti per guadagnare una
+scorciatoia, e resta un difetto noto.
+
+Il riquadro che le modifica sta nel dettaglio, sotto il contenuto e sopra «l'hai
+appena fatta?»: le categorie non si leggono per eseguire la procedura, e un
+riquadro in cima spingerebbe i prerequisiti sotto la piega su ogni scheda. **Non**
+sta in `ReviewScreen`, che sarebbe stata la schermata naturale ma esiste solo per
+le `DA_RIVEDERE` — una scheda uscita `COMPLETA` dall'estrazione non ci passa mai e
+resterebbe senza modo di essere categorizzata — e il cui `salva()` porta già la
+trappola documentata della sostituzione totale su `steps`. Il prezzo è un passo in
+più per categorizzare una scheda appena nata.
+
+Ogni gesto manda **la lista intera**, anche per togliere una sola parola:
+`updateProcedureBodySchema.tag` è una sostituzione, e mandare la sola categoria
+nuova cancellerebbe tutte le altre mentre la schermata dice «salvato». È lo stesso
+difetto già pagato su `steps`, ed è il motivo per cui i due casi che leggono il
+corpo della `PATCH` sono i più importanti di quel blocco: guardare lo schermo non
+lo troverebbe, perché lo schermo mostra ciò che il server ha *risposto*.
+
+Il campo è libero con un `<datalist>` dietro, non una tendina. Una tendina
+impedirebbe di inventare una categoria nuova, che è il gesto che dà senso a tutto
+il resto — il vocabolario dell'utente non è scritto da nessuna parte prima che lo
+scriva lui; un campo libero e basta produce «Casa» e «casa». Il `<datalist>` fa le
+due cose insieme, e non è una garanzia: chi ignora il suggerimento crea comunque
+il doppione. Su Safari iOS il supporto è più povero che altrove, ed è una delle
+cose da verificare sul telefono. Le categorie che la scheda ha già non si
+suggeriscono, perché sono le uniche che quel campo non può aggiungere.
+
+Il tetto di trenta e la lunghezza di sessanta caratteri vengono dal contratto,
+esportati come `PROCEDURE_TAG_MAX` e `PROCEDURE_TAG_NAME_MAX` invece che
+ricopiati: un numero scritto anche nel client è una regola di dominio nel
+frontend, e il giorno in cui il contratto cambiasse ci sarebbe una schermata che
+continua a dire di no. Il pulsante si spegne prima di mandare una richiesta che
+tornerebbe 400 — e si spegne anche col campo vuoto e con un nome che la scheda ha
+già, perché in quel caso la richiesta partirebbe, la pagina si ricaricherebbe
+identica, e sembrerebbe che il pulsante non funzioni.
+
 **La redazione parte con niente selezionato.** Partire con tutto spuntato avrebbe
 reso la schermata un pulsante «conferma» con del testo intorno, e il «una per
 una» della §9 sarebbe rimasto solo nella forma. Ogni proposta mostra il contesto
@@ -1898,6 +1942,63 @@ un utente solo. Non si è aggiunto un caso per coprirla: non c'è nessun difetto
 descrivere. Si è corretto ciò che il commento prometteva, che diceva «nessun
 `WHERE` senza proprietario» lasciando credere che tutti e due stessero difendendo
 qualcosa. Uno difende; l'altro è la forma del file, e adesso lo dice.
+
+Delle categorie sulla scheda, poco: che ci siano tutte e nell'ordine in cui
+arrivano, che senza categorie non resti un contenitore vuoto — vuoto disegna
+comunque la sua spaziatura, e sarebbe un buco identico su tutte le schede non
+ancora categorizzate, cioè quasi tutte — e che nella riga ci sia **un pulsante
+solo**. L'ultimo è l'unico che conta davvero, ed è scritto contando i `<button>`
+invece di guardare le chip: la scheda *è* un pulsante, e una chip resa premibile
+sarebbe un pulsante dentro un pulsante, cioè HTML non valido che però non fa
+protestare nessuno. React lo disegna, jsdom lo accetta, il browser vero
+riorganizza i nodi per conto suo e il tocco finisce dove capita. Un caso che
+cercasse «le chip non sono `<button>`» proverebbe la stessa cosa in un modo che
+si può aggirare riscrivendo la chip come `<a>`; contare i pulsanti no.
+
+Delle categorie nel dettaglio, il corpo della `PATCH`, perché è l'unica cosa che
+guardare lo schermo non troverebbe. `updateProcedureBodySchema.tag` è una
+**sostituzione**, quindi un riquadro che mandasse la sola categoria nuova
+cancellerebbe le altre — e dopo il `onCambiata()` lo schermo mostrerebbe ciò che
+il server ha *risposto*, cioè una categoria sola, che a chi l'ha appena aggiunta
+a una scheda vuota sembra esattamente giusto. È lo stesso difetto già pagato su
+`steps`. Quindi i casi leggono il corpo inviato: che aggiungere mandi anche
+quelle che c'erano, che togliere mandi le rimaste e non quella tolta, che la
+crocetta tolga quella accanto a cui sta e non la prima della fila — con tre
+categorie, togliere la prima è indistinguibile da «tiene solo la prima» — e che
+togliere l'ultima mandi una lista vuota invece di saltare la richiesta, o
+l'ultima categoria di una scheda non si potrebbe più levare. Accanto, i due lati
+del salvataggio: che dopo quello riuscito la scheda si rilegga dal server, e che
+dopo quello fallito lo schermo lo dica e tenga le categorie di prima, invece di
+mostrare quelle che sperava di avere.
+
+Poi ciò che il campo rifiuta, che è dove sta il tetto. Vuoto no, soli spazi no,
+una parola sì; una categoria che la scheda ha già no, e nemmeno la stessa con
+degli spazi ai bordi — e ciò che parte è la parola ripulita, o `" casa"` e
+`"casa"` diventerebbero due `Tag` distinti nel database e due chip identiche a
+schermo. Al tetto del contratto il pulsante è spento e il perché si legge; a un
+posto dal tetto è acceso e nessuno avvisa di niente, che è l'errore opposto e
+senza quel caso un avviso sempre acceso passerebbe. E l'Invio: aggiunge, perché
+sul telefono è il tasto sotto il dito, ma **rifiuta esattamente ciò che rifiuta
+il pulsante**. A muovere le due cose è un booleano solo, e il caso esiste per il
+giorno in cui qualcuno riscrivesse la condizione a mano dentro l'`onKeyDown`:
+la tastiera diventerebbe una porta di servizio verso un `400`, e il pulsante
+spento accanto non lo direbbe.
+
+Il tetto stesso, invece, quei casi non lo difendono: lo usano simbolicamente e si
+muovono insieme a lui, quindi se domani `PROCEDURE_TAG_MAX` diventasse `3`
+resterebbero tutti verdi e l'app rifiuterebbe la quarta categoria senza che
+niente protesti. Serve una guardia che dica fra quali estremi ha senso, e perché
+esistono i due estremi: sotto i dieci smette di essere una difesa contro
+un'estrazione andata storta e diventa un limite sentito, che nessuna schermata ha
+mai annunciato; sopra i cinquanta non difende più da niente, perché una scheda
+con sessanta categorie non è categorizzata. Lo stesso per la lunghezza di un
+nome, fra venti e duecento: sotto i venti si taglierebbero categorie legittime —
+«documenti della macchina» sono ventiquattro caratteri — sopra i duecento non è
+un nome, è una frase, e come chip coprirebbe la riga intera. E accanto, la sola
+proprietà che vale più del numero: che la schermata e il contratto contino *lo
+stesso* numero di categorie. Se i due si separassero ci sarebbe un pulsante
+acceso che manda una richiesta rifiutata, o uno spento che nega qualcosa di
+permesso.
 
 Del cestino, la conferma. È l'unica schermata da cui si perde qualcosa, e un
 `deleteProcedureForever` partito per sbaglio non si vede, non dà errore e non si
@@ -3542,8 +3643,13 @@ Non installate, e il perché:
   sullo schermo sembrano lo stesso — e da quando esiste la riga delle categorie si
   vede: due chip quasi identiche, una accanto all'altra, che dividono in due
   mucchi le schede che dovrebbero stare insieme, e nessuna delle due dice il
-  numero che l'utente si aspetta. La cura non è qui: è far scegliere invece di far
-  riscrivere.
+  numero che l'utente si aspetta. Il `<datalist>` del dettaglio riduce il
+  problema — chi scrive «cas» si vede proporre «casa» e la sceglie — ma non lo
+  toglie: è un suggerimento, e chi tira dritto crea comunque il doppione. E non
+  fa niente per i doppioni proposti dal modello, che scrive le maiuscole per conto
+  suo e non guarda nessun elenco. Il residuo vero è che non esiste nessun posto da
+  cui unire due categorie che si scoprono uguali dopo: né una rinomina, né una
+  fusione, né un modo di accorgersene che non sia guardare la riga delle chip.
 - **La ricerca pagina fino a cento risultati, e non oltre.** `offset` c'è ed è
   esatto, ma solo dentro la finestra che i due canali restituiscono: una scheda
   che non sta fra le prime cento né per testo né per vettori non compare a nessuna
@@ -3734,12 +3840,17 @@ Non installate, e il perché:
   il contratto oggi accetta un `tag` solo, e passare a molti significa decidere se
   due categorie si sommano o si intersecano, che è una domanda con due risposte
   ragionevoli e nessun modo di porla in una chip.
-- **Dalla lista non si filtra toccando la categoria sulla scheda**, perché sulla
-  scheda le categorie non ci sono affatto: l'elenco mostra titolo, ambito e meta, e
-  le chip stanno solo in cima. Quando ci saranno, non saranno comunque premibili:
-  `ProcedureCard` **è** un `<button>`, e un bottone dentro un bottone è HTML non
-  valido. Renderle premibili vorrebbe dire smontare la scheda-bottone e rifare la
-  navigazione con un `<div>`, perdendo la tastiera e il ruolo.
+- **Dalla lista non si filtra toccando la categoria sulla scheda.** Adesso le
+  categorie sulla riga ci sono, e sono la cosa più naturale da toccare per dire
+  «fammi vedere le altre così» — ma sono `<span>`, e non succede niente.
+  `ProcedureCard` **è** un `<button type="button" className="riga">`, e un bottone
+  dentro un bottone è HTML non valido: il comportamento se lo inventa ogni browser,
+  e quello più probabile è che premere la categoria smetta di aprire la scheda.
+  Renderle premibili vuole smontare la riga-bottone e rifarla con un `<div>`, cioè
+  rimettere a mano `tabIndex`, ruolo e attivazione da tastiera. Il residuo è una
+  chip che invita a un gesto che non c'è: chi la tocca apre la scheda, il che non è
+  sbagliato ma non è quello che aveva chiesto. Le due strade sono quel `<div>`
+  ricostruito con cura, oppure rinunciare del tutto a disegnarle lì.
 - **«Per sempre» è vero per l'applicazione, non per il disco.** Dal cestino la
   scheda sparisce davvero — i figli con lei per il `Cascade`, i vocali con la
   loro trascrizione, i byte dell'audio dal bucket — ma è una `DELETE`, non una

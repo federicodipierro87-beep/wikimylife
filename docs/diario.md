@@ -25,6 +25,7 @@ commit, non per la sua distanza da oggi.
 | 3 | le tre schermate scoperte, cestino grosso, una sessione | `36a6f8c` → `b904141` | 1050 su 47 file | 380 su 14 file |
 | — | il primo deploy vero | `f847ebb` | invariati | invariati |
 | — | i due difetti trovati dalla produzione | `5e2a772`, `9c5c587` | 1064 su 47 file | 381 su 14 file |
+| 4 | i tag duplicati, l'elenco che si accorge, le categorie | `2c184ba` → `HEAD` | 1136 su 48 file | 392 su 14 file |
 
 ---
 
@@ -587,7 +588,7 @@ Sul metodo, il caso concreto dietro due regole che ora stanno in `CLAUDE.md`:
 
 ## Giro 4 — i tag duplicati, l'elenco che si accorge, le categorie
 
-Tre commit su quattro di un piano che ne prevedeva cinque; il quinto — il
+Quattro commit su cinque di un piano che ne prevedeva cinque; il quinto — il
 microfono su iOS — resta fermo, perché comincia con una misura da fare su un
 iPhone vero e quella la fa l'utente.
 
@@ -678,6 +679,62 @@ apposta: delegando, il caso che confronta il conteggio con ciò che la chip apre
 sarebbe stato vero per costruzione anche in memoria, cioè non avrebbe pinzato
 niente.
 
+### Le categorie sulla scheda, e il riquadro che le scrive
+
+Il commit precedente ha costruito l'indice; questo mette le categorie **dove si
+leggono** (la riga della dashboard) e **dove si scrivono** (una sezione nel
+dettaglio). Le decisioni, e i loro prezzi:
+
+- **Sulla `ProcedureCard` le chip sono `<span>`, mai `<button>`.** La scheda *è*
+  un `<button type="button" className="riga">`, e un pulsante dentro un pulsante
+  è HTML non valido che non fa protestare nessuno: React lo disegna, jsdom lo
+  accetta, il browser vero riorganizza i nodi per conto suo. Renderle premibili
+  vorrebbe dire smontare la scheda-bottone e rifare la navigazione con un
+  `<div>`, perdendo tastiera e ruolo — cioè esattamente ciò che il commento di
+  quel file dice di aver guadagnato. Prezzo: dalla lista non si filtra toccando
+  la categoria sulla scheda. Il caso che difende la decisione **conta i
+  `<button>` nella riga**, non guarda le chip: cercare «le chip non sono
+  `<button>`» si aggirerebbe riscrivendole come `<a>`.
+- **Si scrive dal dettaglio e non dalla revisione.** `ReviewScreen` esiste solo
+  per le `DA_RIVEDERE`, e il suo `salva()` ha già la trappola documentata della
+  sostituzione totale di `steps`: aggiungerci un secondo campo a sostituzione
+  totale raddoppierebbe quella superficie. Prezzo: un passo in più per
+  categorizzare una scheda appena nata.
+- **Il riquadro manda sempre la lista intera**, perché
+  `updateProcedureBodySchema.tag` è una sostituzione. Mandare la sola categoria
+  nuova cancellerebbe le altre e la schermata direbbe «salvato» — e *sembrerebbe
+  giusto*, perché dopo il `onCambiata()` a schermo c'è ciò che il server ha
+  risposto. È il difetto già pagato su `steps`, e per questo i casi leggono il
+  corpo inviato invece dello schermo.
+- **Un `<datalist>`, non una tendina.** La tendina impedirebbe di inventare una
+  categoria nuova, che è il gesto che dà senso a tutto; il campo libero da solo
+  genera «Casa» e «casa». Prezzo: su Safari iOS il supporto è più povero, ed è
+  da verificare sul telefono insieme al commit del microfono.
+- **Un booleano solo per il pulsante e per l'Invio.** `puoAggiungere` muove
+  `disabled` e la guardia dell'`onKeyDown`. Se la condizione fosse riscritta a
+  mano dentro la tastiera, l'Invio diventerebbe una porta di servizio verso un
+  `400` e il pulsante spento accanto non lo direbbe: c'è una mutazione apposta, e
+  cade.
+
+**Una deviazione dal piano, dichiarata.** Il piano diceva «niente shared» per
+questo commit e allo stesso tempo che il tetto di trenta dovesse venire dal
+contratto: le due cose insieme non stanno in piedi, perché per spegnere il
+pulsante *prima* della richiesta la schermata il numero lo deve leggere da
+qualche parte. Quindi `PROCEDURE_TAG_MAX` e `PROCEDURE_TAG_NAME_MAX` sono
+diventati due costanti esportate, e lo schema le usa invece dei letterali.
+Ricopiare `30` nel client sarebbe stata una regola di dominio nel frontend —
+uno dei due vincoli trasversali del brief.
+
+**E la guardia che il piano non prevedeva.** Un `grep` prima delle mutazioni ha
+mostrato che *niente* pinzava quel numero: tutti i casi nuovi lo usano
+simbolicamente, quindi si muovono insieme a lui, e `30 → 3` sarebbe sopravvissuto
+ovunque. È la regola di `CLAUDE.md` sulle costanti che sono un compromesso:
+servono un intervallo e il motivo dei due estremi. Aggiunti quattro casi in
+`tagUnici.test.ts` — fra dieci e cinquanta per il numero di categorie, fra venti
+e duecento per la lunghezza di un nome, più la proprietà che vale più del numero:
+che la schermata e il contratto contino **lo stesso**. Le quattro mutazioni
+(`30→3`, `30→100`, `60→5`, `60→1000`) adesso cadono tutte.
+
 ### Sul metodo, due cose che questo giro ha insegnato
 
 **La mutazione di controllo serve per ogni comando, non per ogni file.** Il primo
@@ -701,6 +758,9 @@ nessun difetto da descrivere. Si è corretto il commento, che dicendo «nessun
 `WHERE` senza proprietario» lasciava credere che tutti e due stessero difendendo
 qualcosa.
 
-Da **1064** test unit + web su 47 file a **1110** su 48, e da **381**
-d'integrazione a **392**. Ventinove mutazioni sul solo commit delle categorie:
-26 cadute, due controlli vivi come devono, una equivalente dichiarata.
+Da **1064** test unit + web su 47 file a **1136** su 48, e da **381**
+d'integrazione a **392**. Ventinove mutazioni sul commit dell'indice delle
+categorie — 26 cadute, due controlli vivi come devono, una equivalente
+dichiarata — e ventotto su quello della scheda e del riquadro: **26 cadute e
+due vive, che sono esattamente i due controlli**, nessuna saltata e nessun
+guasto del runner.

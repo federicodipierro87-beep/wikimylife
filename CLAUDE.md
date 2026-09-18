@@ -215,7 +215,7 @@ rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
 deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
-**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1110 test**
+**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1136 test**
 unit + web su 48 file, **392** d'integrazione su 14 file, albero pulito.
 
 ### Cosa gira, e dove
@@ -295,3 +295,12 @@ collegata a modelli veri, quindi la cosa più utile che si possa fare al prossim
 giro non è un test — è registrare un vocale da un telefono e guardare dove si
 ferma. Nessuno l'ha ancora fatto, e finché non succede «funziona» resta una
 parola sostenuta solo da finti.
+
+C'è un commit fermo proprio lì: **il microfono su iOS** — quante volte Safari
+chiede il consenso, e cosa possiamo davvero farci. Non comincia con del codice,
+comincia con una misura sul telefono dell'utente: registrare dal sito a scheda
+nuova, poi di nuovo senza chiudere, poi riaprendo, poi dall'icona in Home, poi
+dopo aver messo «Consenti» in AA → Impostazioni sito web. Le cure possibili
+dipendono da quale dei quattro esiti si osserva, e
+nessuna è «una riga di JavaScript che fa smettere il telefono di chiedere»:
+quella non esiste.

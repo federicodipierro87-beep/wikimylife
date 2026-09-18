@@ -1,4 +1,10 @@
-import { ApiError, type ApiClient, type CreateExecutionBodyInput } from "@wikimylife/shared";
+import {
+  ApiError,
+  PROCEDURE_TAG_MAX,
+  type ApiClient,
+  type CreateExecutionBodyInput,
+  type UpdateProcedureBodyInput,
+} from "@wikimylife/shared";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
@@ -67,6 +73,23 @@ import { montaConApi } from "./helpers/render";
  * aggiornata da una che mostra ancora il vocale appena distrutto.
  */
 
+/**
+ * Il finto di questo file: `creaClienteFinto` piu' le categorie che esistono.
+ *
+ * Il riquadro delle categorie chiede `listTags` al montaggio, quindi da quando
+ * esiste *ogni* caso di questo file passa di li' — anche i dodici che di
+ * categorie non parlano. Senza questo valore predefinito il finto lancerebbe, e
+ * quei dodici cadrebbero tutti insieme dicendo una cosa che non e' il loro
+ * argomento.
+ *
+ * E' vuoto e non plausibile: un elenco di suggerimenti finto farebbe passare
+ * per verdi i casi che verificano *quali* categorie vengono suggerite. Quelli
+ * se lo dichiarano.
+ */
+function cliente(risposte: Partial<ApiClient> = {}): ApiClient {
+  return creaClienteFinto({ listTags: () => Promise.resolve({ items: [] }), ...risposte });
+}
+
 function bottone(nome: string | RegExp): HTMLButtonElement {
   return screen.getByRole("button", { name: nome }) as HTMLButtonElement;
 }
@@ -80,7 +103,7 @@ describe("DetailScreen — eliminare il vocale", () => {
     // pulsante e' sicuro. E' una domanda con due risposte diverse, e finche'
     // non se ne sceglie una non deve essere partita nessuna richiesta.
     const chiamate: unknown[] = [];
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => Promise.resolve(unaScheda({ recordings: [unVocale()] })),
       deleteRecording: (id, opzioni) => {
         chiamate.push({ id, opzioni });
@@ -104,7 +127,7 @@ describe("DetailScreen — eliminare il vocale", () => {
     // Sono entrambi invisibili sullo schermo — la pagina si ricarica e il
     // vocale sparisce — e in tutti e due i casi la scheda finisce nel cestino.
     const opzioni: unknown[] = [];
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => Promise.resolve(unaScheda({ recordings: [unVocale()] })),
       deleteRecording: (_id, o) => {
         opzioni.push(o);
@@ -125,7 +148,7 @@ describe("DetailScreen — eliminare il vocale", () => {
 
   it("«il vocale e la scheda» chiede tutte e due le cose", async () => {
     const opzioni: unknown[] = [];
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => Promise.resolve(unaScheda({ recordings: [unVocale()] })),
       deleteRecording: (_id, o) => {
         opzioni.push(o);
@@ -149,7 +172,7 @@ describe("DetailScreen — eliminare il vocale", () => {
     // mai in prova a mano: sparisce comunque un vocale, e chi guarda pensa che
     // sia quello giusto. Ogni riquadro ha il proprio stato apposta.
     const cancellati: string[] = [];
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () =>
         Promise.resolve(
           unaScheda({
@@ -189,7 +212,7 @@ describe("DetailScreen — eliminare il vocale", () => {
     // essere cambiata — con `ancheLaScheda` e' passata in archivio — e l'unico
     // modo di non raccontarne una versione inventata e' richiederla.
     let letture = 0;
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => {
         letture += 1;
         return Promise.resolve(unaScheda({ recordings: [unVocale()] }));
@@ -216,7 +239,7 @@ describe("DetailScreen — eliminare il vocale", () => {
     // dalla pagina, l'utente crederebbe di averlo cancellato — e che sotto il
     // messaggio non restino due pulsanti rossi che invitano a ripremere subito
     // quello che ha appena fallito.
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => Promise.resolve(unaScheda({ recordings: [unVocale()] })),
       deleteRecording: () =>
         Promise.reject(
@@ -244,7 +267,7 @@ describe("DetailScreen — eliminare il vocale", () => {
 
   it("annullare non manda niente e riporta la conferma dov'era", async () => {
     const chiamate: string[] = [];
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => Promise.resolve(unaScheda({ recordings: [unVocale()] })),
       deleteRecording: (id) => {
         chiamate.push(id);
@@ -267,7 +290,7 @@ describe("DetailScreen — eliminare il vocale", () => {
     // Le schede nate da una modifica a mano, o quelle il cui unico vocale e'
     // gia' stato cancellato. Una sezione «Da cosa nasce» vuota con dentro un
     // pulsante rosso sarebbe un'offerta di cancellare il nulla.
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => Promise.resolve(unaScheda({ recordings: [] })),
     });
 
@@ -315,7 +338,7 @@ function conEsiti(esito: () => Promise<void> = () => Promise.resolve()): {
 } {
   const inviati: CreateExecutionBodyInput[] = [];
   let letture = 0;
-  const client = creaClienteFinto({
+  const client = cliente({
     getProcedure: () => {
       letture += 1;
       return Promise.resolve(unaScheda());
@@ -515,7 +538,7 @@ describe("DetailScreen — l'ordine di lettura, e le porte verso altrove", () =>
     // puo' dire e' se sia questa schermata a chiamarla: un JSX che elencasse le
     // cinque sezioni a mano — che e' come si scrive di solito — passerebbe tutti
     // quei casi mostrando i passi per primi.
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () =>
         Promise.resolve(
           unaScheda({
@@ -545,7 +568,7 @@ describe("DetailScreen — l'ordine di lettura, e le porte verso altrove", () =>
     // La revisione non ha nessun altro ingresso: non c'e' nella barra bassa,
     // non c'e' nell'elenco. Se questo pulsante navigasse altrove, l'unico modo
     // di sistemare una scheda con i buchi sarebbe scrivere l'hash a mano.
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => Promise.resolve(unaScheda({ status: "DA_RIVEDERE" })),
     });
 
@@ -560,7 +583,7 @@ describe("DetailScreen — l'ordine di lettura, e le porte verso altrove", () =>
   });
 
   it("una scheda completa non invita a completarla", async () => {
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => Promise.resolve(unaScheda({ status: "COMPLETA" })),
     });
 
@@ -571,7 +594,7 @@ describe("DetailScreen — l'ordine di lettura, e le porte verso altrove", () =>
   });
 
   it("col bollino acceso, l'avviso porta a vedere cosa c'e' dentro", async () => {
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => Promise.resolve(unaScheda({ contieneDatiSensibili: true })),
     });
 
@@ -592,7 +615,7 @@ describe("DetailScreen — l'ordine di lettura, e le porte verso altrove", () =>
     // annidato dentro il ramo del flag toglierebbe la §9 esattamente alle
     // schede su cui nessuno l'ha ancora fatta girare — e la pagina, guardata,
     // sarebbe identica.
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => Promise.resolve(unaScheda({ contieneDatiSensibili: false })),
     });
 
@@ -614,7 +637,7 @@ describe("DetailScreen — l'ordine di lettura, e le porte verso altrove", () =>
     // in un paragrafo diventa «Verificata l'ultima volta . Le cose potrebbero
     // essere cambiate» — una frase rotta nel punto in cui l'app sta chiedendo
     // di non fidarsi di cio' che c'e' scritto sotto.
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => Promise.resolve(unaScheda({ obsoleta: true, ultimaVerifica: null })),
     });
 
@@ -625,7 +648,7 @@ describe("DetailScreen — l'ordine di lettura, e le porte verso altrove", () =>
   });
 
   it("una scheda verificata di recente non mette in dubbio se stessa", async () => {
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () => Promise.resolve(unaScheda({ obsoleta: false })),
     });
 
@@ -645,7 +668,7 @@ describe("DetailScreen — cio' che porta fuori dall'app", () => {
     // torna indietro; senza `noreferrer` si consegna a un sito qualunque
     // l'indirizzo da cui si e' partiti. Nessuna delle due cose ha un sintomo:
     // il link funziona.
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () =>
         Promise.resolve(
           unaScheda({
@@ -670,7 +693,7 @@ describe("DetailScreen — cio' che porta fuori dall'app", () => {
     // cliccabile tutto vorrebbe dire mettere in un `href` la trascrizione di un
     // numero di telefono, e un `href` e' l'unico posto di questa pagina in cui
     // una stringa smette di essere testo.
-    const client = creaClienteFinto({
+    const client = cliente({
       getProcedure: () =>
         Promise.resolve(
           unaScheda({ refs: [{ id: "r1", tipo: "TELEFONO", valore: "800 123 456" }] }),
@@ -681,5 +704,334 @@ describe("DetailScreen — cio' che porta fuori dall'app", () => {
 
     await screen.findByText("800 123 456");
     expect(screen.queryByRole("link")).toBeNull();
+  });
+});
+
+/**
+ * Le categorie, dove scriverle puo' cancellarle.
+ *
+ * Questo riquadro e' l'unico posto dell'app da cui si scrive `tag`, e `tag` nel
+ * `PATCH` e' una **sostituzione**: cio' che arriva diventa l'elenco completo.
+ * Quindi il difetto che conta qui non e' «non salva» — quello si vede subito —
+ * ma «salva e nel farlo butta via il resto», che ha lo stesso aspetto di un
+ * successo finche' non si riguarda la scheda. E' lo stesso difetto gia' pagato
+ * su `steps`, e i primi due casi qui sotto sono gli unici posti in cui si vede.
+ *
+ * Il corpo mandato si raccoglie in un array invece di guardare lo schermo,
+ * perche' lo schermo mostra cio' che il server ha *risposto*: un finto che
+ * risponde bene farebbe passare per corretta anche una richiesta che ha mandato
+ * una lista di un elemento solo.
+ */
+function conCategorie(
+  tag: readonly string[],
+  opzioni: {
+    esistenti?: readonly { nome: string; conteggio: number }[];
+    salva?: () => Promise<void>;
+  } = {},
+): {
+  client: ApiClient;
+  inviati: UpdateProcedureBodyInput[];
+  letture: () => number;
+} {
+  const inviati: UpdateProcedureBodyInput[] = [];
+  let letture = 0;
+  const client = cliente({
+    getProcedure: () => {
+      letture += 1;
+      return Promise.resolve(unaScheda({ tag: [...tag] }));
+    },
+    listTags: () => Promise.resolve({ items: [...(opzioni.esistenti ?? [])] }),
+    updateProcedure: async (_id, patch) => {
+      inviati.push(patch);
+      await (opzioni.salva?.() ?? Promise.resolve());
+      return unaScheda({ tag: [...tag] });
+    },
+  });
+  return { client, inviati, letture: () => letture };
+}
+
+function campoCategoria(): HTMLInputElement {
+  return screen.getByLabelText("Aggiungi una categoria") as HTMLInputElement;
+}
+
+describe("DetailScreen — le categorie, che si scrivono sostituendo", () => {
+  it("aggiungerne una manda anche tutte quelle che c'erano", async () => {
+    const { client, inviati } = conCategorie(["casa", "burocrazia"]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    const utente = userEvent.setup();
+    await utente.type(await screen.findByLabelText("Aggiungi una categoria"), "documenti");
+    await utente.click(bottone("Aggiungi"));
+
+    // Se qui arrivasse `["documenti"]` la scheda perderebbe due categorie e la
+    // schermata non direbbe niente: si ricarica, e le due che mancano nessuno
+    // le sta contando.
+    expect(inviati).toHaveLength(1);
+    expect(inviati[0]?.tag).toEqual(["casa", "burocrazia", "documenti"]);
+  });
+
+  it("toglierne una manda le rimaste, e non quella tolta", async () => {
+    const { client, inviati } = conCategorie(["casa", "burocrazia", "documenti"]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    await userEvent
+      .setup()
+      .click(await screen.findByRole("button", { name: "Togli la categoria burocrazia" }));
+
+    expect(inviati).toHaveLength(1);
+    expect(inviati[0]?.tag).toEqual(["casa", "documenti"]);
+  });
+
+  it("la crocetta toglie quella accanto a cui sta, non la prima della fila", async () => {
+    // Tre pulsanti identici a vedersi, a un centimetro l'uno dall'altro: un
+    // indice sbagliato qui toglie la categoria del vicino, e chi guarda vede
+    // comunque «una categoria in meno».
+    const { client, inviati } = conCategorie(["casa", "burocrazia", "documenti"]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    await userEvent
+      .setup()
+      .click(await screen.findByRole("button", { name: "Togli la categoria documenti" }));
+
+    expect(inviati[0]?.tag).toEqual(["casa", "burocrazia"]);
+  });
+
+  it("togliere l'ultima manda una lista vuota, invece di saltare la richiesta", async () => {
+    // `tag: []` e' cio' che significa «nessuna categoria». Un riquadro che si
+    // rifiutasse di mandare la lista vuota lascerebbe l'ultima categoria
+    // attaccata per sempre, e sarebbe l'unica che non si puo' togliere.
+    const { client, inviati } = conCategorie(["casa"]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    await userEvent
+      .setup()
+      .click(await screen.findByRole("button", { name: "Togli la categoria casa" }));
+
+    expect(inviati).toHaveLength(1);
+    expect(inviati[0]?.tag).toEqual([]);
+  });
+
+  it("dopo il salvataggio la scheda si rilegge dal server", async () => {
+    // Il server normalizza per conto suo — ha una dedup che questo riquadro non
+    // ha — quindi cio' che si vede dopo deve venire da lui e non da una copia
+    // locale aggiornata a mano.
+    const { client, letture } = conCategorie(["casa"]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    const utente = userEvent.setup();
+    await utente.type(await screen.findByLabelText("Aggiungi una categoria"), "documenti");
+    expect(letture()).toBe(1);
+    await utente.click(bottone("Aggiungi"));
+
+    await waitFor(() => {
+      expect(letture()).toBe(2);
+    });
+  });
+
+  it("se il salvataggio fallisce lo dice, e a schermo restano le categorie di prima", async () => {
+    const { client, letture } = conCategorie(["casa"], {
+      salva: () =>
+        Promise.reject(
+          new ApiError({ status: 400, code: "VALIDATION_FAILED", message: "Non va bene" }),
+        ),
+    });
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    const utente = userEvent.setup();
+    await utente.type(await screen.findByLabelText("Aggiungi una categoria"), "documenti");
+    await utente.click(bottone("Aggiungi"));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Non va bene");
+    // Non si e' riletto niente, quindi cio' che si vede e' ancora la scheda di
+    // prima: «casa» c'e', «documenti» no. Una schermata che avesse aggiunto la
+    // chip in locale prima della risposta mostrerebbe adesso una categoria che
+    // il server non ha.
+    expect(letture()).toBe(1);
+    expect(screen.getByRole("button", { name: "Togli la categoria casa" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Togli la categoria documenti" })).toBeNull();
+  });
+});
+
+describe("DetailScreen — le categorie, e cio' che il campo rifiuta", () => {
+  it("col campo vuoto il pulsante e' spento", async () => {
+    const { client } = conCategorie(["casa"]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    expect((await screen.findByRole("button", { name: "Aggiungi" })).hasAttribute("disabled")).toBe(
+      true,
+    );
+  });
+
+  it("con dei soli spazi resta spento, e con una parola si accende", async () => {
+    const { client } = conCategorie(["casa"]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    const utente = userEvent.setup();
+    await utente.type(await screen.findByLabelText("Aggiungi una categoria"), "   ");
+    expect(bottone("Aggiungi").disabled).toBe(true);
+
+    // Il verso opposto, che e' quello che rende il caso qui sopra qualcosa di
+    // piu' di «il pulsante e' sempre spento».
+    await utente.clear(campoCategoria());
+    await utente.type(campoCategoria(), "documenti");
+    expect(bottone("Aggiungi").disabled).toBe(false);
+  });
+
+  it("una categoria che la scheda ha gia' non si aggiunge una seconda volta", async () => {
+    const { client } = conCategorie(["casa"]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    const utente = userEvent.setup();
+    await utente.type(await screen.findByLabelText("Aggiungi una categoria"), "casa");
+
+    // Il server la dedupplica comunque: la ragione per fermarla qui e' che la
+    // richiesta non direbbe niente a chi l'ha premuta — la pagina si
+    // ricaricherebbe identica, e sembrerebbe che il pulsante non funzioni.
+    expect(bottone("Aggiungi").disabled).toBe(true);
+  });
+
+  it("gli spazi ai bordi non bastano a farne una nuova", async () => {
+    const { client } = conCategorie(["casa"]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    const utente = userEvent.setup();
+    await utente.type(await screen.findByLabelText("Aggiungi una categoria"), "  casa  ");
+
+    // Senza il `trim` questa passerebbe, e l'archivio si riempirebbe di «casa»
+    // e « casa » — due chip che a schermo sono indistinguibili.
+    expect(bottone("Aggiungi").disabled).toBe(true);
+  });
+
+  it("e cio' che si manda e' la parola senza gli spazi", async () => {
+    const { client, inviati } = conCategorie(["casa"]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    const utente = userEvent.setup();
+    await utente.type(await screen.findByLabelText("Aggiungi una categoria"), "  documenti  ");
+    await utente.click(bottone("Aggiungi"));
+
+    expect(inviati[0]?.tag).toEqual(["casa", "documenti"]);
+  });
+
+  it("al tetto del contratto il pulsante e' spento, e il perche' si legge", async () => {
+    // Il numero viene da `PROCEDURE_TAG_MAX`, non da un `30` scritto qui: se il
+    // contratto cambiasse e la schermata no, un caso con la costante ricopiata
+    // passerebbe lo stesso.
+    const piene = Array.from({ length: PROCEDURE_TAG_MAX }, (_, i) => `c${String(i)}`);
+    const { client } = conCategorie(piene);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    const utente = userEvent.setup();
+    await utente.type(await screen.findByLabelText("Aggiungi una categoria"), "unaditroppo");
+    expect(bottone("Aggiungi").disabled).toBe(true);
+    expect(screen.getByText(new RegExp(`${String(PROCEDURE_TAG_MAX)} categorie`))).toBeDefined();
+  });
+
+  it("a un posto dal tetto si aggiunge ancora, e nessuno avvisa di niente", async () => {
+    const quasi = Array.from({ length: PROCEDURE_TAG_MAX - 1 }, (_, i) => `c${String(i)}`);
+    const { client } = conCategorie(quasi);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    const utente = userEvent.setup();
+    await utente.type(await screen.findByLabelText("Aggiungi una categoria"), "lultima");
+    expect(bottone("Aggiungi").disabled).toBe(false);
+    expect(screen.queryByText(new RegExp(`${String(PROCEDURE_TAG_MAX)} categorie`))).toBeNull();
+  });
+
+  it("Invio aggiunge, perche' sul telefono e' il tasto sotto il dito", async () => {
+    const { client, inviati } = conCategorie(["casa"]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    const utente = userEvent.setup();
+    await utente.type(await screen.findByLabelText("Aggiungi una categoria"), "documenti{Enter}");
+
+    expect(inviati[0]?.tag).toEqual(["casa", "documenti"]);
+  });
+
+  it("Invio non e' una porta di servizio: cio' che il pulsante rifiuta rifiuta anche lui", async () => {
+    const { client, inviati } = conCategorie(["casa"]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    const utente = userEvent.setup();
+    await utente.type(await screen.findByLabelText("Aggiungi una categoria"), "casa{Enter}");
+
+    expect(inviati).toEqual([]);
+  });
+
+  it("una scheda senza categorie lo dice, invece di mostrare una fila vuota", async () => {
+    const { client } = conCategorie([]);
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    expect(await screen.findByText(/non e' in nessuna categoria/)).toBeDefined();
+  });
+});
+
+describe("DetailScreen — le categorie, e cosa suggerisce il campo", () => {
+  function opzioni(container: HTMLElement): string[] {
+    return [...container.querySelectorAll("#categorie-esistenti option")].map(
+      (o) => (o as HTMLOptionElement).value,
+    );
+  }
+
+  it("suggerisce le categorie che esistono gia' nell'archivio", async () => {
+    // E' l'unica difesa contro «Casa» e «casa»: il database le tiene separate,
+    // e nessuno riscrive le parole dell'utente. Far scegliere invece di far
+    // riscrivere e' tutto cio' che si puo' fare da qui.
+    const { client } = conCategorie([], {
+      esistenti: [
+        { nome: "burocrazia", conteggio: 7 },
+        { nome: "casa", conteggio: 3 },
+      ],
+    });
+
+    const { container } = montaConApi(client, <DetailScreen id="proc-1" />);
+
+    await screen.findByLabelText("Aggiungi una categoria");
+    expect(opzioni(container)).toEqual(["burocrazia", "casa"]);
+  });
+
+  it("non suggerisce quelle che la scheda ha gia', che sono le uniche che non si possono aggiungere", async () => {
+    const { client } = conCategorie(["casa"], {
+      esistenti: [
+        { nome: "burocrazia", conteggio: 7 },
+        { nome: "casa", conteggio: 3 },
+      ],
+    });
+
+    const { container } = montaConApi(client, <DetailScreen id="proc-1" />);
+
+    await screen.findByLabelText("Aggiungi una categoria");
+    expect(opzioni(container)).toEqual(["burocrazia"]);
+  });
+
+  it("il campo e' scrivibile anche quando non c'e' niente da suggerire", async () => {
+    // Un archivio nuovo non ha nessuna categoria, ed e' proprio il momento in
+    // cui servono di piu' le categorie nuove. Se il riquadro aspettasse una
+    // lista per lasciar scrivere, la prima categoria non nascerebbe mai.
+    const { client, inviati } = conCategorie([], { esistenti: [] });
+
+    montaConApi(client, <DetailScreen id="proc-1" />);
+
+    const utente = userEvent.setup();
+    await utente.type(await screen.findByLabelText("Aggiungi una categoria"), "laprima");
+    await utente.click(bottone("Aggiungi"));
+
+    expect(inviati[0]?.tag).toEqual(["laprima"]);
   });
 });

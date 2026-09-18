@@ -131,6 +131,39 @@ describe("ProcedureCard: cosa dice della scheda", () => {
     expect(container.querySelector(".riga__meta")?.textContent).not.toContain("passi");
   });
 
+  it("le categorie si vedono, tutte e nel loro ordine", () => {
+    const { container } = montaConApi(
+      NIENTE,
+      <ProcedureCard p={unaVoce({ tag: ["casa", "burocrazia"] })} />,
+    );
+
+    const categorie = container.querySelectorAll(".riga__categorie .chip");
+    expect([...categorie].map((c) => c.textContent)).toEqual(["casa", "burocrazia"]);
+  });
+
+  it("una scheda senza categorie non porta un contenitore vuoto", () => {
+    const { container } = montaConApi(NIENTE, <ProcedureCard p={unaVoce({ tag: [] })} />);
+
+    // Come per i bollini: `.riga__categorie` ha una spaziatura sua, e le schede
+    // senza categorie sono la maggioranza — un buco su quasi tutte le righe
+    // dell'elenco che nessuno collegherebbe a questa condizione.
+    expect(container.querySelector(".riga__categorie")).toBeNull();
+  });
+
+  it("le categorie non sono premibili, perche' la riga intera e' gia' un pulsante", () => {
+    const { container } = montaConApi(
+      NIENTE,
+      <ProcedureCard p={unaVoce({ tag: ["casa", "burocrazia"] })} />,
+    );
+
+    // Un `<button>` dentro un `<button>` e' HTML non valido, e ogni browser
+    // inventa il suo comportamento: quello piu' probabile e' che premere la
+    // categoria non apra piu' la scheda. Si contano i pulsanti di tutta la
+    // riga, non si cercano quelli dentro le categorie: e' l'unico modo perche'
+    // il caso cada anche se le chip venissero disegnate altrove nella riga.
+    expect(container.querySelectorAll("button")).toHaveLength(1);
+  });
+
   it("«Dati sensibili» compare solo su chi ce li ha", () => {
     const con = montaConApi(
       NIENTE,

@@ -285,6 +285,24 @@ export const editableCardStatusValues = ["DA_RIVEDERE", "COMPLETA", "ARCHIVIATA"
 export type EditableCardStatus = (typeof editableCardStatusValues)[number];
 
 /**
+ * Quante categorie puo' portare una scheda, e quanto puo' essere lungo un nome.
+ *
+ * Sono due numeri esportati e non due letterali dentro lo schema perche' la
+ * schermata che le scrive deve spegnere il pulsante *prima* di mandare una
+ * richiesta che tornerebbe 400, e per farlo il numero lo deve leggere da
+ * qualche parte. L'alternativa era scrivere `30` anche nel client: un tetto
+ * ricopiato e' una regola di dominio nel frontend — uno dei due vincoli
+ * trasversali del brief — e il giorno in cui questo diventasse 40 ci sarebbe
+ * una schermata che continua a dire di no.
+ *
+ * Il valore di trenta non e' un limite sentito: e' una difesa contro una
+ * risposta del modello andata storta. Una scheda con trenta categorie non e'
+ * categorizzata, e' rumore.
+ */
+export const PROCEDURE_TAG_MAX = 30;
+export const PROCEDURE_TAG_NAME_MAX = 60;
+
+/**
  * Corpo del `PATCH`. Ogni campo e' opzionale, e l'assenza significa «non
  * toccare»: e' la differenza fra `PATCH` e `PUT`.
  *
@@ -319,7 +337,7 @@ export const updateProcedureBodySchema = z
     status: z.enum(editableCardStatusValues).optional(),
     contieneDatiSensibili: z.boolean().optional(),
 
-    tag: z.array(z.string().min(1).max(60)).max(30).optional(),
+    tag: z.array(z.string().min(1).max(PROCEDURE_TAG_NAME_MAX)).max(PROCEDURE_TAG_MAX).optional(),
     steps: z.array(stepInputSchema).max(100).optional(),
     prereqs: z.array(prereqInputSchema).max(50).optional(),
     pitfalls: z.array(pitfallInputSchema).max(50).optional(),

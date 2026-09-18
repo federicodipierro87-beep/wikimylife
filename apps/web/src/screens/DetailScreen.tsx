@@ -1,4 +1,10 @@
-import type { Outcome, ProcedureDetail } from "@wikimylife/shared";
+import {
+  PROCEDURE_TAG_MAX,
+  PROCEDURE_TAG_NAME_MAX,
+  type Outcome,
+  type ProcedureDetail,
+  type TagList,
+} from "@wikimylife/shared";
 import { useState } from "react";
 import { useApi } from "../api";
 import {
@@ -168,6 +174,15 @@ function Scheda({
         </section>
       ))}
 
+      {/*
+        Sotto il contenuto e sopra «l'hai appena fatta?»: le categorie non si
+        leggono per eseguire la procedura, e il riquadro che le modifica in cima
+        spingerebbe i prerequisiti sotto la piega su ogni scheda. Qui e' dove si
+        arriva dopo aver letto, cioe' nel momento in cui si sa davvero di cosa
+        parla questa scheda e quindi dove va messa.
+      */}
+      <Categorie p={p} onCambiata={onCambiata} />
+
       <Conferma procedureId={p.id} onFatto={onCambiata} />
 
       {/*
@@ -282,6 +297,191 @@ function SommarioRapido({ p }: { p: ProcedureDetail }): React.JSX.Element | null
   ].filter((x): x is string => x !== null);
 
   return voci.length === 0 ? null : <p className="scheda__sommario">{voci.join(" · ")}</p>;
+}
+
+/**
+ * Le categorie della scheda, e l'unico posto dell'app da cui si scrivono.
+ *
+ * ## Da qui e non dalla revisione
+ *
+ * `ReviewScreen` sarebbe stato il posto naturale — e' la schermata che esiste
+ * per sistemare una scheda — ma esiste solo per le `DA_RIVEDERE`, quindi una
+ * scheda uscita `COMPLETA` dall'estrazione non ci passa mai e resterebbe senza
+ * modo di essere categorizzata. E il suo `salva()` porta gia' la trappola della
+ * sostituzione totale su `steps`: aggiungerci un secondo campo con la stessa
+ * semantica raddoppierebbe una superficie che e' gia' documentata come
+ * pericolosa. Il prezzo e' un passo in piu' per categorizzare una scheda appena
+ * nata: si apre, si legge, si mette la categoria.
+ *
+ * ## Si manda sempre la lista intera, anche per togliere una sola parola
+ *
+ * `updateProcedureBodySchema.tag` e' una **sostituzione**, non un'aggiunta:
+ * quello che arriva diventa l'elenco completo. Mandare la sola categoria nuova
+ * cancellerebbe tutte le altre, e la schermata direbbe «salvato» — e' lo stesso
+ * difetto gia' pagato su `steps`, ed e' il motivo per cui qui ogni gesto
+ * ricostruisce l'array da `p.tag` invece di mandare un delta.
+ *
+ * ## Un `<datalist>` e non una tendina
+ *
+ * Una tendina impedirebbe di inventare una categoria nuova, che e' il gesto che
+ * da' senso a tutto il resto: il vocabolario dell'utente non e' scritto da
+ * nessuna parte prima che lo scriva lui. Un campo libero da solo, pero',
+ * produce «Casa» e «casa» — due categorie che il database tiene separate,
+ * perche' il suo `@@unique` distingue le maiuscole. Il `<datalist>` fa le due
+ * cose insieme: suggerisce cio' che esiste e non impedisce niente. Non e' una
+ * garanzia — chi ignora il suggerimento crea comunque il doppione, e quel
+ * difetto resta scritto nel README.
+ *
+ * ## Il tetto di trenta non e' deciso qui
+ *
+ * `PROCEDURE_TAG_MAX` e `PROCEDURE_TAG_NAME_MAX` arrivano dal contratto. Se
+ * fossero scritti qui sarebbero una regola di dominio nel frontend, e il giorno
+ * in cui il contratto cambiasse questa schermata continuerebbe a dire di no.
+ */
+function Categorie({
+  p,
+  onCambiata,
+}: {
+  p: ProcedureDetail;
+  onCambiata: () => void;
+}): React.JSX.Element {
+  const apiClient = useApi();
+  const [nuova, setNuova] = useState("");
+  const [attesa, setAttesa] = useState(false);
+  const [errore, setErrore] = useState<string | null>(null);
+
+  // Senza ambito: i suggerimenti sono tutte le categorie dell'archivio, anche
+  // quelle usate finora solo al lavoro. Filtrarli sull'ambito della scheda
+  // renderebbe impossibile accorgersi che «trasferte» esiste gia' mentre si sta
+  // per scrivere «trasferta» su una scheda personale, che e' esattamente il
+  // caso per cui questo campo suggerisce qualcosa.
+  //
+  // Se la richiesta fallisce non si dice niente e non si suggerisce niente: il
+  // campo resta scrivibile, e un avviso rosso per un elenco di suggerimenti
+  // mancato sarebbe piu' rumoroso del danno.
+  const { stato: statoTag } = useAsync<TagList>(() => apiClient.listTags(), [apiClient]);
+
+  const nome = nuova.trim();
+  // Un'unica condizione per il pulsante e per il tasto Invio. Se fossero due
+  // liste di controlli, il giorno in cui una cresce l'altra diventa la porta di
+  // servizio: si aggiungerebbe col tasto Invio cio' che il pulsante rifiuta.
+  const puoAggiungere =
+    !attesa && nome !== "" && !p.tag.includes(nome) && p.tag.length < PROCEDURE_TAG_MAX;
+
+  async function manda(prossime: readonly string[]): Promise<void> {
+    setAttesa(true);
+    setErrore(null);
+    try {
+      await apiClient.updateProcedure(p.id, { tag: [...prossime] });
+      setNuova("");
+      // Si ricarica invece di aggiornare a mano una copia locale: cosi' cio'
+      // che si vede e' cio' che il server ha davvero salvato. Vale il doppio
+      // qui, dove il server normalizza i doppioni per conto suo.
+      onCambiata();
+    } catch (error: unknown) {
+      setErrore(messaggioDi(error));
+    } finally {
+      setAttesa(false);
+    }
+  }
+
+  const suggerimenti =
+    statoTag.kind === "pronto"
+      ? // Le categorie che la scheda ha gia' non si suggeriscono: sono l'unica
+        // cosa che il campo non puo' aggiungere, e proporle sarebbe proporre di
+        // premere un pulsante spento.
+        statoTag.dato.items.filter((t) => !p.tag.includes(t.nome))
+      : [];
+
+  return (
+    <section className="sezione categorie">
+      <h2>Categorie</h2>
+
+      <div className="categorie__elenco">
+        {p.tag.length === 0 ? (
+          <p className="muto">Questa scheda non e&apos; in nessuna categoria.</p>
+        ) : (
+          p.tag.map((t) => (
+            <span key={t} className="chip chip--fermo">
+              {t}
+              {/* La crocetta dice quale, nel nome accessibile: una fila di
+                  pulsanti tutti chiamati «×» e' illeggibile per chi non vede lo
+                  schermo, ed e' il posto dove si sbaglia categoria. */}
+              <button
+                type="button"
+                className="categorie__togli"
+                aria-label={`Togli la categoria ${t}`}
+                disabled={attesa}
+                onClick={() => {
+                  void manda(p.tag.filter((altra) => altra !== t));
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))
+        )}
+      </div>
+
+      <div className="categorie__aggiungi">
+        <label className="campo">
+          <span>Aggiungi una categoria</span>
+          <input
+            type="text"
+            list="categorie-esistenti"
+            value={nuova}
+            maxLength={PROCEDURE_TAG_NAME_MAX}
+            disabled={attesa}
+            onChange={(e) => {
+              setNuova(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              // Invio aggiunge. Su un telefono il tasto verde della tastiera e'
+              // l'unico modo di non dover mirare al pulsante dopo aver scritto,
+              // e questo riquadro non e' dentro un `<form>` — quindi senza
+              // questa riga Invio non farebbe niente e sembrerebbe un campo
+              // rotto.
+              if (e.key === "Enter" && puoAggiungere) {
+                e.preventDefault();
+                void manda([...p.tag, nome]);
+              }
+            }}
+          />
+        </label>
+        <datalist id="categorie-esistenti">
+          {suggerimenti.map((t) => (
+            <option key={t.nome} value={t.nome} />
+          ))}
+        </datalist>
+        <button
+          type="button"
+          className="bottone bottone--primario"
+          disabled={!puoAggiungere}
+          onClick={() => {
+            void manda([...p.tag, nome]);
+          }}
+        >
+          {attesa ? "Salvo…" : "Aggiungi"}
+        </button>
+      </div>
+
+      {/* Il tetto si spiega solo quando lo si e' raggiunto. Scritto sempre
+          sarebbe una riga di regolamento sotto ogni scheda, letta da nessuno
+          proprio perche' c'e' sempre. */}
+      {p.tag.length >= PROCEDURE_TAG_MAX && (
+        <p className="muto">
+          Piu&apos; di {String(PROCEDURE_TAG_MAX)} categorie non ci stanno. Toglierne una
+          libera un posto.
+        </p>
+      )}
+
+      {errore !== null && (
+        <p className="avviso avviso--errore" role="alert">
+          {errore}
+        </p>
+      )}
+    </section>
+  );
 }
 
 /**

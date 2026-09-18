@@ -277,6 +277,20 @@ button:focus-visible {
   opacity: 0.7;
 }
 
+/* La chip che non si preme. Stesso disegno delle altre, ma senza il
+   `min-height` da bersaglio da dito e senza il `cursor: pointer`: e' il modo in
+   cui si vede che non c'e' niente da toccare, e senza di esso una categoria
+   dentro una riga dell'elenco sembrerebbe un pulsante che non risponde.
+   `cursor: inherit` e non `default`: dentro la riga-bottone dell'elenco la
+   manina deve restare, perche' premendo li' qualcosa succede davvero — si apre
+   la scheda. */
+.chip--fermo {
+  min-height: auto;
+  padding: 0.12rem 0.6rem;
+  font-size: 0.75rem;
+  cursor: inherit;
+}
+
 .elenco {
   list-style: none;
   margin: 0;
@@ -326,6 +340,15 @@ button:focus-visible {
 }
 
 .riga__badge {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+/* A capo e non in fila con lo scorrimento: qui le categorie non sono un menu da
+   scorrere ma l'etichetta di *questa* scheda, e una che finisse fuori dal bordo
+   sarebbe invisibile senza che niente lo dica. */
+.riga__categorie {
   display: flex;
   flex-wrap: wrap;
   gap: 0.3rem;
@@ -767,6 +790,58 @@ button:focus-visible {
 
 .conferma__nota {
   margin-top: 0.9rem;
+}
+
+/* --------------------------------------------------------------------------
+   Categorie, nel dettaglio
+   -------------------------------------------------------------------------- */
+
+.categorie__elenco {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+/* La chip qui dentro non e' premibile ma contiene un pulsante, quindi deve
+   allineare il nome e la crocetta invece di lasciarli su due basi diverse. */
+.categorie__elenco .chip--fermo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* Piccolo, ma non troppo: e' l'unico gesto distruttivo di questo riquadro, e a
+   meno di questa area su un telefono si colpisce la chip accanto. Il rosso
+   arriva solo al tocco — una fila di crocette rosse fa sembrare la riga un
+   elenco di errori. */
+.categorie__togli {
+  min-width: 1.4rem;
+  min-height: 1.4rem;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.categorie__togli:hover:not(:disabled),
+.categorie__togli:focus-visible {
+  color: var(--bad);
+}
+
+.categorie__aggiungi {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  margin-top: 0.9rem;
+}
+
+.categorie__aggiungi .campo {
+  flex: 1;
 }
 
 /* --------------------------------------------------------------------------
