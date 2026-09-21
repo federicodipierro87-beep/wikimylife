@@ -1,4 +1,13 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -16,6 +25,29 @@ import { describe, expect, it } from "vitest";
 const ROOT = resolve(import.meta.dirname, "..", "..");
 const SELF = resolve(import.meta.dirname, "guards.test.ts");
 
+/**
+ * ## Perche' `ios`, `android`, `Pods`, `build`, `.gradle`
+ *
+ * Il guscio nativo (Capacitor) genera due cartelle sotto `apps/mobile/` che
+ * contengono migliaia di file che non scriviamo noi: un progetto Xcode, i Pods
+ * di CocoaPods, un progetto Gradle con la sua cartella di cache. Senza questi
+ * nomi qui, `collectSources` li camminerebbe tutti a ogni esecuzione di
+ * `guards.test.ts` — che gia' oggi e' il test piu' lento della suite — e le
+ * guardie protesterebbero per codice di terzi che non possiamo correggere.
+ *
+ * ## Il prezzo, dichiarato
+ *
+ * Questo allarga un punto cieco: da qui in poi niente di cio' che sta dentro una
+ * cartella con uno di questi nomi e' controllato da nessuna guardia. E'
+ * accettabile finche' quelle cartelle restano generate; il giorno che ci
+ * scriviamo dentro codice nostro, nessuno ce lo dira'. Sta nei difetti noti del
+ * README.
+ *
+ * I nomi sono confrontati per intero e non per prefisso: `ios-bridge` o
+ * `building`, se un giorno esistessero e fossero nostri, vanno camminati. Un
+ * caso in fondo al file pinza esattamente questa differenza, perche' senza di
+ * lui un `IGNORED_DIRS` che ignora tutto passerebbe.
+ */
 const IGNORED_DIRS = new Set([
   "node_modules",
   "dist",
@@ -23,6 +55,11 @@ const IGNORED_DIRS = new Set([
   ".git",
   "migrations",
   "generated",
+  "ios",
+  "android",
+  "Pods",
+  "build",
+  ".gradle",
 ]);
 
 function collectSources(dir: string): string[] {
@@ -159,12 +196,45 @@ describe("guardia: isomorfismo di packages/shared", () => {
    *
    * Confini di parola nel pattern: la specifica e' in italiano e "DOCUMENTO",
    * "documento", "navigatore" comparirebbero come falsi positivi.
+   *
+   * `Capacitor` sta in questo elenco per lo stesso motivo di `MediaRecorder`, e
+   * il motivo e' piu' forte del solito: dentro il guscio nativo esiste un
+   * globale `Capacitor` che il compilatore non conosce e che a runtime c'e' sul
+   * telefono e non c'e' nel browser. E' l'unico modo che ha `shared` di
+   * accorgersi di essere dentro un'app, quindi e' anche la tentazione piu'
+   * probabile: una riga sola in un adapter e `packages/shared` smette di essere
+   * il pezzo che gira ovunque. La scelta dell'adapter sta in `apps/web`, dove
+   * stanno gia' `MediaRecorder` e il service worker.
    */
   const BROWSER_GLOBALS =
-    /\b(?:window|document|localStorage|sessionStorage|navigator|indexedDB|MediaRecorder|alert)\b/;
+    /\b(?:window|document|localStorage|sessionStorage|navigator|indexedDB|MediaRecorder|Capacitor|alert)\b/;
 
   it("non usa nessun global del browser", () => {
     expect(offendingLines(sharedSources(), BROWSER_GLOBALS)).toEqual([]);
+  });
+
+  /**
+   * L'errore opposto del caso qui sopra: una lista vuota e' anche cio' che
+   * restituisce un pattern che non trova mai niente, e il giorno che qualcuno
+   * sbaglia una parentesi nell'alternanza la guardia diventa verde per sempre.
+   *
+   * La terza riga del finto non e' riempitivo: e' la ragione per cui il pattern
+   * ha i confini di parola, e senza un caso che la pinzi «navigatore» e
+   * «documento» tornerebbero a far protestare la guardia alla prima frase
+   * italiana scritta in una stringa.
+   */
+  it("il pattern trova i global del browser dove ci sono davvero", () => {
+    const text = [
+      "const r = new MediaRecorder(s);",
+      'if ("Capacitor" in globalThis) { return 1; }',
+      'const nota = "il navigatore del documento";',
+    ].join("\n");
+    const finto = { path: "finto.ts", text, lines: text.split("\n") };
+
+    expect(offendingLines([finto], BROWSER_GLOBALS)).toEqual([
+      "finto.ts:1  const r = new MediaRecorder(s);",
+      'finto.ts:2  if ("Capacitor" in globalThis) { return 1; }',
+    ]);
   });
 
   const NODE_ONLY = /\b(?:process|Buffer|__dirname|__filename)\b|["']node:|\brequire\s*\(/;
@@ -268,5 +338,58 @@ describe("guardia: la guardia funziona", () => {
     const env = repoSources().filter((f) => f.path === "apps/api/src/config/env.ts");
     expect(env).toHaveLength(1);
     expect(offendingLines(env, /process\.env\b/).length).toBeGreaterThan(0);
+  });
+
+  /**
+   * Le cartelle native non si provano sull'albero vero, perche' esistono solo
+   * dopo un `npx cap add` e un caso che dipende da «se c'e'» non dice niente il
+   * giorno in cui non c'e'. Quindi se ne costruisce uno finto in una cartella
+   * temporanea, con dentro un `.ts` per ciascun nome: se `collectSources` lo
+   * raccoglie, quel nome e' stato camminato.
+   */
+  function alberoFinto(cartelle: readonly string[]): string {
+    const radice = mkdtempSync(join(tmpdir(), "guards-"));
+    for (const nome of cartelle) {
+      mkdirSync(join(radice, nome), { recursive: true });
+      writeFileSync(join(radice, nome, "file.ts"), "export const x = 1;\n");
+    }
+    return radice;
+  }
+
+  function camminati(radice: string): string[] {
+    return collectSources(radice)
+      .map((f) => relative(radice, f).split(sep).join("/"))
+      .sort();
+  }
+
+  it("una cartella nativa non viene camminata", () => {
+    const radice = alberoFinto(["ios", "android", "Pods", "build", ".gradle"]);
+    try {
+      expect(camminati(radice)).toEqual([]);
+    } finally {
+      rmSync(radice, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Il caso opposto, e l'unico che distingue questa guardia da un
+   * `IGNORED_DIRS` che contiene tutto. I quattro nomi sono scelti perche' sono
+   * i vicini piu' stretti dei cinque aggiunti: se il confronto diventasse per
+   * prefisso, o senza distinzione di maiuscole, o sul punto iniziale di
+   * `.gradle`, sparirebbe dalle guardie del codice nostro senza che niente
+   * diventi rosso — tranne questo.
+   */
+  it("una cartella nostra con un nome simile viene camminata lo stesso", () => {
+    const radice = alberoFinto(["ios-bridge", "androidx", "build-scripts", "gradle"]);
+    try {
+      expect(camminati(radice)).toEqual([
+        "androidx/file.ts",
+        "build-scripts/file.ts",
+        "gradle/file.ts",
+        "ios-bridge/file.ts",
+      ]);
+    } finally {
+      rmSync(radice, { recursive: true, force: true });
+    }
   });
 });

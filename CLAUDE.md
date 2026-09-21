@@ -215,8 +215,15 @@ rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
 deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
-**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1145 test**
+**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1148 test**
 unit + web su 49 file, **392** d'integrazione su 14 file, albero pulito.
+
+Il giro in corso è il guscio nativo: un'app vera per iOS e Android, con dentro il
+web già costruito, perché il cartello del microfono lo chieda il sistema una
+volta sola invece del browser a ogni sessione. Le fasi sono sei (0 preparazione,
+1 Android, 2 iOS in CI, 3 TestFlight, 4 registratore nativo, 5 store); la 3 e la
+5 costano denaro e dipendono dall'iscrizione al programma Apple, che è la cosa
+più lenta e non dipende da nessun codice.
 
 ### Cosa gira, e dove
 

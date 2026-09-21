@@ -101,11 +101,17 @@ references.
 
 **1. `packages/shared` deve restare isomorfo.** Ci girano sopra sia la PWA sia
 l'API sia il worker. Non può contenere `window`, `document`,
-`localStorage`, `process`, `Buffer`, `node:*` né importare `@prisma/client`. Il
+`localStorage`, `process`, `Buffer`, `node:*`, `Capacitor` né importare
+`@prisma/client`. Il
 `tsconfig` ha `types: []` per impedire l'accesso ai tipi di Node, ma `lib` deve
 includere `DOM` per i tipi di `fetch` — quindi il compilatore *permetterebbe*
 `document`. La rete di sicurezza è `tests/unit/guards.test.ts`, che legge i
-sorgenti e fallisce se ne trova traccia.
+sorgenti e fallisce se ne trova traccia. `Capacitor` è l'ultimo arrivato e vale
+la stessa regola per una ragione più forte: è il globale che esiste dentro il
+guscio nativo e non nel browser, cioè l'unico modo che `shared` avrebbe di
+accorgersi di dove sta girando — e quindi la tentazione più probabile. La scelta
+dell'adattatore sta in `apps/web`, dove stanno già `MediaRecorder` e il service
+worker.
 
 **2. `process.env` si legge in due file, e basta.** `apps/api/src/config/env.ts`
 per l'applicazione e `prisma/seed/config.ts` per il seed. Tutto il resto riceve
@@ -3960,6 +3966,22 @@ Non installate, e il perché:
   costruiscono ciò che sta su `master` appena ci arriva, senza chiedere niente a
   GitHub: un rosso è una notifica, non un cancello. Farlo diventare un cancello
   è un'impostazione delle due piattaforme, e sta da quella parte.
+- **Le guardie hanno cinque punti ciechi nuovi, e si chiamano `ios`, `android`,
+  `Pods`, `build`, `.gradle`.** `guards.test.ts` cammina l'albero del repo e
+  salta le cartelle elencate in `IGNORED_DIRS`; quei cinque nomi ci sono stati
+  aggiunti perché il guscio nativo genera sotto `apps/mobile/` migliaia di file
+  che non scriviamo noi — un progetto Xcode, i Pods di CocoaPods, un progetto
+  Gradle con la sua cache — e camminarli significherebbe far protestare le
+  guardie per codice di terzi, allungando insieme il test già più lento della
+  suite. Il prezzo è che da qui in poi **niente di ciò che sta dentro una
+  cartella con uno di quei nomi è controllato da nessuna guardia**: né il divieto
+  di `any`, né `process.env`, né altro. Finché quelle cartelle restano generate
+  la cosa è innocua; il giorno in cui ci scriviamo dentro codice nostro — e la
+  fase del registratore nativo è esattamente quel giorno — nessuno ce lo dirà.
+  Il confronto almeno è per nome intero e non per prefisso, quindi una cartella
+  nostra che si chiamasse `ios-bridge` continuerebbe a essere letta, e c'è un
+  caso che lo pinza; ma è una difesa contro l'allargamento accidentale, non
+  contro quello deliberato.
 - **Del deploy si provano i nomi, non il comportamento — e per Railway nemmeno
   quelli.** `deploy.test.ts` garantisce che ogni script, percorso e rotta citati
   nei tre `.toml` esistano davvero da questa parte, e nessun test può dire che
@@ -4020,6 +4042,27 @@ Non installate, e il perché:
   e l'impostazione per sito del browser. **Nessuna delle due è ancora misurata**,
   e finché non lo è l'app non le consiglia — un riquadro che spiega come si fa
   una cosa che non si è visto funzionare è peggio di nessun riquadro.
+- **Se lo schermo si blocca a metà registrazione, la registrazione sparisce, e
+  non lo dice nessuno.** I pezzi che `MediaRecorder` consegna vivono in un array
+  dentro `MediaRecorderAdapter` (`session.chunks`) e diventano un `Blob` solo
+  alla `stop()`: finché non si preme «Ferma», l'intero racconto sta in memoria
+  nella scheda del browser e da nessun'altra parte. Su iOS una scheda con lo
+  schermo bloccato viene sospesa e poi, sotto pressione di memoria, scaricata —
+  quindi il caso vero è chi accende il registratore, si mette il telefono in
+  tasca e parla per venti minuti: riaccende lo schermo e non trova niente, senza
+  nessun errore, perché dal punto di vista dell'app quella pagina non è mai
+  esistita. Il taglio a un secondo (`recorder.start(1000)`) limita ciò che si
+  perde a un guasto *del registratore*, non a uno della pagina che lo contiene.
+  Non c'è nessun `visibilitychange`, nessun `pagehide`, nessun Wake Lock —
+  verificato, in `apps/web/src` e in `packages/shared/src` non compare nessuno
+  dei quattro — e non ci sarebbe comunque una cura completa: un Wake Lock tiene
+  acceso lo schermo, che è l'opposto di ciò che vuole chi mette il telefono in
+  tasca, e scrivere i pezzi in IndexedDB mentre arrivano ridurrebbe la perdita
+  senza toglierla, perché la ripresa dopo lo sfratto è comunque un'altra
+  schermata da progettare. La cura vera è un registratore nativo, cioè un
+  processo che il sistema non sospende; è il motivo principale per cui esiste il
+  guscio, e finché non c'è **questo è il modo più facile di perdere del lavoro
+  in tutta l'applicazione**.
 
 ---
 
