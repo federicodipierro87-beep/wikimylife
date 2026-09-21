@@ -25,7 +25,7 @@ commit, non per la sua distanza da oggi.
 | 3 | le tre schermate scoperte, cestino grosso, una sessione | `36a6f8c` → `b904141` | 1050 su 47 file | 380 su 14 file |
 | — | il primo deploy vero | `f847ebb` | invariati | invariati |
 | — | i due difetti trovati dalla produzione | `5e2a772`, `9c5c587` | 1064 su 47 file | 381 su 14 file |
-| 4 | i tag duplicati, l'elenco che si accorge, le categorie | `2c184ba` → `HEAD` | 1136 su 48 file | 392 su 14 file |
+| 4 | i tag duplicati, l'elenco che si accorge, le categorie, il microfono | `2c184ba` → `HEAD` | 1145 su 49 file | 392 su 14 file |
 
 ---
 
@@ -588,9 +588,10 @@ Sul metodo, il caso concreto dietro due regole che ora stanno in `CLAUDE.md`:
 
 ## Giro 4 — i tag duplicati, l'elenco che si accorge, le categorie
 
-Quattro commit su cinque di un piano che ne prevedeva cinque; il quinto — il
-microfono su iOS — resta fermo, perché comincia con una misura da fare su un
-iPhone vero e quella la fa l'utente.
+Cinque commit di un piano che ne prevedeva cinque, ma l'ultimo è **mezzo**: il
+microfono su iOS cominciava con una misura da fare su un iPhone vero, l'utente
+l'ha fatta a metà, e quella metà basta per due delle cinque leve e non per le
+altre.
 
 ### `2c184ba` — i tag duplicati fanno morire il salvataggio
 
@@ -735,6 +736,76 @@ e duecento per la lunghezza di un nome, più la proprietà che vale più del num
 che la schermata e il contratto contino **lo stesso**. Le quattro mutazioni
 (`30→3`, `30→100`, `60→5`, `60→1000`) adesso cadono tutte.
 
+### Il microfono: la misura ha risposto, e la risposta era «non è tuo»
+
+Il quinto commit cominciava con cinque passi da fare su un iPhone. L'utente ne ha
+fatti tre, e hanno detto questo: alla prima registrazione compaiono i due
+cartelli; a una seconda nella stessa scheda non compare niente; dopo un logout e
+un nuovo login **ricompaiono tutti e due**.
+
+La terza riga sembrava un difetto nostro — il logout smonta `CaptureProvider`, il
+login ne costruisce uno nuovo, adattatori nuovi. Il primo controllo è stato un
+`grep` per `location.reload`: non esiste, in tutto `apps/web/src`. Quindi non è
+un caricamento di pagina, è solo React. Ma la prova che chiude il discorso è la
+**posizione**: il nostro codice non tocca in nessun punto il permesso di
+geolocalizzazione, eppure anche quello viene richiesto di nuovo. Se si dimentica
+una cosa che non abbiamo mai toccato, la causa è fuori dal nostro codice per
+costruzione. La geolocalizzazione ha fatto da controllo, esattamente come la
+mutazione che cambia un commento.
+
+Delle cinque leve del piano se ne sono implementate due, quelle che erano
+giustificate anche prima della misura, e si è scritto perché le altre no.
+
+**(a) L'inversione dell'ordine.** `start()` faceva partire il `void (async …)()`
+del GPS **prima** dell'`await recorder.current.start()`: il primo cartello
+riguardava la posizione, nell'attimo in cui si è premuto il tasto rosso per
+parlare. Invertito. Sicuro, perché `getUserMedia` resta dentro l'attivazione
+utente dello stesso click. E c'è un secondo effetto voluto: se il microfono è
+negato, `start()` esce prima e la posizione non viene chiesta affatto.
+
+**(b) La memoria di un rifiuto della posizione — ma non dove diceva il piano.**
+Il piano diceva `localStorage` con `try`/`catch`. La misura ha cambiato l'analisi:
+se i permessi non sopravvivono al caricamento della pagina, un ricordo scritto su
+disco vivrebbe **più a lungo della cosa che rispecchia** — il browser tornerebbe a
+chiedere e noi avremmo smesso di domandare, cioè posizione spenta per sempre su
+quel dispositivo e nessun posto da cui riaccenderla. Un campo dell'istanza ha
+esattamente la vita giusta: nasce e muore col provider, e non serve nessun gesto
+per dimenticarlo. Meno codice, nessuna porta a senso unico, nessuna interfaccia
+da inventare. Si ricorda **solo** `PERMISSION_DENIED`: un timeout e una posizione
+non determinabile sono guasti di adesso, e contarli come «no» spegnerebbe il GPS
+per il resto della sessione a chi ha registrato una volta in cantina.
+
+**(c) e (d) no, e il motivo è lo stesso.** Il pulsante «Prepara il microfono» e
+il riquadro su `navigator.standalone` dipendono dai due passi che mancano —
+installare dalla Home, e l'impostazione per sito. Un riquadro che spiega come si
+fa una cosa che non si è visto funzionare è peggio di nessun riquadro. **(e)**
+resta no per il motivo già scritto nel piano: dentro un caricamento di pagina il
+permesso è già concesso, quindi tenere vivo un `MediaStream` non evita nessun
+cartello e accende l'indicatore arancione in permanenza. Si pagherebbe un
+sospetto per non ottenere niente.
+
+**Il primo test che monta `CaptureProvider`.** Non ce n'erano, e il motivo era
+buono: costruisce da sé un `MediaRecorder`, un GPS e un IndexedDB. Ma l'ordine dei
+due permessi vive **solo** lì dentro, e nessun finto della schermata può vederlo.
+Due scelte hanno fatto la differenza. I marcatori li scrivono `getUserMedia` e
+`geolocation.getCurrentPosition`, cioè i globali veri del browser e non i nostri
+adattatori — così il caso prova che il telefono riceve le due domande in
+quell'ordine, non che `start()` chiama due nostri metodi. E l'ordine si prova con
+un array, non con due spie: due `toHaveBeenCalled` passano in qualunque ordine,
+cioè passano anche contro il difetto che il file esiste per impedire.
+
+Due inciampi, tutti e due di ambiente. Il piano metteva i casi della
+geolocalizzazione in `tests/unit/geolocation.test.ts`: `tsconfig.tests.json` ha
+`lib: ["ES2023"]` senza DOM, quindi `navigator.geolocation` non compila — e il
+progetto `web` raccoglie solo `.test.tsx`. E montare il provider in `jsdom`
+produce una promessa rifiutata che nessuno raccoglie, perché `indexedDB` non
+esiste e lo svuotamento della coda parte al montaggio: l'unico finto di modulo del
+file serve a questo, ed è dichiarato in cima.
+
+Dieci mutazioni, **nove cadute e il controllo vivo**. La decisiva è quella che
+rimette il GPS davanti al microfono, che è il difetto trovato sull'iPhone
+riscritto come mutazione.
+
 ### Sul metodo, due cose che questo giro ha insegnato
 
 **La mutazione di controllo serve per ogni comando, non per ogni file.** Il primo
@@ -758,9 +829,10 @@ nessun difetto da descrivere. Si è corretto il commento, che dicendo «nessun
 `WHERE` senza proprietario» lasciava credere che tutti e due stessero difendendo
 qualcosa.
 
-Da **1064** test unit + web su 47 file a **1136** su 48, e da **381**
+Da **1064** test unit + web su 47 file a **1145** su 49, e da **381**
 d'integrazione a **392**. Ventinove mutazioni sul commit dell'indice delle
 categorie — 26 cadute, due controlli vivi come devono, una equivalente
-dichiarata — e ventotto su quello della scheda e del riquadro: **26 cadute e
-due vive, che sono esattamente i due controlli**, nessuna saltata e nessun
-guasto del runner.
+dichiarata — ventotto su quello della scheda e del riquadro (**26 cadute e due
+vive, che sono esattamente i due controlli**) e dieci su quello del microfono:
+nove cadute e il controllo vivo. Nessuna saltata e nessun guasto del runner in
+nessuno dei tre giri.

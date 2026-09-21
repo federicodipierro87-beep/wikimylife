@@ -590,11 +590,33 @@ alla lettera: premuto stop, l'audio va in IndexedDB, lo svuotamento della coda
 parte senza essere atteso, e la schermata cambia. Si può chiudere l'app in
 quell'istante — la registrazione è su disco e partirà da sola.
 
-Per lo stesso motivo **il GPS non blocca il salvataggio**. Parte insieme al
+Per lo stesso motivo **il GPS non blocca il salvataggio**. Parte subito dopo il
 microfono e scrive in un riferimento mutabile man mano che arriva: prima le
 coordinate, poi l'etichetta del luogo. Allo stop quel riferimento si legge e
 basta. Se il geocoding non ha finito, il luogo semplicemente non c'è — è un
 contorno del racconto, non il racconto.
+
+**Dopo**, e non insieme: l'ordine di quelle due istruzioni è l'ordine dei
+cartelli che il telefono mostra. Per molti commit il GPS partiva per primo, e chi
+premeva il tasto rosso per parlare si vedeva chiedere come prima cosa dove si
+trova — il permesso meno importante davanti a quello senza il quale non c'è
+niente da registrare. L'ha trovato una registrazione vera su un iPhone, non un
+test: nessun test montava `CaptureProvider`. Adesso il microfono si chiede per
+primo e si aspetta, e c'è un secondo effetto voluto: **se il microfono è negato,
+la posizione non viene chiesta affatto.** Un'app che non può registrare non ha
+nessun motivo di sapere dove sei.
+
+**Un «no» alla posizione si ricorda, e dura quanto la pagina.** Prima
+`GeolocationAdapter` non ricordava niente: chi rispondeva «Non consentire» se lo
+vedeva richiedere alla registrazione successiva, e a quella dopo. La memoria è un
+campo dell'istanza e **non** `localStorage`, ed è una scelta che viene dalla
+stessa misura sull'iPhone: su Safari i permessi non sopravvivono al caricamento
+della pagina, quindi un nostro ricordo scritto su disco vivrebbe più a lungo
+della cosa che rispecchia — il browser tornerebbe a chiedere e noi avremmo smesso
+di domandare, cioè posizione spenta per sempre su quel dispositivo e nessun posto
+da cui riaccenderla. Legata all'istanza, nasce e muore col provider, che è la
+stessa vita del permesso. E si ricorda **solo** il rifiuto: un capannone senza
+segnale e un timeout scaduto sono guasti di adesso, non decisioni dell'utente.
 
 **La coda ordina con un `seq` monotono**, non con `Date.now()`: due
 registrazioni salvate nello stesso millisecondo avrebbero un ordine arbitrario.
@@ -2135,6 +2157,42 @@ insegnati come quello dell'API, con una differenza che vale la pena sapere —
 il test: finisce nell'avviso rosso della schermata, cioè in uno degli stati che
 i casi verificano di proposito. Per questo il messaggio dice di chi è la colpa.
 Ventitré mutazioni provate su questo file, ventitré cadute.
+
+Quel ragionamento regge ancora, e ha un'eccezione sola. C'è una cosa che vive
+**dentro** `CaptureProvider` e che nessun finto della schermata può vedere:
+l'ordine in cui `start()` chiede i due permessi. Per quello esiste
+`cattura.test.tsx`, il primo file che monta il provider vero — e paga davvero i
+tre finti di hardware, più un finto di modulo per `IndexedDbUploadQueue`, perché
+in `jsdom` la variabile `indexedDB` non esiste e lo svuotamento lanciato al
+montaggio finirebbe in una promessa rifiutata che nessuno raccoglie. L'ordine si
+prova con **un array di marcatori**, non con due spie: due `toHaveBeenCalled`
+passano in qualunque ordine, cioè passano anche contro il difetto che il file
+esiste per impedire — è lo stesso ragionamento del caso «`stop()` e poi
+`navigate()`». E i marcatori li scrivono `getUserMedia` e
+`geolocation.getCurrentPosition`, i due globali veri del browser e non i nostri
+adattatori: così il caso non prova che `start()` chiama due nostri metodi in un
+certo ordine, prova che **il telefono riceve le due domande in quell'ordine**,
+che è la cosa di cui si sta parlando. Un terzo caso guarda che la registrazione
+sia davvero partita, o uno `start()` che lanciasse sempre farebbe passare il
+primo per il motivo sbagliato: l'ordine sarebbe giusto perché non succede niente.
+
+Gli altri sei casi sono la memoria del «no» alla posizione, e provano
+`GeolocationAdapter` da solo: la proprietà riguarda due chiamate successive, e
+farle passare da due `start()` veri vorrebbe dire anche uno `stop()` in mezzo con
+l'audio finto, cioè rumore intorno a una cosa che si dice in tre righe. Il
+conteggio delle domande è il punto, perché la memoria non si vede dal valore di
+ritorno: `null` è la risposta sia di un GPS che ha detto no sia di uno a cui non
+si è chiesto niente, e le due si distinguono solo da quante volte il browser è
+stato disturbato. Sono pinzati tutti e due i versi — dopo un permesso si continua
+a chiedere, o una memoria troppo zelante spegnerebbe la posizione a chi l'aveva
+concessa e nessun errore lo direbbe, il campo resterebbe semplicemente vuoto — e
+i due errori che **non** sono rifiuti, il timeout e la posizione non
+determinabile. C'è il caso che dice che il rifiuto muore con l'istanza, che è la
+decisione del `localStorage` scartato scritta come asserzione invece che come
+commento, e quello che dice che un rifiuto risponde `null` e non lancia: se
+lanciasse, `start()` non arriverebbe a `setState` e il tasto rosso non partirebbe
+perché l'utente ha detto no a una comodità. Nove casi, dieci mutazioni provate:
+nove cadute e il controllo sopravvissuto.
 
 Della revisione — che nonostante il nome non ha niente a che vedere con i
 duplicati: è la schermata che chiude una scheda `DA_RIVEDERE` — undici casi su
@@ -3729,7 +3787,11 @@ Non installate, e il perché:
   si vedano per intero. La più scoperta resta quella che nessun `jsdom` potrebbe
   coprire: che il pulsante di registrazione sia davvero collegato al microfono
   non lo dice nessun test, perché `MediaRecorder` in un ambiente finto è un
-  oggetto che finge. Lo dice solo premerlo su un telefono vero.
+  oggetto che finge. Lo dice solo premerlo su un telefono vero. Il residuo si è
+  ristretto di un pezzo — adesso `cattura.test.tsx` monta `CaptureProvider` vero
+  e prova **in che ordine** le due domande arrivano al browser — ma si è ristretto
+  su ciò che si chiede, non su ciò che si ottiene: quale risposta dia un telefono
+  a quelle domande, e se da lì escano byte di audio, resta fuori.
 - **Il ponte arriva al client vero, e si ferma sotto la schermata.**
   `client.e2e.test.ts` fa parlare l'`ApiClient` vero con il server vero, quindi
   un `fetch` che non allega l'header o una risposta che il client decodifica
@@ -3936,6 +3998,28 @@ Non installate, e il perché:
   accettato un valore che non sapeva applicare**, e l'unica difesa è rileggere
   ciò che si è impostato invece di fidarsi del fatto che la chiamata sia
   riuscita.
+- **Il microfono lo richiede il browser, e l'app può solo chiedere meno volte.**
+  Misurato su un iPhone vero, in Safari: alla prima registrazione compaiono i due
+  cartelli; a una seconda registrazione nella stessa scheda non compare niente;
+  dopo un logout e un nuovo login **ricompaiono tutti e due**. Il logout e il
+  login non ricaricano la pagina — verificato, in `apps/web/src` non esiste
+  nessun `location.reload`: smontano `CaptureProvider` e ne costruiscono uno
+  nuovo, con adattatori nuovi. Ma un oggetto JavaScript nuovo non revoca un
+  permesso del browser, e la prova sta nella posizione: il nostro codice non
+  tocca **in nessun punto** il permesso di geolocalizzazione, eppure anche quello
+  viene richiesto di nuovo. Se si dimentica una cosa che non abbiamo mai toccato,
+  la causa è fuori dal nostro codice per costruzione. Quello che si è potuto fare
+  è chiedere meno e chiedere meglio — il microfono prima della posizione, la
+  posizione non chiesta affatto se il microfono è negato, un rifiuto della
+  posizione ricordato per tutta la vita della pagina — e sono tre cose vere ma
+  nessuna delle tre è la risposta alla domanda «perché me lo richiede». Non
+  esiste una riga di JavaScript che faccia smettere il telefono di chiedere:
+  `navigator.permissions.query({name:"microphone"})` su iOS Safari non esiste,
+  quindi lo stato del permesso non si può nemmeno **leggere** senza chiederlo. Le
+  due strade che restano non sono codice: installare l'app dalla schermata Home,
+  e l'impostazione per sito del browser. **Nessuna delle due è ancora misurata**,
+  e finché non lo è l'app non le consiglia — un riquadro che spiega come si fa
+  una cosa che non si è visto funzionare è peggio di nessun riquadro.
 
 ---
 

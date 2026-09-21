@@ -215,8 +215,8 @@ rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
 deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
-**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1136 test**
-unit + web su 48 file, **392** d'integrazione su 14 file, albero pulito.
+**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1145 test**
+unit + web su 49 file, **392** d'integrazione su 14 file, albero pulito.
 
 ### Cosa gira, e dove
 
@@ -290,17 +290,21 @@ la prima cosa da leggere per decidere cosa fare dopo. I tre più grossi:
 
 E la più grande di tutte, che nessun test coprirà mai: che il pulsante di
 registrazione sia davvero collegato al microfono lo dice solo premerlo su un
-telefono vero. **Da adesso si può**: il sito è pubblico e la pipeline è
-collegata a modelli veri, quindi la cosa più utile che si possa fare al prossimo
-giro non è un test — è registrare un vocale da un telefono e guardare dove si
-ferma. Nessuno l'ha ancora fatto, e finché non succede «funziona» resta una
-parola sostenuta solo da finti.
+telefono vero. **Adesso è stato fatto**, ed è servito: la prima registrazione da
+un iPhone ha trovato in un minuto che i due cartelli arrivavano nell'ordine
+sbagliato, cosa che nessun test poteva vedere perché nessun test montava
+`CaptureProvider`. Quel difetto è corretto e adesso un test lo pinza. Resta vero
+che da `MediaRecorder` in `jsdom` non escono byte di audio veri: «provata» e
+«funziona» restano due parole diverse, ma la distanza fra le due si è accorciata.
 
-C'è un commit fermo proprio lì: **il microfono su iOS** — quante volte Safari
-chiede il consenso, e cosa possiamo davvero farci. Non comincia con del codice,
-comincia con una misura sul telefono dell'utente: registrare dal sito a scheda
-nuova, poi di nuovo senza chiudere, poi riaprendo, poi dall'icona in Home, poi
-dopo aver messo «Consenti» in AA → Impostazioni sito web. Le cure possibili
-dipendono da quale dei quattro esiti si osserva, e
-nessuna è «una riga di JavaScript che fa smettere il telefono di chiedere»:
-quella non esiste.
+**Il microfono su iOS è mezzo fatto, e la metà che manca è una misura.** Delle
+cinque leve ne sono implementate due — il microfono chiesto prima della
+posizione, e un rifiuto della posizione ricordato per la vita della pagina. Le
+due che restano (un pulsante «Prepara il microfono» che chiami finalmente
+`requestPermission()`, e un riquadro su `navigator.standalone` che spieghi le due
+strade) dipendono da due passi che l'utente non ha ancora fatto: **installare
+l'app dalla schermata Home** e registrare da lì, e mettere «Consenti» in AA →
+Impostazioni sito web → Microfono. Finché non si è visto se funzionano, l'app non
+le consiglia. E niente di tutto questo è «una riga di JavaScript che fa smettere
+il telefono di chiedere»: quella non esiste, perché su iOS Safari non si può
+nemmeno *leggere* lo stato del permesso senza chiederlo.

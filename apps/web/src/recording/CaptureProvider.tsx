@@ -28,6 +28,30 @@ import { createUploader, type Uploader } from "./uploader";
  * tenere l'audio in memoria fino a dodici secondi dopo che l'utente ha finito
  * di parlare. Il luogo e' un extra; l'audio e' il dato.
  *
+ * ## Prima il microfono, e solo dopo il GPS
+ *
+ * I due permessi si chiedono nell'ordine in cui compaiono dentro `start()`, e
+ * per molti commit l'ordine e' stato il contrario: il `void (async …)` del GPS
+ * partiva sincrono *prima* dell'`await` del registratore, quindi chi premeva
+ * il tasto rosso per parlare si vedeva chiedere per prima cosa **dove si
+ * trova**. E' il dato meno importante dei due, e arrivava nell'attimo
+ * peggiore. L'ha trovato una registrazione vera su un iPhone, non un test.
+ *
+ * Invertirli e' sicuro: `getUserMedia` resta dentro l'attivazione utente dello
+ * stesso click — anzi ci arriva prima, non dopo. E ha un secondo effetto
+ * voluto: se il microfono viene negato, `start()` lancia e la posizione non si
+ * chiede affatto. Un'app che non puo' registrare non ha nessun motivo di
+ * sapere dove sei.
+ *
+ * Prezzo: la posizione parte qualche decimo di secondo piu' tardi. Non lo nota
+ * nessuno, perche' allo stop non la aspetta nessuno — vedi qui sopra.
+ *
+ * Questo **non** riduce i cartelli a uno, e non era mai stato promesso che lo
+ * facesse: su Safari iOS i permessi non sopravvivono al caricamento della
+ * pagina, misurato, e non esiste JavaScript che lo cambi. Riduce il numero di
+ * volte in cui si chiede la posizione, e mette per primo cio' che l'utente ha
+ * appena chiesto di fare.
+ *
  * ## Gli adattatori sono istanze, non moduli
  *
  * `useRef` e non variabili di modulo: due montaggi in `StrictMode` non devono
@@ -86,7 +110,18 @@ export interface Capture {
   /** Elementi ancora da caricare, esauriti compresi. */
   readonly inCoda: number;
   readonly online: boolean;
-  /** `false` quando il browser non ha `MediaRecorder` o il microfono e' negato. */
+  /**
+   * `false` quando questo browser non sa registrare: manca `MediaRecorder`,
+   * oppure manca `navigator.mediaDevices` — che e' anche cio' che si vede
+   * fuori da un contesto sicuro.
+   *
+   * **Non dice niente sul permesso**, e per un po' questa riga ha promesso il
+   * contrario. `isSupported()` il permesso non lo legge, e non potrebbe: su
+   * Safari iOS `navigator.permissions.query({name:"microphone"})` non esiste,
+   * quindi lo stato di un consenso non si puo' nemmeno *interrogare* senza
+   * chiederlo. Un microfono negato si scopre solo dentro `start()`, quando
+   * `getUserMedia` lancia, e da li' finisce nell'avviso della schermata.
+   */
   readonly supportata: boolean;
   /** L'audio che non e' riuscito ad arrivare su disco, se ce n'e' uno. */
   readonly nonSalvata: RegistrazioneNonSalvata | null;
@@ -249,9 +284,15 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
       );
     }
 
+    luogo.current = { coords: null, label: null };
+
+    // Il microfono per primo, e se lo nega si esce di qui senza aver chiesto
+    // altro. Vedi «## Prima il microfono, e solo dopo il GPS»: l'ordine di
+    // queste due istruzioni e' l'ordine dei cartelli sullo schermo.
+    await recorder.current.start();
+
     // Il GPS parte adesso e deposita il risultato nel ref quando arriva.
     // Nessuno lo aspetta, ne' qui ne' allo stop.
-    luogo.current = { coords: null, label: null };
     void (async (): Promise<void> => {
       const coords = await location.current.getCurrentPosition();
       if (coords === null) {
@@ -261,7 +302,6 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
       luogo.current = { coords, label: await location.current.reverseGeocode(coords) };
     })();
 
-    await recorder.current.start();
     setState({ kind: "in-corso", elapsedMs: 0 });
   }, []);
 

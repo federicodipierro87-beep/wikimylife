@@ -13,13 +13,47 @@ import type { Coordinates, LocationAdapter } from "@wikimylife/shared";
  * account, nessuna fattura a consumo. E' anche il motivo per cui e' un extra e
  * non un requisito: se il servizio e' lento o giu', `placeLabel` resta nullo e
  * le coordinate — che sono il dato vero — sono gia' salve.
+ *
+ * ## Un «no» si ricorda, e dura quanto la pagina
+ *
+ * Fino a poco fa questo adattatore non ricordava niente: chi rispondeva «Non
+ * consentire» si vedeva richiedere la posizione alla registrazione successiva,
+ * e a quella dopo. Adesso un rifiuto spegne le richieste seguenti.
+ *
+ * La memoria sta in un campo dell'istanza e **non** in `localStorage`, ed e'
+ * una scelta che viene da una misura fatta su un iPhone vero: su Safari i
+ * permessi non sopravvivono al caricamento della pagina — riaprendo l'app il
+ * cartello ricompare comunque. Un nostro ricordo scritto su disco
+ * sopravviverebbe alla cosa che sta rispecchiando: il browser tornerebbe a
+ * chiedere e noi avremmo smesso di domandare, cioe' posizione spenta per
+ * sempre su quel dispositivo senza nessun posto da cui riaccenderla. Legata
+ * all'istanza, invece, la memoria nasce e muore col provider — la stessa vita
+ * del permesso che rispecchia — e non serve nessun gesto per dimenticarla.
+ *
+ * Si ricorda **solo** il rifiuto. Un capannone senza segnale e un timeout
+ * scaduto sono guasti di adesso, non decisioni dell'utente: contarli come no
+ * spegnerebbe la posizione per il resto della sessione a chi ha registrato una
+ * volta in cantina.
  */
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const GEOCODE_TIMEOUT_MS = 4000;
 const NOMINATIM = "https://nominatim.openstreetmap.org/reverse";
 
+/**
+ * `GeolocationPositionError.PERMISSION_DENIED`, scritto come numero.
+ *
+ * La costante sta nel tipo ma non in `jsdom`, dove un test deve fabbricare
+ * l'errore a mano: leggerla dal nome obbligherebbe il finto a ricopiarsela, e
+ * un finto che ricopia le costanti della piattaforma finisce per provare se
+ * stesso. Il numero lo fissa la specifica, non la prosa di nessuno.
+ */
+const PERMESSO_NEGATO = 1;
+
 export class GeolocationAdapter implements LocationAdapter {
+  /** `true` da quando l'utente ha detto di no. Vedi «## Un «no» si ricorda». */
+  #rifiutata = false;
+
   isSupported(): boolean {
     return typeof navigator !== "undefined" && "geolocation" in navigator;
   }
@@ -28,6 +62,13 @@ export class GeolocationAdapter implements LocationAdapter {
     options: { readonly timeoutMs?: number | undefined } = {},
   ): Promise<Coordinates | null> {
     if (!this.isSupported()) {
+      return Promise.resolve(null);
+    }
+
+    // Ha gia' detto di no: richiedere sarebbe insistere, e la risposta la
+    // sappiamo. Chi chiama non distingue questo caso da un GPS senza segnale,
+    // ed e' giusto cosi': in tutti e due il posto non c'e'.
+    if (this.#rifiutata) {
       return Promise.resolve(null);
     }
 
@@ -42,7 +83,10 @@ export class GeolocationAdapter implements LocationAdapter {
             accuracyMeters: position.coords.accuracy,
           });
         },
-        () => {
+        (errore) => {
+          if (errore.code === PERMESSO_NEGATO) {
+            this.#rifiutata = true;
+          }
           resolve(null);
         },
         {
