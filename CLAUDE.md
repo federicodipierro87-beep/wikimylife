@@ -239,8 +239,43 @@ più lenta e non dipende da nessun codice.
 
 Della fase 0 sono chiuse la **0a** (le guardie sanno che esisteranno cartelle
 native) e la **0b** (si cancella il proprio conto: la 5.1.1(v) di Apple, senza la
-quale il rifiuto alla revisione è certo). Resta la **0c**: `privacy.html` che
-nomini OpenAI e Anthropic, e le icone.
+quale il rifiuto alla revisione è certo). Una deviazione dal piano, dichiarata:
+la rotta è `POST /api/auth/delete-account` e non `DELETE /api/auth/me`, perché il
+corpo su una `DELETE` è ammesso dallo standard e maltrattato dai middlebox — lo
+stesso motivo già scritto in `auth.routes.ts` per `/sessions/revoke`.
+
+### Il prossimo passo: la 0c, e la ricognizione è già fatta
+
+Manca `privacy.html` (deve nominare i terzi: l'audio esce dal telefono) e il set
+di icone. La ricognizione è stata fatta, e questo è il suo esito — vale come
+punto di partenza, **non** come verità da non ricontrollare:
+
+- `apps/web/public/` contiene **tre file soli**: `icona.svg`,
+  `manifest.webmanifest`, `sw.js`. **Nessun PNG in tutto il repo**, e Apple
+  vuole un 1024×1024 **senza canale alfa**.
+- Vite copia `public/` in `dist/` da sé: niente plugin PWA, `sw.js` è scritto a
+  mano. **Precarica il guscio** (`/`, `/index.html`, `/manifest.webmanifest`,
+  `/icona.svg`): una pagina nuova non ci entra se non la si aggiunge, e allora
+  va cambiato anche il nome della cache o il vecchio guscio resta.
+- `netlify.toml` ha un catch-all `/*` → `/index.html` con status **200**. Che un
+  file vero vinca sul redirect è il comportamento atteso di Netlify, **ma va
+  guardato sul sito, non dedotto**: il criterio della fase 0 è «`privacy.html`
+  risponde 200», e quella è una misura che vuole un deploy.
+- `tests/unit/deploy.test.ts` ha il caso «intesta solo file che esistono»:
+  aggiungere un `[[headers]]` per `/privacy.html` senza il file fa cadere il
+  test. È l'accoppiamento da ricordare.
+- I terzi da nominare, verificati nei provider e non a memoria:
+
+  | fornitore | modello (default in `env.ts`) | cosa esce |
+  |---|---|---|
+  | OpenAI | `whisper-1` | **i byte dell'audio** |
+  | OpenAI | `text-embedding-3-small` | il titolo, e il testo cercato |
+  | Anthropic | `claude-sonnet-4-5-20250929` | la trascrizione |
+  | Anthropic | `claude-haiku-4-5-20251001` | i campi della scheda |
+
+**E una cosa che non dipende da nessun codice:** l'iscrizione all'**Apple
+Developer Program** (99 $/anno). La verifica d'identità è la cosa più lenta del
+percorso e blocca la fase 3. Se non è partita, la fase 3 aspetta lì.
 
 ### Cosa gira, e dove
 
