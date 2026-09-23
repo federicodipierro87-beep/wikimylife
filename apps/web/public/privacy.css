@@ -1,0 +1,86 @@
+/*
+ * Lo stile di privacy.html, e di nient'altro.
+ *
+ * Non importa il CSS dell'app: quello esce da Vite con un nome che cambia a
+ * ogni build, e una pagina statica in public/ non lo puo' conoscere. I colori
+ * sono gli stessi a mano, ed e' l'unico accoppiamento.
+ */
+
+:root {
+  color-scheme: dark;
+  --fondo: #101418;
+  --testo: #f4f6f8;
+  --tenue: #a7b0ba;
+  --bordo: #2a323b;
+  --accento: #e5484d;
+}
+
+body {
+  margin: 0;
+  background: var(--fondo);
+  color: var(--testo);
+  font:
+    16px/1.6 system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+}
+
+main {
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: max(1.5rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+    max(2.5rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+}
+
+h1 {
+  font-size: 1.75rem;
+  margin: 0 0 0.25rem;
+}
+
+h2 {
+  font-size: 1.15rem;
+  margin: 2rem 0 0.5rem;
+}
+
+.aggiornata {
+  color: var(--tenue);
+  margin-top: 0;
+}
+
+li + li {
+  margin-top: 0.5rem;
+}
+
+/* La tabella puo' essere piu' larga del telefono: scorre lei, non la pagina. */
+.tabella {
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 32rem;
+}
+
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.5rem 0.75rem 0.5rem 0;
+  border-bottom: 1px solid var(--bordo);
+}
+
+th {
+  color: var(--tenue);
+  font-weight: 600;
+}
+
+a {
+  color: var(--accento);
+}
+
+.ritorno {
+  margin-top: 2.5rem;
+}

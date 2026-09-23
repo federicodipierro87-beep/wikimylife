@@ -17,7 +17,7 @@
     "types": ["node"],
     "jsx": "react-jsx"
   },
-  "include": ["tests/**/*.ts", "vitest.config.ts"],
+  "include": ["tests/**/*.ts", "scripts/**/*.ts", "vitest.config.ts"],
   // `tests/web/` sta in `tsconfig.tests.web.json`, che ha "DOM" e risolve come
   // un bundler. Lasciarlo anche qui vorrebbe dire chiedere a questa
   // configurazione di compilare file che importano `../../../apps/web/src/api`

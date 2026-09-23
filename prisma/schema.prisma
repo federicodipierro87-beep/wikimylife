@@ -103,7 +103,8 @@ model User {
 
   /// ## Perche' tutte e quattro cancellano a cascata
   ///
-  /// Perche' esiste `DELETE /api/auth/me`, e senza la cascata quella rotta
+  /// Perche' esiste `POST /api/auth/delete-account` (non `DELETE /me`: il
+  /// perche' sta in `auth.routes.ts`), e senza la cascata quella rotta
   /// sarebbe una promessa che il database rifiuta: `user.delete()` cadrebbe su
   /// un vincolo di chiave esterna, e l'utente leggerebbe un errore tecnico
   /// invece di vedersi cancellare il conto. Fino al commit che ha aggiunto

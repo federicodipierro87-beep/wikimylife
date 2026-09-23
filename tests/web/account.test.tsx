@@ -1338,3 +1338,16 @@ describe("AccountScreen: cancellare il conto", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
+
+describe("AccountScreen: la privacy", () => {
+  it("si raggiunge dal conto, sotto la sezione che lo cancella", async () => {
+    await montaAccount(collegato());
+
+    const collegamento = screen.getByRole("link", { name: /Privacy/ });
+    expect(collegamento.getAttribute("href")).toBe("/privacy.html");
+    // Dentro la schermata e non in una sezione: non e' un quinto gesto, e un
+    // `<section>` in piu' la metterebbe in fila con i quattro che tolgono cose.
+    expect(collegamento.closest("section")).toBeNull();
+    expect(collegamento.closest("main")).not.toBeNull();
+  });
+});

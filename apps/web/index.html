@@ -10,8 +10,12 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icona.svg" type="image/svg+xml" />
-    <!-- iOS ignora il manifest per l'icona della schermata home. -->
-    <link rel="apple-touch-icon" href="/icona.svg" />
+    <!--
+      iOS ignora il manifest per l'icona della schermata home, e questa deve
+      essere un PNG, per quanto se ne sa: il perche' e il dubbio stanno in
+      scripts/icone.ts, che la genera insieme a icona.svg.
+    -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>WikiMyLife</title>

@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#101418" />
+    <link rel="icon" href="/icona.svg" type="image/svg+xml" />
+    <!--
+      Il foglio di stile sta in un file e non in un <style>: la CSP di
+      netlify.toml ha style-src 'self' senza 'unsafe-inline', e uno stile
+      inline qui sparirebbe senza errori visibili.
+
+      Gli accenti sono entita' HTML per la regola del repo: nessun carattere
+      accentato fuori dal Markdown.
+
+      Ogni frase su cosa esce e verso chi e' stata verificata nel codice, non
+      scritta a memoria: i modelli stanno in apps/api/src/config/env.ts, cio'
+      che va agli embedding in ingestion.service.ts, le coordinate verso
+      Nominatim in apps/web/src/recording/GeolocationAdapter.ts. Chi cambia uno
+      di questi file cambia anche questa pagina.
+    -->
+    <link rel="stylesheet" href="/privacy.css" />
+    <title>Privacy &middot; WikiMyLife</title>
+  </head>
+  <body>
+    <main>
+      <h1>Privacy</h1>
+      <p class="aggiornata">Ultimo aggiornamento: 23 settembre 2026</p>
+
+      <p>
+        WikiMyLife trasforma le tue note vocali in schede che puoi ritrovare. Per farlo deve
+        conservare cosa registri e mandarlo, in parte, a servizi di altri. Questa pagina dice quali
+        dati, a chi, e come cancellarli.
+      </p>
+
+      <h2>Chi tratta i dati</h2>
+      <p>
+        Federico Di Pierro, che gestisce l&apos;app. Per qualunque domanda o richiesta:
+        <strong>federico.dipierro87@gmail.com</strong>.
+      </p>
+
+      <h2>Cosa conserviamo</h2>
+      <ul>
+        <li>
+          <strong>Il conto</strong>: l&apos;indirizzo email e la password, che non &egrave; mai
+          salvata in chiaro ma solo come impronta (argon2id).
+        </li>
+        <li>
+          <strong>Le registrazioni</strong>: il file audio, quando &egrave; stato registrato, la sua
+          durata e la lingua del dispositivo.
+        </li>
+        <li>
+          <strong>Ci&ograve; che se ne ricava</strong>: la trascrizione e la scheda con passi e tag,
+          insieme alle modifiche che fai tu.
+        </li>
+        <li>
+          <strong>La posizione</strong>, solo se la consenti: le coordinate del punto in cui hai
+          registrato e il nome della zona. Se non la consenti, la registrazione funziona lo stesso
+          senza.
+        </li>
+        <li>
+          <strong>Le sessioni</strong>: un codice per ogni dispositivo collegato, salvato solo come
+          impronta, che serve a restare dentro senza reinserire la password.
+        </li>
+        <li>
+          <strong>L&apos;indirizzo IP</strong>, per contare i tentativi di accesso e fermare chi
+          prova a indovinare una password. &Egrave; salvato insieme al nome della pagina chiesta,
+          non al tuo conto; il conteggio scade dopo un minuto e la riga viene cancellata alla
+          pulizia successiva.
+        </li>
+      </ul>
+      <p>
+        Non ci sono pubblicit&agrave;, statistiche di utilizzo n&eacute; strumenti che ti seguano da
+        un sito all&apos;altro.
+      </p>
+
+      <h2>A chi li mandiamo</h2>
+      <p>
+        Alcuni passaggi li fanno servizi di altre aziende. Ricevono solo ci&ograve; che serve a quel
+        passaggio, attraverso le loro API a pagamento:
+      </p>
+      <div class="tabella">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Chi</th>
+              <th scope="col">Cosa riceve</th>
+              <th scope="col">Perch&eacute;</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>OpenAI (Stati Uniti)</td>
+              <td><strong>L&apos;audio</strong> della registrazione</td>
+              <td>Trascriverlo in testo</td>
+            </tr>
+            <tr>
+              <td>Anthropic (Stati Uniti)</td>
+              <td>La trascrizione</td>
+              <td>Ricavarne la scheda</td>
+            </tr>
+            <tr>
+              <td>OpenAI (Stati Uniti)</td>
+              <td>Titolo, &laquo;quando serve&raquo; e tag della scheda, e il testo che cerchi</td>
+              <td>Trovare le schede per significato e non solo per parola</td>
+            </tr>
+            <tr>
+              <td>Anthropic (Stati Uniti)</td>
+              <td>
+                Il testo della scheda, solo quando chiedi di controllarla prima di condividerla
+              </td>
+              <td>Proporti cosa togliere, come nomi o numeri personali</td>
+            </tr>
+            <tr>
+              <td>OpenStreetMap (Nominatim)</td>
+              <td>Le coordinate, se consenti la posizione, direttamente dal tuo dispositivo</td>
+              <td>Dare un nome alla zona, fermandosi al quartiere</td>
+            </tr>
+            <tr>
+              <td>Railway</td>
+              <td>Tutto ci&ograve; che conserviamo</td>
+              <td>Ospita il server, il database e i file audio</td>
+            </tr>
+            <tr>
+              <td>Netlify</td>
+              <td>Il tuo indirizzo IP, come ogni sito che visiti</td>
+              <td>Ospita le pagine dell&apos;app</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        OpenAI e Anthropic trattano i dati secondo le proprie condizioni per l&apos;uso tramite API,
+        che trovi sui loro siti. Il trasferimento verso gli Stati Uniti &egrave; necessario per
+        usare quei servizi.
+      </p>
+
+      <h2>Il microfono e la posizione</h2>
+      <p>
+        Il microfono &egrave; acceso solo fra quando avvii una registrazione e quando la fermi. La
+        posizione si chiede all&apos;inizio di una registrazione, e un rifiuto viene rispettato
+        finch&eacute; l&apos;app resta aperta.
+      </p>
+
+      <h2>Per quanto tempo</h2>
+      <p>
+        Finch&eacute; il conto esiste, o finch&eacute; non cancelli tu una registrazione o una
+        scheda.
+      </p>
+
+      <h2>Cancellare tutto</h2>
+      <p>
+        Dall&apos;app, nella schermata del conto,
+        <strong>Cancella il conto</strong>: con la tua password si cancellano il conto, le
+        registrazioni, le schede, i tag e le sessioni, e i file audio vengono tolti
+        dall&apos;archivio nello stesso momento. Se la rimozione di un file non riesce,
+        l&apos;errore viene registrato per poterlo rimuovere.
+      </p>
+      <p>
+        Puoi anche scrivere all&apos;indirizzo sopra per chiedere una copia dei tuoi dati, per
+        correggerli o per cancellarli. Se pensi che i tuoi dati siano trattati male, puoi rivolgerti
+        al Garante per la protezione dei dati personali.
+      </p>
+
+      <p class="ritorno"><a href="/">Torna all&apos;app</a></p>
+    </main>
+  </body>
+</html>

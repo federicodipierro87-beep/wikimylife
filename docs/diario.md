@@ -965,3 +965,92 @@ già il filtro — e adesso dichiara la ridondanza e perché resta.
 Da **1148** test unit + web su 49 file a **1169**, e da **392** d'integrazione su
 14 file a **405**. Trenta mutazioni: **25 cadute, quattro controlli vivi come
 devono, una equivalente dichiarata**, zero guasti e zero saltate al giro finale.
+
+---
+
+## Giro 6 — la 0c: la pagina della privacy, e le icone che si generano
+
+### Le icone: un rasterizzatore scritto qui, invece di una dipendenza
+
+Nel repo non c'era un solo PNG, e Apple vuole un 1024×1024 **senza canale alfa**.
+Nessuno strumento del repo sapeva trasformare un SVG in PNG. Le strade pronte
+erano `sharp` o `@resvg/resvg-js`, cioè un binario nativo per piattaforma dentro
+`npm ci` — su Windows, in CI e su Netlify — per disegnare quattro forme; o un
+browser senza testa. Scartate tutte e due: `scripts/icone.ts` descrive il
+microfono una volta sola, calcola la distanza da un rettangolo arrotondato, da un
+semicerchio e da un segmento con sedici campioni per pixel, e scrive il PNG con
+`node:zlib`, che sa già comprimere e fare il CRC. Il prezzo è dichiarato nel
+file: sa disegnare solo queste forme.
+
+Lo stesso script scrive anche `icona.svg`, che prima era scritto a mano: i
+numeri sono stati riportati senza ritocchi, e il `diff` dell'SVG rigenerato tocca
+solo il commento. Adesso i tre file non possono divergere, e
+`tests/unit/icone.test.ts` lo pinza confrontando i **pixel** e non i byte — i
+byte dipendono dalla versione di zlib che arriva con Node.
+
+Un controllo esterno che il test non poteva dare: PIL, un decodificatore che non
+abbiamo scritto noi, legge i due PNG come `RGB` e trova i colori giusti nei punti
+giusti.
+
+**Una svista trovata strada facendo:** `index.html` puntava `apple-touch-icon` a
+`icona.svg`. Per quanto se ne sa Safari non accetta un SVG lì. È un ricordo e
+non una misura, ed è scritto così nel README.
+
+### La pagina: tre frasi false fermate prima di uscire
+
+Ogni frase su cosa esce e verso chi è stata cercata nel codice prima di restare
+nella pagina, e tre non hanno retto:
+
+- La ricognizione del giro prima diceva che agli embedding va «il titolo». In
+  `ingestion.service.ts` vanno **titolo, trigger e tag**.
+- Mancava un destinatario: **Nominatim di OpenStreetMap**, che riceve le
+  coordinate direttamente dal browser (`GeolocationAdapter.ts`).
+- La prima stesura diceva che il microfono è acceso «mentre tieni premuto il
+  pulsante». La registrazione si avvia e si ferma con due tocchi.
+
+E una scoperta che ha cambiato la pagina e aggiunto un difetto noto: gli
+**indirizzi IP stanno nel database**, in `RateLimitBucket`, e la pulizia parte
+ogni cinquecento richieste per processo. Avrei scritto «solo in memoria».
+
+### La guardia dei terzi, e i due falsi positivi che ha trovato su se stessa
+
+`tests/unit/privacy.test.ts` cerca gli URL `https://` che aprono un letterale nei
+sorgenti, e pretende che ogni host abbia un nome e che quel nome compaia nella
+pagina. Al primo giro è caduta due volte, tutte e due per ragioni giuste: aveva
+preso un `https://x.netlify.app/` fra due backtick in un JSDoc di `env.ts`, e il
+controllo della CSP aveva trovato la parola `<style>` nel **commento** della
+pagina che spiega perché non c'è uno `<style>`. Adesso salta le righe di commento
+dei sorgenti e i commenti HTML della pagina.
+
+### Le mutazioni
+
+Venticinque, su tre comandi, con un controllo per ciascuno: al primo giro **21
+cadute, tre controlli vivi, una sopravvissuta**. La sopravvissuta toglieva
+Nominatim dalla tabella della pagina, e restava verde perché «Nominatim»
+compariva ancora nel commento HTML in testa al file. Non era una mutazione
+equivalente: era il test che leggeva il sorgente invece di ciò che vede chi apre
+la pagina. Adesso i nomi si cercano in `VISIBILE`, la pagina senza commenti, e la
+mutazione cade. Al giro finale: **22 cadute, tre controlli vivi, zero saltate,
+zero guasti**.
+
+Una seconda debolezza l'ha trovata la lettura, prima delle mutazioni: il caso
+«non ha il canale alfa» confrontava con `PNG_RGB` **importato dallo script**, cioè
+con il valore che doveva controllare. Adesso il numero 2 è scritto nel test, e
+c'è un caso che guarda anche il PNG appena uscito dallo script — i file in git
+dicono solo com'era lo script l'ultima volta che qualcuno l'ha lanciato.
+
+### Due inciampi dello strumento
+
+- `prettier` lanciato senza configurazione riformatta a 80 colonne, e il repo non
+  ne ha una: ha spezzato un `it(..., 30_000)` mescolando il commento con gli
+  argomenti. Il codice del repo sta intorno alle 100 colonne e non è formattato
+  in modo uniforme.
+- Un `\r` dentro un heredoc passato a Python è arrivato nel file come un ritorno
+  a capo vero, spezzando una regex a metà. Le correzioni con barre rovesciate
+  vanno fatte con uno script scritto su file, non attraverso la shell.
+
+### I numeri
+
+Da **1169** test unit + web su 49 file a **1202** su 51, verdi due volte di
+seguito con le modifiche. Nessun cambiamento all'API, quindi l'integrazione non
+è stata rilanciata: resta a **405** su 14 file dall'ultimo giro.

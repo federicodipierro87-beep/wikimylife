@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { messaggioDi, useSession } from "../session";
+import { CollegamentoPrivacy } from "./Privacy";
 
 /**
  * Entrata e registrazione, nello stesso modulo.
@@ -91,6 +92,8 @@ export function LoginScreen(): React.JSX.Element {
       >
         {nuovo ? "Ho gia' un account" : "Non ho un account"}
       </button>
+
+      <CollegamentoPrivacy />
     </main>
   );
 }

@@ -10,6 +10,7 @@ import { useCapture } from "../recording/CaptureProvider";
 import { goBack } from "../router";
 import { messaggioDi, useSession } from "../session";
 import { useAsync, type Async } from "../useAsync";
+import { CollegamentoPrivacy } from "./Privacy";
 
 /**
  * L'account: chi sei, cambia password, esci.
@@ -304,6 +305,8 @@ export function AccountScreen(): React.JSX.Element {
       </section>
 
       <CancellaConto />
+
+      <CollegamentoPrivacy />
     </main>
   );
 }

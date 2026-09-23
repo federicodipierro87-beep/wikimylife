@@ -1162,6 +1162,44 @@ npm run build --workspace @wikimylife/web
 npm run preview --workspace @wikimylife/web   # http://localhost:4173
 ```
 
+### Le icone si generano, e la privacy è una pagina statica
+
+`apps/web/public/` contiene cinque file che Vite copia in `dist/` così come sono.
+Tre sono le icone, e **nessuna delle tre si modifica a mano**:
+
+| file | a cosa serve |
+|---|---|
+| `icona.svg` | la favicon del browser, con gli angoli arrotondati |
+| `icona-1024.png` | l'icona dell'App Store, e la sorgente da cui Capacitor ricaverà le altre |
+| `apple-touch-icon.png` | 180×180, la schermata Home di iOS per la PWA |
+
+Escono tutti e tre da `npm run icone`, cioè da `scripts/icone.ts`, che descrive
+il microfono una volta sola e lo scrive in SVG e in PNG. Il rasterizzatore è
+scritto lì, senza dipendenze: `sharp` o `resvg` porterebbero un binario nativo
+per piattaforma per disegnare quattro forme, e `node:zlib` sa già comprimere e
+fare il CRC di un PNG. `tests/unit/icone.test.ts` ridisegna tutto e lo confronta
+con i file in git — i **pixel**, non i byte, perché i byte dipendono dalla
+versione di zlib che arriva con Node.
+
+I PNG sono **quadrati pieni e RGB senza alfa**: Apple rifiuta un'icona con il
+canale alfa e gli angoli li arrotonda da sé. Il test guarda la trasparenza in
+tutti e due i posti in cui un PNG può dichiararla, l'IHDR e un blocco `tRNS`.
+
+`privacy.html` (con il suo `privacy.css`) è la pagina che Apple chiede due volte:
+come indirizzo nei metadati dello store, e raggiungibile dall'app. Dall'app ci
+si arriva con `CollegamentoPrivacy`, in fondo all'accesso e alla schermata del
+conto: un `<a>` normale nella stessa scheda, perché il file sta fuori dall'app a
+pagina singola e perché dentro il guscio nativo una scheda nuova aprirebbe il
+browser di sistema. Il foglio di stile è un file e non un `<style>`, per la CSP;
+gli accenti sono entità HTML, per la regola del repo.
+
+La pagina dice **a chi esce cosa**, ed è la parte che invecchia. Per questo
+`tests/unit/privacy.test.ts` cerca ogni URL `https://` scritto in testa a un
+letterale nei sorgenti che girano, e pretende che ogni host abbia una voce in
+`TERZI` e che il nome di quella voce compaia **nel testo visibile** della
+pagina — non nei commenti, dove un terzo nominato non lo sa nessuno. Chi aggiunge
+un fornitore scopre lì che c'è una pagina da aggiornare.
+
 ---
 
 ## pgvector e tsvector — la regola permanente sulle migration
@@ -4136,6 +4174,42 @@ Non installate, e il perché:
   nostra che si chiamasse `ios-bridge` continuerebbe a essere letta, e c'è un
   caso che lo pinza; ma è una difesa contro l'allargamento accidentale, non
   contro quello deliberato.
+- **`privacy.html` esiste nel repo, e sul sito non l'ha ancora vista nessuno.**
+  Il criterio della fase 0 è «risponde 200 su Netlify», e il `netlify.toml` ha un
+  catch-all `/*` → `/index.html` con status 200: che un file vero vinca sul
+  redirect è il comportamento documentato, ma un 200 lo dà **anche** il
+  catch-all, con dentro l'app invece della pagina. La misura giusta è un
+  `curl` sull'indirizzo pubblicato che cerchi nel corpo il titolo
+  «Privacy · WikiMyLife», non il codice di stato. Il service worker poi non la
+  precarica: aperta una volta con la rete resta in cache, mai aperta e senza
+  rete si vede l'app al suo posto. Nel guscio nativo il problema non c'è, perché
+  la pagina viaggia dentro il pacchetto.
+- **Che iOS voglia un PNG per la schermata Home è un ricordo.** `index.html`
+  puntava `apple-touch-icon` all'SVG; adesso punta a un PNG da 180, perché per
+  quanto se ne sa Safari non accetta un SVG lì e ripiega su uno screenshot della
+  pagina. Diventa vero o falso la prossima volta che l'app si aggiunge alla Home
+  da un iPhone. Il manifest invece dichiara ancora solo l'SVG, con
+  `purpose: "any maskable"` su un disegno con gli angoli già tondi: per Android
+  le icone vere arriveranno con la fase 1, ricavate da `icona-1024.png`.
+- **Gli indirizzi IP restano nel database senza una scadenza garantita.** La
+  pagina della privacy dice che la riga del limite dei tentativi «viene
+  cancellata alla pulizia successiva», ed è vero; ma la pulizia parte ogni
+  cinquecento richieste alle rotte limitate, contate per processo e azzerate a
+  ogni deploy. Con il traffico di oggi un indirizzo in `RateLimitBucket` può
+  restarci settimane. Quelle righe non sono legate a un conto, quindi
+  cancellare il proprio conto non le tocca. La cura è una pulizia a tempo — nel
+  ciclo del worker, dove già gira la scopa — e non una a contatore.
+- **L'elenco dei terzi si controlla dagli URL, e vede solo quelli scritti per
+  intero.** `privacy.test.ts` trova gli host negli URL che aprono un letterale.
+  Un indirizzo costruito a pezzi, o scritto su una riga che comincia come un
+  commento, non lo vede. E una voce è una scelta scritta a mano: l'host
+  `s3.` — il ripiego di `S3StorageProvider` quando manca un endpoint, cioè AWS —
+  è mappato su «Railway», perché è lì che sta il bucket vero; ma l'endpoint vero
+  vive nel pannello, e se un giorno cambiasse fornitore nessun test lo saprebbe.
+  Allo stesso modo, che un file audio rimasto dopo una cancellazione fallita sia
+  poi tolto davvero dipende da `SWEEP_MODE` sul worker di produzione, che parte
+  da `elenca` e non cancella: la pagina promette solo che l'errore viene
+  registrato, ed è l'unica cosa che il codice garantisce.
 - **Del deploy si provano i nomi, non il comportamento — e per Railway nemmeno
   quelli.** `deploy.test.ts` garantisce che ogni script, percorso e rotta citati
   nei tre `.toml` esistano davvero da questa parte, e nessun test può dire che

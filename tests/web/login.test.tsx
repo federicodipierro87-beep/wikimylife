@@ -192,3 +192,33 @@ describe("LoginScreen", () => {
     });
   });
 });
+
+/**
+ * La privacy, raggiungibile prima di dare i propri dati.
+ *
+ * Apple la vuole dentro l'app oltre che sullo store, e questa e' la schermata
+ * in cui si decide se iscriversi. Che il file esista davvero in `public/` lo
+ * prova `tests/unit/privacy.test.ts`, che puo' aprire i file: qui non c'e' `fs`.
+ */
+describe("LoginScreen: la privacy", () => {
+  function collegamento(): HTMLAnchorElement {
+    return screen.getByRole("link", { name: /Privacy/ }) as HTMLAnchorElement;
+  }
+
+  it("c'e' mentre si entra, e punta alla pagina statica", () => {
+    montaLogin(creaClienteFinto({ restoreSession: () => Promise.resolve(null) }));
+
+    expect(collegamento().getAttribute("href")).toBe("/privacy.html");
+    // Stessa scheda: nel guscio nativo una scheda nuova uscirebbe dall'app.
+    expect(collegamento().getAttribute("target")).toBeNull();
+  });
+
+  it("resta mentre si crea il conto, che e' il momento in cui conta", async () => {
+    montaLogin(creaClienteFinto({ restoreSession: () => Promise.resolve(null) }));
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Non ho un account" }));
+
+    expect(screen.getByRole("button", { name: "Crea l'account" })).toBeTruthy();
+    expect(collegamento().getAttribute("href")).toBe("/privacy.html");
+  });
+});

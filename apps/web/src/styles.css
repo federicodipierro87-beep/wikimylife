@@ -1134,3 +1134,10 @@ button:focus-visible {
   gap: 0.5rem;
   margin-top: 0.6rem;
 }
+
+/* Il collegamento alla privacy, in fondo all'accesso e al conto. Del colore del
+   testo tenue e sottolineato: si deve trovare, non chiamare. Il blu di default
+   del browser su questo fondo si legge male. */
+.nota-privacy a {
+  color: inherit;
+}

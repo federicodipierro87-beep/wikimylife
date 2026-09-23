@@ -37,7 +37,17 @@ npm run sweep -- --cancella
 ```
 
 Non c'è nessuno script di lint: il typecheck è tutto quello che c'è, e va
-passato per intero prima di ogni commit.
+passato per intero prima di ogni commit. Non c'è nemmeno una configurazione di
+`prettier`: lanciato con i default riformatta a 80 colonne, e il codice sta
+intorno alle 100. Se proprio serve, `--print-width 100`, e solo sui file nuovi.
+
+Le barre rovesciate non passano intatte attraverso un heredoc dato a Python: un
+`\\r` è arrivato nel file come ritorno a capo vero. Le sostituzioni con dentro
+delle regex si fanno con uno script scritto su file, o con lo strumento di
+modifica.
+
+`npm run icone` riscrive le tre icone in `apps/web/public/`: **non si toccano a
+mano**, `icone.test.ts` confronta i pixel con lo script.
 
 `@wikimylife/shared` viene consumato da `dist`, non da `src`. Se tocchi
 `packages/shared/src`, i test non vedono la modifica finché non gira
@@ -176,6 +186,12 @@ Il caso da cui viene ciascuna sta in `docs/diario.md`.
   dice dove si è finiti. Serve un `beforeEach` che lo riporti al punto di
   partenza, o l'hash lasciato dal caso prima fa passare per «non ha navigato» un
   caso che ha navigato.
+- **Ciò che deve leggere l'utente si cerca in ciò che vede.** Un `toContain`
+  sul sorgente di una pagina trova anche i commenti: una mutazione che toglieva
+  un terzo dalla tabella di `privacy.html` sopravviveva perché il suo nome stava
+  nel commento in testa al file.
+- **Una costante che il test deve controllare non si importa dal codice
+  controllato.** Si muove insieme a lui, e il caso passa sempre.
 - **Un 401 non si aspetta, si provoca.** `ACCESS_TOKEN_TTL_MIN` ha un minimo di
   un minuto, e un test che dorme un minuto è un test che qualcuno toglie. Si
   costruisce un secondo client con il refresh token del primo nel deposito e la
@@ -227,8 +243,8 @@ rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
 deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
-**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1169 test**
-unit + web su 49 file, **405** d'integrazione su 14 file, albero pulito.
+**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1202 test**
+unit + web su 51 file, **405** d'integrazione su 14 file, albero pulito.
 
 Il giro in corso è il guscio nativo: un'app vera per iOS e Android, con dentro il
 web già costruito, perché il cartello del microfono lo chieda il sistema una
@@ -238,40 +254,26 @@ volta sola invece del browser a ogni sessione. Le fasi sono sei (0 preparazione,
 più lenta e non dipende da nessun codice.
 
 Della fase 0 sono chiuse la **0a** (le guardie sanno che esisteranno cartelle
-native) e la **0b** (si cancella il proprio conto: la 5.1.1(v) di Apple, senza la
-quale il rifiuto alla revisione è certo). Una deviazione dal piano, dichiarata:
-la rotta è `POST /api/auth/delete-account` e non `DELETE /api/auth/me`, perché il
-corpo su una `DELETE` è ammesso dallo standard e maltrattato dai middlebox — lo
-stesso motivo già scritto in `auth.routes.ts` per `/sessions/revoke`.
+native), la **0b** (si cancella il proprio conto: la 5.1.1(v) di Apple, senza la
+quale il rifiuto alla revisione è certo) e la **0c nel repo**: `privacy.html`
+nomina i terzi e si raggiunge dall'app, e le icone escono da `npm run icone`
+(`icona-1024.png` RGB senza alfa, `apple-touch-icon.png`, `icona.svg`). Una
+deviazione dal piano, dichiarata: la rotta è `POST /api/auth/delete-account` e
+non `DELETE /api/auth/me`, perché il corpo su una `DELETE` è ammesso dallo
+standard e maltrattato dai middlebox.
 
-### Il prossimo passo: la 0c, e la ricognizione è già fatta
+### Il prossimo passo: la misura della 0c, poi la fase 1
 
-Manca `privacy.html` (deve nominare i terzi: l'audio esce dal telefono) e il set
-di icone. La ricognizione è stata fatta, e questo è il suo esito — vale come
-punto di partenza, **non** come verità da non ricontrollare:
+La 0c è chiusa nel codice e **non ancora sul sito**: il commit non è stato
+spinto, e il criterio «`privacy.html` risponde» vuole un deploy. Attenzione a
+come si misura: il catch-all di `netlify.toml` risponde 200 **anche** quando il
+file non c'è, con dentro l'app. Si cerca nel corpo il titolo
+«Privacy · WikiMyLife», non il codice di stato.
 
-- `apps/web/public/` contiene **tre file soli**: `icona.svg`,
-  `manifest.webmanifest`, `sw.js`. **Nessun PNG in tutto il repo**, e Apple
-  vuole un 1024×1024 **senza canale alfa**.
-- Vite copia `public/` in `dist/` da sé: niente plugin PWA, `sw.js` è scritto a
-  mano. **Precarica il guscio** (`/`, `/index.html`, `/manifest.webmanifest`,
-  `/icona.svg`): una pagina nuova non ci entra se non la si aggiunge, e allora
-  va cambiato anche il nome della cache o il vecchio guscio resta.
-- `netlify.toml` ha un catch-all `/*` → `/index.html` con status **200**. Che un
-  file vero vinca sul redirect è il comportamento atteso di Netlify, **ma va
-  guardato sul sito, non dedotto**: il criterio della fase 0 è «`privacy.html`
-  risponde 200», e quella è una misura che vuole un deploy.
-- `tests/unit/deploy.test.ts` ha il caso «intesta solo file che esistono»:
-  aggiungere un `[[headers]]` per `/privacy.html` senza il file fa cadere il
-  test. È l'accoppiamento da ricordare.
-- I terzi da nominare, verificati nei provider e non a memoria:
-
-  | fornitore | modello (default in `env.ts`) | cosa esce |
-  |---|---|---|
-  | OpenAI | `whisper-1` | **i byte dell'audio** |
-  | OpenAI | `text-embedding-3-small` | il titolo, e il testo cercato |
-  | Anthropic | `claude-sonnet-4-5-20250929` | la trascrizione |
-  | Anthropic | `claude-haiku-4-5-20251001` | i campi della scheda |
+Poi la fase 1, Android: `apps/mobile` con Capacitor, le icone Android ricavate da
+`icona-1024.png` (il manifest dichiara ancora solo l'SVG). L'indirizzo della
+privacy per lo store è `https://wikimylife.netlify.app/privacy.html`; il
+titolare indicato è Federico Di Pierro, con la sua gmail, scelta dall'utente.
 
 **E una cosa che non dipende da nessun codice:** l'iscrizione all'**Apple
 Developer Program** (99 $/anno). La verifica d'identità è la cosa più lenta del
