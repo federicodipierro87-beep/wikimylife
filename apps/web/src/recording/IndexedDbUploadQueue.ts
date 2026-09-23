@@ -167,6 +167,18 @@ export class IndexedDbUploadQueue implements UploadQueueAdapter {
   async size(): Promise<number> {
     return this.#read((store) => promisify(store.count()));
   }
+
+  async clear(): Promise<void> {
+    const db = await this.#open();
+    const tx = db.transaction(STORE, "readwrite");
+    // `store.clear()` e non un ciclo di `delete`: una transazione sola, quindi
+    // non esiste il mezzo svuotamento che resterebbe se il browser si chiudesse
+    // a meta'. Il numero d'ordine riparte da uno all'`enqueue` successivo,
+    // perche' `seq` si calcola dall'ultima riga presente e adesso non ce ne
+    // sono: e' corretto, `seq` ordina la coda e non identifica niente.
+    tx.objectStore(STORE).clear();
+    await committed(tx);
+  }
 }
 
 /** Toglie `seq`, che e' un dettaglio di questo archivio e non del contratto. */

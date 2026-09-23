@@ -320,6 +320,54 @@ describe("vincoli che il dominio da' per scontati", () => {
 
     expect(rows[0]?.delete_rule).toBe("SET NULL");
   });
+
+  it("cancellare l'utente porta via tutto cio' che e' suo, e niente d'altro", async () => {
+    // La 5.1.1(v) di Apple vuole che un conto si possa cancellare dall'app. Il
+    // servizio chiama `user.delete()` e basta: sono queste quattro regole a
+    // fare il lavoro, e prima della migrazione che le ha messe tre di loro
+    // erano NO ACTION — cioe' `user.delete()` rispondeva 500 su qualunque
+    // utente che avesse mai registrato qualcosa.
+    //
+    // Questo caso esiste perche' un `onDelete: Cascade` scritto in
+    // `schema.prisma` e mai migrato e' invisibile a tutto il resto della suite:
+    // il client di Prisma lo legge dallo schema, il doppio in memoria cancella
+    // per conto proprio, e il difetto arriva fino in produzione.
+    // La domanda si fa a `pg_constraint` e non a `information_schema`, perche'
+    // e' l'unica delle due che sappia rispondere a «quali chiavi puntano a
+    // *questa* tabella»: `confrelid` e' la tabella riferita. Elencarle per nome
+    // avrebbe provato solo i nomi che qualcuno si e' ricordato di scrivere qui,
+    // e il difetto da prendere e' esattamente quello di una tabella nuova con
+    // uno `userId` che nessuno ha collegato alla cancellazione.
+    const verso = await prisma.$queryRaw<{ conname: string; confdeltype: string }[]>`
+      SELECT c.conname, c.confdeltype::text
+      FROM pg_constraint c
+      WHERE c.contype = 'f' AND c.confrelid = '"User"'::regclass
+      ORDER BY c.conname
+    `;
+
+    // `c` = CASCADE. Tutte e quattro: ne basterebbe una diversa perche'
+    // `user.delete()` fallisse con una violazione di chiave esterna, e il
+    // gesto che Apple pretende risponderebbe 500.
+    expect(verso).toEqual([
+      { conname: "Procedure_userId_fkey", confdeltype: "c" },
+      { conname: "Recording_userId_fkey", confdeltype: "c" },
+      { conname: "RefreshToken_userId_fkey", confdeltype: "c" },
+      { conname: "Tag_userId_fkey", confdeltype: "c" },
+    ]);
+
+    // L'errore opposto: che la colonna letta sia una costante. Se `confdeltype`
+    // rispondesse `c` a chiunque — per un errore di cast, o perche' si e' letta
+    // la colonna sbagliata — l'asserzione sopra sarebbe verde qualunque cosa
+    // dicesse lo schema. `Recording_duplicateOfId_fkey` e' `n` (SET NULL) per
+    // la ragione scritta nel caso qui sopra, ed e' la prova che questa query
+    // sa distinguere.
+    const controprova = await prisma.$queryRaw<{ confdeltype: string }[]>`
+      SELECT c.confdeltype::text
+      FROM pg_constraint c
+      WHERE c.contype = 'f' AND c.conname = 'Recording_duplicateOfId_fkey'
+    `;
+    expect(controprova[0]?.confdeltype).toBe("n");
+  });
 });
 
 describe("storia delle migration", () => {
@@ -340,6 +388,7 @@ describe("storia delle migration", () => {
       "20260903100000_procedure_fulltext",
       "20260906120000_recording_next_attempt_at",
       "20260907100000_rate_limit_bucket",
+      "20260922100000_delete_account_cascade",
     ]);
     expect(rows.every((r) => r.finished_at !== null && r.rolled_back_at === null)).toBe(true);
   });

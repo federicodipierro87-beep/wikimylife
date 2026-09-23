@@ -139,6 +139,28 @@ export interface Capture {
   scarica(): void;
   /** Rinuncia all'audio non salvato. E' una decisione dell'utente, non dell'app. */
   scarta(): void;
+  /**
+   * Butta via la coda intera. Un chiamante solo: il conto cancellato.
+   *
+   * ## Perche' passa di qui e non direttamente dalla schermata
+   *
+   * Perche' la coda e' un `useRef` dentro questo provider, e l'unico modo che
+   * una schermata ha di toccarla senza costruirsene una seconda — cioe' senza
+   * aprire un secondo IndexedDB con lo stesso nome e con un conteggio tutto suo
+   * — e' chiederlo a chi ce l'ha. Il conteggio a schermo si aggiorna da se',
+   * che e' il secondo motivo: una cancellazione fatta fuori da qui lascerebbe
+   * l'indicatore a dire «3 in coda» sopra una coda vuota.
+   *
+   * ## Perche' non lancia
+   *
+   * Perche' chi la chiama ha appena cancellato il proprio conto, e a quel punto
+   * la cosa e' fatta sul server: un IndexedDB negato — Firefox in navigazione
+   * privata — non deve trasformare un gesto riuscito in un errore rosso. Il
+   * residuo e' che dei vocali di un conto che non esiste piu' restino sul
+   * telefono a ritentare; restano gia' in quel caso, perche' in navigazione
+   * privata non ci sono mai arrivati.
+   */
+  svuotaCoda(): Promise<void>;
 }
 
 /**
@@ -413,6 +435,27 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
     setNonSalvata(null);
   }, []);
 
+  const svuotaCoda = useCallback(async (): Promise<void> => {
+    try {
+      await queue.current.clear();
+    } catch {
+      // Vedi il commento sull'interfaccia: chi chiama ha gia' cancellato il
+      // conto sul server, e un IndexedDB negato non deve far sembrare fallito
+      // un gesto riuscito.
+    }
+    // Anche dopo un errore: `aggiornaConteggio` rilegge la coda vera, quindi
+    // rimette a schermo il numero giusto qualunque dei due casi sia successo.
+    // Fuori dal `try` perche' non e' un rimedio all'errore, e' la lettura che
+    // va fatta comunque.
+    aggiornaConteggio();
+    // L'audio che non era mai arrivato su disco non sta nella coda, sta in un
+    // ref: `clear()` non lo tocca, e senza questo resterebbe a schermo un
+    // riquadro che propone di riprovare a salvare il vocale di un conto che
+    // non esiste piu'.
+    inSospeso.current = null;
+    setNonSalvata(null);
+  }, [aggiornaConteggio]);
+
   const value = useMemo<Capture>(
     () => ({
       state,
@@ -428,6 +471,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
       riscrivi,
       scarica,
       scarta,
+      svuotaCoda,
     }),
     [
       state,
@@ -442,6 +486,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
       riscrivi,
       scarica,
       scarta,
+      svuotaCoda,
     ],
   );
 

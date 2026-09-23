@@ -10,7 +10,7 @@ import {
  * `CaptureProvider` costruisce da se' un `MediaRecorder`, un GPS e un
  * IndexedDB. In `jsdom` nessuno dei tre esiste per davvero, e montarlo vorrebbe
  * dire tre finti di hardware per provare che un pulsante cambia etichetta. Qui
- * si salta direttamente a cio' che la schermata legge: sette campi e sette
+ * si salta direttamente a cio' che la schermata legge: sei campi e otto
  * metodi.
  *
  * I valori predefiniti sono lo stato tranquillo — ferma, online, supportata,
@@ -50,6 +50,7 @@ export function creaCapturaFinta(parti: Partial<Capture> = {}): Capture {
     riscrivi: () => nonPrevista("riscrivi"),
     scarica: () => nonPrevista("scarica"),
     scarta: () => nonPrevista("scarta"),
+    svuotaCoda: () => nonPrevista("svuotaCoda"),
   };
 
   return { ...base, ...parti };

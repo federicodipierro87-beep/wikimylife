@@ -1326,6 +1326,317 @@ describe("chiudere una sessione sola", () => {
   });
 });
 
+/**
+ * Cancellare il proprio conto, contro Postgres vero e contro un bucket vero.
+ *
+ * `auth.service.test.ts` copre gia' le decisioni: la password sbagliata, il
+ * rifiuto con un vocale in lavorazione, i numeri della ricevuta. Non e' quello
+ * che si prova qui. Qui si prova la sola cosa che un repository in memoria non
+ * puo' dire, e che e' anche l'unica che, sbagliata, non si rimedia: che la
+ * cascata dichiarata in `schema.prisma` sia davvero nel database, e che si
+ * fermi al confine dell'utente.
+ *
+ * La differenza non e' teorica. Una `onDelete: Cascade` scritta nello schema e
+ * non migrata e' invisibile a tutta la suite unitaria — il doppio in memoria
+ * cancella per conto suo e risponde i numeri giusti — e si manifesta come una
+ * violazione di chiave esterna la prima volta che qualcuno preme il pulsante
+ * in produzione. L'errore opposto e' peggio: una FK senza `where` che porta via
+ * anche le righe di un altro. Per questo ogni caso qui sotto ha due utenti.
+ */
+describe("cancellare il proprio conto", () => {
+  const CANCELLA = "/api/auth/delete-account";
+
+  /** Un utente con un vocale, dei byte nel bucket e una scheda. */
+  async function conRoba(
+    email: string,
+    chiave: string,
+  ): Promise<Session & { procedureId: string }> {
+    const sessione = await signup(email);
+    await testPrisma().recording.create({
+      data: {
+        userId: sessione.userId,
+        audioUrl: chiave,
+        mimeType: "audio/webm",
+        durationMs: 12_000,
+        recordedAt: new Date("2026-03-01T09:30:00.000Z"),
+      },
+    });
+    await server.composition.providers.storage.put({
+      key: chiave,
+      data: new Uint8Array([7, 7, 7]),
+      mimeType: "audio/webm",
+    });
+    const scheda = await testPrisma().procedure.create({
+      data: { userId: sessione.userId, titolo: `Scheda di ${email}` },
+    });
+    return { ...sessione, procedureId: scheda.id };
+  }
+
+  it("le schede di un altro utente restano", async () => {
+    const mio = await conRoba(EMAIL, "audio/mio.webm");
+    const altrui = await conRoba("altro@wikimylife.test", "audio/suo.webm");
+
+    const res = await call(server, "POST", CANCELLA, {
+      accessToken: mio.accessToken,
+      body: { currentPassword: PASSWORD },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ vocali: 1, schede: 1, sessioni: 1 });
+
+    // La cascata ha portato via le mie righe. E' la meta' che sarebbe fallita
+    // con un vincolo di chiave esterna se la migrazione non fosse stata
+    // applicata: prima di lei, `user.delete()` su un utente con dei vocali
+    // rispondeva 500.
+    expect(await testPrisma().user.findUnique({ where: { id: mio.userId } })).toBeNull();
+    expect(await testPrisma().recording.count({ where: { userId: mio.userId } })).toBe(0);
+    expect(await testPrisma().procedure.count({ where: { userId: mio.userId } })).toBe(0);
+
+    // E si e' fermata al confine. Senza questa meta', una FK dichiarata sulla
+    // tabella sbagliata — o un `deleteMany` senza `where` nel servizio —
+    // passerebbe il caso sopra per intero.
+    expect(await testPrisma().user.findUnique({ where: { id: altrui.userId } })).not.toBeNull();
+    expect(await testPrisma().recording.count({ where: { userId: altrui.userId } })).toBe(1);
+    expect(
+      await testPrisma().procedure.findUnique({ where: { id: altrui.procedureId } }),
+    ).not.toBeNull();
+  });
+
+  it("i byte spariscono dal bucket, e solo i miei", async () => {
+    const mio = await conRoba(EMAIL, "audio/mio.webm");
+    await conRoba("altro@wikimylife.test", "audio/suo.webm");
+    const bucket = server.composition.providers.storage;
+
+    await call(server, "POST", CANCELLA, {
+      accessToken: mio.accessToken,
+      body: { currentPassword: PASSWORD },
+    });
+
+    // Il bucket non partecipa alla transazione e non ha nessuna cascata: se il
+    // servizio si fidasse di Postgres, questi byte resterebbero li' per sempre
+    // senza nessuna riga che li nomini — e nessun altro caso se ne
+    // accorgerebbe, perche' l'audio orfano non rompe niente. Costa e basta.
+    await expect(bucket.exists("audio/mio.webm")).resolves.toBe(false);
+    await expect(bucket.exists("audio/suo.webm")).resolves.toBe(true);
+  });
+
+  it("il refresh token non funziona piu'", async () => {
+    const mio = await conRoba(EMAIL, "audio/mio.webm");
+    // Due dispositivi: quello da cui si preme il pulsante, e un altro che
+    // rimane acceso in tasca da qualche parte.
+    const secondo = authSessionSchema.parse(
+      (
+        await call(server, "POST", "/api/auth/login", {
+          body: { email: EMAIL, password: PASSWORD },
+        })
+      ).body,
+    );
+
+    const res = await call(server, "POST", CANCELLA, {
+      accessToken: mio.accessToken,
+      body: { currentPassword: PASSWORD },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ sessioni: 2 });
+
+    // Il refresh e' la porta che resta aperta piu' a lungo: l'access token
+    // scade da solo entro un quarto d'ora, questo dura trenta giorni. La
+    // cascata su `RefreshToken` c'era gia' prima di questo lavoro, e questo
+    // caso e' cio' che la tiene.
+    expect((await refresh(mio.refreshToken)).status).toBe(401);
+    expect((await refresh(secondo.tokens.refreshToken)).status).toBe(401);
+
+    // E l'access token del dispositivo rimasto acceso non apre piu' niente,
+    // benche' la sua firma sia ancora valida: `requireAuth` risale all'utente,
+    // e l'utente non c'e'.
+    expect(
+      (await call(server, "GET", "/api/auth/me", { accessToken: secondo.tokens.accessToken }))
+        .status,
+    ).toBe(401);
+  });
+
+  it("le sessioni si contano a dispositivi, non a righe", async () => {
+    const mio = await conRoba(EMAIL, "audio/mio.webm");
+
+    // Tre rotazioni sullo stesso dispositivo. Ogni rotazione lascia dietro di
+    // se' la riga di partenza, revocata: dopo queste tre, `RefreshToken` ha
+    // quattro righe per un utente che ha collegato un telefono solo.
+    let corrente = mio.refreshToken;
+    for (let i = 0; i < 3; i += 1) {
+      corrente = authSessionSchema.parse((await refresh(corrente)).body).tokens.refreshToken;
+    }
+    expect(await testPrisma().refreshToken.count({ where: { userId: mio.userId } })).toBe(4);
+
+    const res = await call(server, "POST", CANCELLA, {
+      accessToken: mio.accessToken,
+      body: { currentPassword: PASSWORD },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    // Uno, non quattro. La ricevuta dice all'utente quanti dispositivi ha
+    // appena scollegato, ed e' il numero che ha appena visto nell'elenco delle
+    // sessioni aperte: se qui si contassero le righe, la stessa persona
+    // leggerebbe «1 dispositivo» in una schermata e «4 scollegati» nell'altra.
+    expect(res.body).toMatchObject({ sessioni: 1 });
+  });
+
+  it("un dispositivo da cui si e' gia' usciti non si conta fra gli scollegati", async () => {
+    const mio = await conRoba(EMAIL, "audio/mio.webm");
+    // Un secondo dispositivo, da cui pero' si esce prima di cancellare: la sua
+    // famiglia resta nel database, tutta revocata.
+    const secondo = authSessionSchema.parse(
+      (
+        await call(server, "POST", "/api/auth/login", {
+          body: { email: EMAIL, password: PASSWORD },
+        })
+      ).body,
+    );
+    await call(server, "POST", "/api/auth/logout", {
+      body: { refreshToken: secondo.tokens.refreshToken },
+    });
+    expect(await testPrisma().refreshToken.count({ where: { userId: mio.userId } })).toBe(2);
+
+    const res = await call(server, "POST", CANCELLA, {
+      accessToken: mio.accessToken,
+      body: { currentPassword: PASSWORD },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    // Uno, non due. E' il caso opposto di quello sopra, e serve perche' le due
+    // clausole che lo tengono si coprono a vicenda: contare per famiglie
+    // distinte da' il numero giusto anche senza `revokedAt: null` finche' c'e'
+    // un dispositivo solo, e il filtro da' il numero giusto anche senza
+    // `distinct` finche' nessuno e' uscito. Un caso con entrambe le condizioni
+    // insieme e' l'unico che vede quale delle due manca.
+    expect(res.body).toMatchObject({ sessioni: 1 });
+  });
+
+  it("un vocale in lavorazione di un altro non mi trattiene", async () => {
+    const mio = await conRoba(EMAIL, "audio/mio.webm");
+    const altrui = await conRoba("altro@wikimylife.test", "audio/suo.webm");
+    await testPrisma().recording.create({
+      data: {
+        userId: altrui.userId,
+        audioUrl: "audio/suo-in-corso.webm",
+        mimeType: "audio/webm",
+        durationMs: 5_000,
+        recordedAt: new Date("2026-03-01T10:00:00.000Z"),
+        status: "IN_ELABORAZIONE",
+      },
+    });
+
+    // Il conteggio che decide il 409 ha il suo `userId` come tutti gli altri, e
+    // questo e' il caso che lo tiene: senza, un worker che sta macinando il
+    // vocale di uno sconosciuto impedirebbe a me di andarmene, con un
+    // messaggio che parla di vocali miei che non esistono. E' un difetto che
+    // non si manifesta mai su un database di prova con un utente solo.
+    const res = await call(server, "POST", CANCELLA, {
+      accessToken: mio.accessToken,
+      body: { currentPassword: PASSWORD },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await testPrisma().user.findUnique({ where: { id: mio.userId } })).toBeNull();
+    expect(
+      await testPrisma().recording.count({ where: { userId: altrui.userId } }),
+    ).toBe(2);
+  });
+
+  it("un vocale in lavorazione ferma tutto, e non lascia niente a meta'", async () => {
+    const mio = await conRoba(EMAIL, "audio/mio.webm");
+    await testPrisma().recording.create({
+      data: {
+        userId: mio.userId,
+        audioUrl: "audio/in-corso.webm",
+        mimeType: "audio/webm",
+        durationMs: 5_000,
+        recordedAt: new Date("2026-03-01T10:00:00.000Z"),
+        status: "IN_ELABORAZIONE",
+      },
+    });
+
+    const res = await call(server, "POST", CANCELLA, {
+      accessToken: mio.accessToken,
+      body: { currentPassword: PASSWORD },
+    });
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("CONFLICT");
+
+    // «Non cancella niente» va verificato dentro il database, non sulla
+    // risposta: il conteggio e la `delete` stanno nella stessa transazione, e
+    // se non ci stessero il 409 arriverebbe lo stesso dopo aver gia' portato
+    // via i byte dal bucket.
+    expect(await testPrisma().user.findUnique({ where: { id: mio.userId } })).not.toBeNull();
+    expect(await testPrisma().recording.count({ where: { userId: mio.userId } })).toBe(2);
+    await expect(
+      server.composition.providers.storage.exists("audio/mio.webm"),
+    ).resolves.toBe(true);
+    expect((await refresh(mio.refreshToken)).status).toBe(200);
+  });
+
+  it("la password sbagliata non cancella niente", async () => {
+    const mio = await conRoba(EMAIL, "audio/mio.webm");
+
+    const res = await call(server, "POST", CANCELLA, {
+      accessToken: mio.accessToken,
+      body: { currentPassword: "questa-non-e-la-mia" },
+    });
+    expect(res.status).toBe(401);
+    expect(errorCode(res.body)).toBe("INVALID_CREDENTIALS");
+
+    expect(await testPrisma().user.findUnique({ where: { id: mio.userId } })).not.toBeNull();
+    expect((await refresh(mio.refreshToken)).status).toBe(200);
+  });
+
+  it("senza access token non si cancella il conto di nessuno", async () => {
+    const mio = await conRoba(EMAIL, "audio/mio.webm");
+
+    // La password da sola non basta, ed e' la difesa che conta: il corpo non
+    // nomina nessun utente, quindi una rotta senza `requireAuth` non saprebbe
+    // nemmeno *chi* cancellare — ma il modo in cui questo genere di difetto
+    // capita e' che qualcuno tolga il middleware e aggiunga un campo `email`.
+    const res = await call(server, "POST", CANCELLA, {
+      body: { currentPassword: PASSWORD },
+    });
+    expect(res.status).toBe(401);
+    expect(await testPrisma().user.findUnique({ where: { id: mio.userId } })).not.toBeNull();
+  });
+
+  it("un corpo senza password si ferma alla validazione, non al confronto", async () => {
+    const mio = await conRoba(EMAIL, "audio/mio.webm");
+
+    const res = await call(server, "POST", CANCELLA, {
+      accessToken: mio.accessToken,
+      body: {},
+    });
+    // 400 e non 401: il rimedio e' diverso, e un client che ricevesse
+    // «credenziali non valide» per un campo mancante andrebbe a cercare il
+    // difetto nella password dell'utente.
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_FAILED");
+  });
+
+  it("premere due volte non da' due risposte diverse", async () => {
+    const mio = await conRoba(EMAIL, "audio/mio.webm");
+
+    expect(
+      (
+        await call(server, "POST", CANCELLA, {
+          accessToken: mio.accessToken,
+          body: { currentPassword: PASSWORD },
+        })
+      ).status,
+    ).toBe(200);
+
+    // Il secondo tocco arriva con un access token la cui firma e' ancora buona
+    // e il cui utente non esiste. Deve essere un 401 come qualunque altra
+    // rotta autenticata, non un 500 con dentro un errore di Prisma.
+    const secondo = await call(server, "POST", CANCELLA, {
+      accessToken: mio.accessToken,
+      body: { currentPassword: PASSWORD },
+    });
+    expect(secondo.status).toBe(401);
+  });
+});
+
 describe("forma degli errori", () => {
   it("una rotta inesistente risponde con lo stesso schema di tutto il resto", async () => {
     const res = await call(server, "GET", "/api/non-esiste");

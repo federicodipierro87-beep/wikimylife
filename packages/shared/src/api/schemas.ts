@@ -237,6 +237,74 @@ export const revokeSessionResponseSchema = z
   })
   .strict();
 
+/**
+ * «Cancella il mio account», e con lui tutto quello che c'e' dentro.
+ *
+ * ## Perche' esiste
+ *
+ * Perche' la linea guida 5.1.1(v) di Apple dice che un'app che permette di
+ * creare un account deve permettere di cancellarlo *dentro l'app*, e senza il
+ * rifiuto e' certo. Ma la ragione per cui merita di esistere anche senza Apple
+ * e' un'altra: qui dentro finisce la voce di chi parla, e una voce che non si
+ * puo' riprendere indietro e' una cosa che non si affida.
+ *
+ * ## Perche' chiede la password, e perche' con questa regola
+ *
+ * Per la ragione di `revokeOtherSessions` portata all'estremo: chi ha in mano
+ * il telefono di un altro, con una sessione aperta sopra, qui non buttera'
+ * fuori il proprietario — glielo cancellera'. E' il gesto meno reversibile che
+ * esiste in questa applicazione, quindi e' il posto dove il campo che sembra un
+ * fastidio serve di piu'.
+ *
+ * `min(1).max(256)` come in `login`, e non `passwordSchema`: si sta verificando
+ * una password che esiste gia'. Qui il motivo e' ancora piu' netto che altrove
+ * — rifiutare una password vecchia troppo corta vorrebbe dire condannare quel
+ * conto a non potersi cancellare, cioe' produrre esattamente la situazione che
+ * la 5.1.1(v) vieta, con il pretesto di una regola di robustezza.
+ *
+ * ## Perche' non c'e' un campo «scrivi CANCELLA per confermare»
+ *
+ * Perche' la conferma e' una cosa della schermata, non del contratto. Metterla
+ * qui vorrebbe dire far dipendere l'API da una parola italiana disegnata su un
+ * pulsante, e costringere ogni futuro client a riprodurre quella parola. La
+ * doppia conferma sta in `AccountScreen`, dove si puo' cambiare senza cambiare
+ * il contratto.
+ */
+export const deleteAccountRequestSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(256),
+  })
+  .strict();
+
+/**
+ * Che cosa e' sparito — e non `{ ok: true }`.
+ *
+ * Per la ragione di `revokeOtherSessionsResponseSchema`, e qui con un peso in
+ * piu'. «Fatto» sopra una cancellazione e' la risposta che non si puo'
+ * verificare: non c'e' piu' nessun posto dove tornare a guardare se e' vero, e
+ * non c'e' nessun modo di rifarlo per controllare. Tre numeri sono l'unica
+ * ricevuta che questo gesto potra' mai avere, e sono l'ultima cosa che l'utente
+ * legge di un conto che non esiste piu'.
+ *
+ * I nomi sono quelli del prodotto e non quelli delle tabelle: `vocali` sono le
+ * registrazioni, `schede` sono le procedure. Il contratto lo legge una
+ * schermata che deve scriverli a un essere umano, e tradurli li' vorrebbe dire
+ * avere la parola giusta in due posti.
+ *
+ * `sessioni` conta i dispositivi che si sono scollegati, cioe' le famiglie di
+ * refresh token vive, per la ragione scritta in
+ * `revokeOtherSessionsResponseSchema`: una famiglia viva ha esattamente una
+ * riga. Include quella da cui parte la richiesta — qui non si risparmia
+ * nessuno, ed e' l'unico gesto dell'autenticazione di cui questo sia vero.
+ */
+export const deleteAccountResponseSchema = z
+  .object({
+    vocali: z.number().int().nonnegative(),
+    schede: z.number().int().nonnegative(),
+    sessioni: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export const refreshRequestSchema = z
   .object({
     refreshToken: z.string().min(1),
@@ -301,6 +369,8 @@ export type OpenSession = z.infer<typeof openSessionSchema>;
 export type OpenSessionsResponse = z.infer<typeof openSessionsResponseSchema>;
 export type RevokeSessionRequest = z.infer<typeof revokeSessionRequestSchema>;
 export type RevokeSessionResponse = z.infer<typeof revokeSessionResponseSchema>;
+export type DeleteAccountRequest = z.infer<typeof deleteAccountRequestSchema>;
+export type DeleteAccountResponse = z.infer<typeof deleteAccountResponseSchema>;
 export type RefreshRequest = z.infer<typeof refreshRequestSchema>;
 export type LogoutRequest = z.infer<typeof logoutRequestSchema>;
 export type PublicUser = z.infer<typeof publicUserSchema>;

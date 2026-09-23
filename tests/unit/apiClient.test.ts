@@ -486,6 +486,91 @@ describe("logout", () => {
   });
 });
 
+/**
+ * `deleteAccount`, e la rotta che non e' quella che sembra.
+ *
+ * Il verbo e' `POST` e il percorso e' `/api/auth/delete-account`, non
+ * `DELETE /api/auth/me`: la ragione sta scritta per esteso in
+ * `auth.routes.ts`, ed e' la stessa per cui `/sessions/revoke` e' un `POST` —
+ * un corpo su una `DELETE` attraversa male cio' che sta in mezzo. Il caso qui
+ * sotto e' quello che tiene ferma la scelta: se qualcuno "sistemasse" la rotta
+ * per farla sembrare giusta, il server risponderebbe 404 e questo test e'
+ * l'unico posto in tutta la suite unitaria dove si vedrebbe.
+ */
+describe("cancellare il proprio conto", () => {
+  const CONTI = { vocali: 3, schede: 2, sessioni: 1 };
+
+  it("va in POST a /api/auth/delete-account con la password attuale", async () => {
+    const { fetchImpl, calls } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      "POST /api/auth/delete-account": () => ({ status: 200, payload: CONTI }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage(),
+      fetchImpl,
+    });
+
+    await client.login({ email: "chi@esempio.it", password: "password-lunga-abbastanza" });
+    await expect(client.deleteAccount({ currentPassword: "password-lunga-abbastanza" })).resolves.toEqual(
+      CONTI,
+    );
+
+    const richiesta = calls[1];
+    expect(richiesta?.url).toBe(`${BASE}/api/auth/delete-account`);
+    expect(richiesta?.method).toBe("POST");
+    // Autenticata: il server deve sapere *quale* conto, e non lo deduce dal
+    // corpo. Senza questa riga, un client che mandasse la sola password
+    // passerebbe il resto del caso.
+    expect(richiesta?.authorization).toBe("Bearer access-1");
+    expect(richiesta?.body).toEqual({ currentPassword: "password-lunga-abbastanza" });
+  });
+
+  it("dopo la cancellazione il deposito e' vuoto", async () => {
+    const { fetchImpl } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      "POST /api/auth/delete-account": () => ({ status: 200, payload: CONTI }),
+    });
+    const storage = createInMemorySecureStorage();
+    const client = createApiClient({ baseUrl: BASE, storage, fetchImpl });
+
+    await client.login({ email: "chi@esempio.it", password: "password-lunga-abbastanza" });
+    expect(storage.snapshot()).not.toEqual({});
+
+    await client.deleteAccount({ currentPassword: "password-lunga-abbastanza" });
+
+    // Il refresh token di un conto che non esiste piu' non apre niente, ma
+    // resterebbe scritto sul telefono: al prossimo avvio `restoreSession` lo
+    // manderebbe, si prenderebbe un 401 e l'app mostrerebbe un errore dove
+    // doveva esserci la schermata di ingresso.
+    expect(storage.snapshot()).toEqual({});
+    expect(client.getAccessToken()).toBeNull();
+  });
+
+  it("una cancellazione rifiutata lascia la sessione in piedi", async () => {
+    const { fetchImpl } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      "POST /api/auth/delete-account": () => ({
+        status: 409,
+        payload: errorPayload("CONFLICT", "Ci sono 2 vocali ancora in lavorazione"),
+      }),
+    });
+    const storage = createInMemorySecureStorage();
+    const client = createApiClient({ baseUrl: BASE, storage, fetchImpl });
+
+    await client.login({ email: "chi@esempio.it", password: "password-lunga-abbastanza" });
+    await expect(
+      client.deleteAccount({ currentPassword: "password-lunga-abbastanza" }),
+    ).rejects.toBeInstanceOf(ApiError);
+
+    // L'errore opposto del caso sopra, ed e' quello che costa: `logout()` svuota
+    // il deposito comunque, perche' li' l'intenzione e' uscire. Qui no. Un
+    // `finally` intorno al `clear()` sloggherebbe chi ha sbagliato la password.
+    expect(storage.snapshot()[AUTH_STORAGE_KEYS.refreshToken]).toBe("refresh-1");
+    expect(client.getAccessToken()).toBe("access-1");
+  });
+});
+
 describe("restoreSession", () => {
   it("torna null senza chiamare la rete se non c'e' nulla da ripristinare", async () => {
     const { fetchImpl, calls } = stubFetch({});

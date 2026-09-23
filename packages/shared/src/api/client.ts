@@ -27,6 +27,7 @@ import {
 } from "./recordings.js";
 import {
   authSessionSchema,
+  deleteAccountResponseSchema,
   healthResponseSchema,
   logoutResponseSchema,
   meResponseSchema,
@@ -35,6 +36,8 @@ import {
   revokeSessionResponseSchema,
   type AuthSession,
   type ChangePasswordRequest,
+  type DeleteAccountRequest,
+  type DeleteAccountResponse,
   type HealthResponse,
   type LoginRequest,
   type MeResponse,
@@ -213,6 +216,40 @@ export interface ApiClient {
    * consuma, non prima.
    */
   listSessions(): Promise<OpenSessionsResponse>;
+
+  /**
+   * Cancella il conto. Al ritorno non c'e' piu' niente, nemmeno qui.
+   *
+   * Chiede la password come i due gesti di sopra, e per la stessa ragione
+   * portata al limite: la' chi ha in mano un telefono altrui puo' scollegare il
+   * proprietario, qui puo' cancellarlo.
+   *
+   * Restituisce quanti vocali, quante schede e quante sessioni sono spariti.
+   * Non e' un ornamento: e' l'unica ricevuta che questo gesto potra' mai avere,
+   * perche' non c'e' piu' nessun posto dove tornare a verificare che sia vero.
+   * Chi chiama dovrebbe mostrarli.
+   *
+   * Svuota il deposito locale come `logout()`, e per una ragione piu' forte:
+   * dopo, il refresh token che c'era li' non apre piu' niente, e lasciarcelo
+   * vorrebbe dire che alla riapertura dell'app `restoreSession()` ci prova, si
+   * prende un errore e butta l'utente sulla schermata d'ingresso senza
+   * spiegargli che il suo conto non c'e' piu'. Lo svuota *solo* se il server ha
+   * risposto: al contrario di `logout()`, qui un errore non va inghiottito.
+   * Password sbagliata, vocali in lavorazione, rete caduta — in tutti e tre i
+   * casi il conto e' ancora li', e scollegare chi voleva cancellarlo sarebbe la
+   * cosa piu' confusa possibile.
+   *
+   * Fallisce con `INVALID_CREDENTIALS` se la password non e' quella giusta, e
+   * con `CONFLICT` se c'e' un vocale ancora in elaborazione. In nessuno dei due
+   * casi ha cancellato niente.
+   *
+   * Non svuota la coda di caricamento, che sta in IndexedDB e questo modulo non
+   * sa nemmeno che esista: e' compito di chi chiama, e non e' facoltativo —
+   * senza, i vocali di un conto cancellato restano sul telefono a ritentare
+   * contro un server che non li vuole piu'.
+   */
+  deleteAccount(input: DeleteAccountRequest): Promise<DeleteAccountResponse>;
+
   getAccessToken(): string | null;
   restoreSession(): Promise<PublicUser | null>;
 
@@ -657,6 +694,31 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         // danno: e' una lettura.
         true,
       );
+    },
+
+    async deleteAccount(input: DeleteAccountRequest): Promise<DeleteAccountResponse> {
+      const esito = await send(
+        {
+          method: "POST",
+          path: "/api/auth/delete-account",
+          body: input,
+          schema: deleteAccountResponseSchema,
+          auth: true,
+        },
+        // Con rotazione, per il ragionamento di `revokeOtherSessions`: si
+        // ripete solo dopo un 401, e un 401 arriva da `requireAuth`, cioe'
+        // prima che il gestore esista. La prima chiamata non ha cancellato
+        // niente, quindi i numeri della seconda sono quelli veri.
+        //
+        // Se invece la rotazione fallisse, `send` lancia e il deposito resta
+        // com'e': il conto e' ancora li', ed e' giusto che l'utente ci resti
+        // dentro. E' il motivo per cui `clear()` e' dopo l'`await` e non in un
+        // `finally`.
+        true,
+      );
+
+      await clear();
+      return esito;
     },
 
     getAccessToken(): string | null {

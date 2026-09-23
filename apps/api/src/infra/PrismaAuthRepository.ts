@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type {
   AuthRepository,
+  DeleteAccountOutcome,
   NewRefreshToken,
   OpenSessionRecord,
   RefreshTokenRecord,
@@ -257,6 +258,70 @@ export class PrismaAuthRepository implements AuthRepository {
       });
 
       return revoked.count;
+    });
+  }
+
+  async deleteAccount(userId: string): Promise<DeleteAccountOutcome> {
+    return this.#prisma.$transaction(async (tx) => {
+      const inLavorazione = await tx.recording.count({
+        where: { userId, status: "IN_ELABORAZIONE" },
+      });
+      if (inLavorazione > 0) {
+        return { kind: "IN_LAVORAZIONE", quanti: inLavorazione };
+      }
+
+      // `select` e non `findMany` intero: di un vocale serve la chiave S3 e
+      // nient'altro, e un conto con molti vocali lunghi tirerebbe in memoria
+      // trascrizioni intere per buttarle un'istruzione dopo.
+      const vocali = await tx.recording.findMany({
+        where: { userId },
+        select: { audioUrl: true },
+      });
+      const schede = await tx.procedure.count({ where: { userId } });
+
+      // Si contano le famiglie vive, cioe' i dispositivi collegati, e non le
+      // righe: un conto che ha ruotato quarantadue volte ha quarantadue righe e
+      // un dispositivo solo, e la ricevuta direbbe «hai scollegato quarantadue
+      // dispositivi» a chi ne ha uno. Il filtro `revokedAt: null` e' la stessa
+      // definizione di «viva» che usano `isFamilyActive` e `listOpenSessions`,
+      // e deve restare la stessa: se qui divergesse, il numero nella ricevuta
+      // non sarebbe quello dell'elenco che l'utente ha appena finito di
+      // guardare.
+      //
+      // ## Il `distinct` da solo non serve, e resta lo stesso
+      //
+      // Onesta' su una ridondanza, perche' e' emersa da una mutazione
+      // sopravvissuta: a fare il lavoro qui e' `revokedAt: null`, non
+      // `distinct`. La rotazione revoca la riga di partenza nella stessa
+      // transazione in cui crea quella nuova (`rotateRefreshToken`, sopra),
+      // quindi di ogni famiglia viva esiste **una sola** riga non revocata e
+      // togliere il `distinct` non cambierebbe nessun numero. Togliere il
+      // `distinct` e' una mutazione equivalente, ed e' dichiarata invece che
+      // coperta: un caso che la pinzasse dovrebbe prima costruire uno stato che
+      // la rotazione non sa produrre.
+      //
+      // Resta perche' e' la clausola che dice **cosa si sta contando**. Il
+      // giorno che qualcuno allargasse il filtro — o che una rotazione
+      // concorrente lasciasse per un istante due righe vive della stessa
+      // famiglia — questa riga e' la differenza fra un numero sbagliato e un
+      // numero giusto, e costa nulla.
+      const famiglie = await tx.refreshToken.findMany({
+        where: { userId, revokedAt: null },
+        select: { familyId: true },
+        distinct: ["familyId"],
+      });
+
+      // Una `delete` sola: passi, prerequisiti, esecuzioni, tag e legami se ne
+      // vanno per cascata, dichiarata sulle relazioni in `schema.prisma`.
+      await tx.user.delete({ where: { id: userId } });
+
+      return {
+        kind: "CANCELLATO",
+        audioKeys: vocali.map((v) => v.audioUrl),
+        vocali: vocali.length,
+        schede,
+        sessioni: famiglie.length,
+      };
     });
   }
 }

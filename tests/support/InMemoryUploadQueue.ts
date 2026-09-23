@@ -57,6 +57,28 @@ export class InMemoryUploadQueue implements UploadQueueAdapter {
     return Promise.resolve(this.#items.length);
   }
 
+  /**
+   * Svuota, e segna quante volte e' stato chiesto.
+   *
+   * `cleared` e' un contatore e non un booleano perche' il caso da distinguere
+   * non e' «e' stato chiamato» ma «e' stato chiamato quando non doveva»: la
+   * coda si svuota alla cancellazione del conto e a nient'altro, e un errore in
+   * quel percorso deve lasciarla dov'e'. Con un booleano, «non chiamato» e
+   * «chiamato una volta di troppo dopo essere gia' stato svuotato» si
+   * assomigliano.
+   *
+   * Non alimenta `removed`: quello serve a provare che l'uploader non carica
+   * due volte lo stesso vocale, e riempirlo da qui vorrebbe dire far sembrare
+   * caricati dei vocali che sono stati buttati.
+   */
+  cleared = 0;
+
+  clear(): Promise<void> {
+    this.cleared += 1;
+    this.#items.length = 0;
+    return Promise.resolve();
+  }
+
   /** Solo per i test: lo stato attuale senza passare per le promise. */
   snapshot(): readonly QueuedRecording[] {
     return [...this.#items];

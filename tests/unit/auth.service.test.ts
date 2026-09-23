@@ -1,6 +1,7 @@
 import type { AuthSession } from "@wikimylife/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 import { JoseTokenIssuer } from "../../apps/api/src/infra/JoseTokenIssuer.js";
+import { FakeStorageProvider } from "../../apps/api/src/providers/fake/FakeStorageProvider.js";
 import {
   createAuthService,
   type AuthService,
@@ -31,6 +32,10 @@ interface Harness {
   readonly config: AuthConfig;
   /** Serve a risalire dalla sessione alla sua famiglia, che il servizio non dice. */
   readonly tokens: JoseTokenIssuer;
+  /** Serve solo a `deleteAccount`: e' l'unico gesto che tocchi il bucket. */
+  readonly storage: FakeStorageProvider;
+  /** Le chiavi che lo storage non e' riuscito a cancellare, riportate qui. */
+  readonly orfani: { key: string; error: unknown }[];
 }
 
 function build(overrides: Partial<AuthConfig> = {}): Harness {
@@ -42,14 +47,26 @@ function build(overrides: Partial<AuthConfig> = {}): Harness {
     accessSecret: config.accessSecret,
     accessTtlSeconds: config.accessTokenTtlSeconds,
   });
+  const storage = new FakeStorageProvider();
+  const orfani: { key: string; error: unknown }[] = [];
 
   return {
-    service: createAuthService({ repo, hasher, tokens, clock, config }),
+    service: createAuthService({
+      repo,
+      hasher,
+      tokens,
+      clock,
+      config,
+      storage,
+      onOrphanedAudio: (info) => orfani.push(info),
+    }),
     repo,
     clock,
     hasher,
     config,
     tokens,
+    storage,
+    orfani,
   };
 }
 
@@ -1131,6 +1148,230 @@ describe("me", () => {
     await expect(harness.service.me("utente-sparito")).rejects.toMatchObject({
       code: "UNAUTHORIZED",
     });
+  });
+});
+
+/**
+ * `deleteAccount`, cioe' l'unico gesto di questo servizio che non si disfa.
+ *
+ * Ogni altro caso di questo file prova qualcosa che, se sbagliato, si corregge:
+ * una sessione revocata si riapre, una password cambiata si ricambia. Qui no.
+ * Per questo i casi guardano sempre due cose insieme — cosa e' sparito e cosa e'
+ * rimasto — e mai solo la prima: un metodo che cancellasse l'intero database
+ * restituendo i numeri giusti passerebbe qualunque asserzione scritta solo
+ * sull'utente che ha chiesto di andarsene.
+ */
+describe("deleteAccount", () => {
+  /**
+   * Due utenti con le stesse cose addosso, e i byte veri nel bucket.
+   *
+   * Il secondo utente non e' un di piu': senza, nessuno dei casi distingue
+   * «cancella le mie cose» da «cancella tutto», che e' precisamente il difetto
+   * che un `where` dimenticato produce.
+   */
+  async function dueUtenti(): Promise<{
+    harness: Harness;
+    mia: AuthSession;
+    altrui: AuthSession;
+  }> {
+    const harness = build();
+    const mia = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const altrui = await harness.service.signup({
+      email: "altro@esempio.it",
+      password: PASSWORD,
+    });
+
+    for (const [utente, chiave] of [
+      [mia.user.id, "audio/mio-1.webm"],
+      [mia.user.id, "audio/mio-2.webm"],
+      [altrui.user.id, "audio/suo-1.webm"],
+    ] as const) {
+      harness.repo.seedRecording({ userId: utente, audioUrl: chiave });
+      await harness.storage.put({
+        key: chiave,
+        data: new Uint8Array([1, 2, 3]),
+        mimeType: "audio/webm",
+      });
+    }
+
+    harness.repo.seedProcedure(mia.user.id);
+    harness.repo.seedProcedure(altrui.user.id);
+
+    return { harness, mia, altrui };
+  }
+
+  it("cancella solo le mie cose", async () => {
+    const { harness, mia, altrui } = await dueUtenti();
+
+    const conti = await harness.service.deleteAccount(mia.user.id, {
+      currentPassword: PASSWORD,
+    });
+
+    expect(conti).toEqual({ vocali: 2, schede: 1, sessioni: 1 });
+
+    const dopo = harness.repo.snapshot();
+    expect(dopo.utenti).toEqual([altrui.user.id]);
+    expect(dopo.vocali).toEqual(["audio/suo-1.webm"]);
+    expect(dopo.schede).toBe(1);
+    expect(dopo.token).toBe(1);
+  });
+
+  it("i byte dell'audio spariscono dal bucket, e solo i miei", async () => {
+    const { harness, mia } = await dueUtenti();
+
+    await harness.service.deleteAccount(mia.user.id, { currentPassword: PASSWORD });
+
+    // La cascata del database non arriva nel bucket: se il servizio si fidasse
+    // di lei, qui resterebbero tre chiavi e nessun'altra asserzione se ne
+    // accorgerebbe — l'audio orfano non rompe niente, costa solo per sempre.
+    expect(harness.storage.keys).toEqual(["audio/suo-1.webm"]);
+    expect(harness.orfani).toEqual([]);
+  });
+
+  it("un bucket che non collabora non ferma la cancellazione, ma lo dice", async () => {
+    const { harness, mia } = await dueUtenti();
+    harness.storage.delete = (key: string) =>
+      Promise.reject(new Error(`il bucket dice di no su ${key}`));
+
+    // Le righe sono gia' andate quando lo storage protesta: fallire adesso
+    // vorrebbe dire rispondere «non ho cancellato» a chi e' gia' stato
+    // cancellato, cioe' la bugia peggiore delle due.
+    const conti = await harness.service.deleteAccount(mia.user.id, {
+      currentPassword: PASSWORD,
+    });
+
+    expect(conti.vocali).toBe(2);
+    expect(harness.repo.snapshot().utenti).toHaveLength(1);
+    expect(harness.orfani.map((o) => o.key)).toEqual([
+      "audio/mio-1.webm",
+      "audio/mio-2.webm",
+    ]);
+  });
+
+  it("la password sbagliata non cancella niente", async () => {
+    const { harness, mia, altrui } = await dueUtenti();
+
+    await expect(
+      harness.service.deleteAccount(mia.user.id, { currentPassword: "non-e-questa" }),
+    ).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
+
+    const dopo = harness.repo.snapshot();
+    expect([...dopo.utenti].sort()).toEqual([mia.user.id, altrui.user.id].sort());
+    expect(dopo.vocali).toHaveLength(3);
+    expect(dopo.schede).toBe(2);
+    expect(harness.storage.keys).toHaveLength(3);
+  });
+
+  it("con un vocale in lavorazione rifiuta e non cancella niente", async () => {
+    const { harness, mia } = await dueUtenti();
+    harness.repo.seedRecording({
+      userId: mia.user.id,
+      audioUrl: "audio/mio-3.webm",
+      inLavorazione: true,
+    });
+
+    await expect(
+      harness.service.deleteAccount(mia.user.id, { currentPassword: PASSWORD }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const dopo = harness.repo.snapshot();
+    expect(dopo.utenti).toContain(mia.user.id);
+    expect(dopo.vocali).toHaveLength(4);
+    expect(harness.storage.keys).toHaveLength(3);
+  });
+
+  it("il rifiuto dice quanti sono, perche' e' un'attesa e non un guasto", async () => {
+    const { harness, mia } = await dueUtenti();
+    harness.repo.seedRecording({
+      userId: mia.user.id,
+      audioUrl: "audio/a.webm",
+      inLavorazione: true,
+    });
+    harness.repo.seedRecording({
+      userId: mia.user.id,
+      audioUrl: "audio/b.webm",
+      inLavorazione: true,
+    });
+
+    // Il numero e' l'unica cosa che distingue «riprova fra poco» da «e' rotto».
+    // Senza, l'utente non ha nessun modo di sapere se aspettare ha senso.
+    await expect(
+      harness.service.deleteAccount(mia.user.id, { currentPassword: PASSWORD }),
+    ).rejects.toMatchObject({ message: expect.stringContaining("2") as unknown as string });
+  });
+
+  it("un vocale in lavorazione di un altro non mi trattiene", async () => {
+    const { harness, mia, altrui } = await dueUtenti();
+    harness.repo.seedRecording({
+      userId: altrui.user.id,
+      audioUrl: "audio/suo-2.webm",
+      inLavorazione: true,
+    });
+
+    // L'errore opposto del caso sopra: un conteggio senza `userId` fermerebbe
+    // la cancellazione di chiunque ogni volta che un qualsiasi altro utente sta
+    // registrando, e non lo direbbe nessuno.
+    await expect(
+      harness.service.deleteAccount(mia.user.id, { currentPassword: PASSWORD }),
+    ).resolves.toMatchObject({ vocali: 2 });
+  });
+
+  it("conta le sessioni vive, non le righe dei token", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    await harness.service.login({ email: EMAIL, password: PASSWORD });
+
+    // Una famiglia che ha ruotato tre volte ha quattro righe e resta un
+    // dispositivo solo: se il numero fosse quello delle righe, la ricevuta
+    // direbbe «hai scollegato cinque dispositivi» a chi ne ha due.
+    let corrente = telefono.tokens.refreshToken;
+    for (let i = 0; i < 3; i += 1) {
+      const ruotata = await harness.service.refresh(corrente);
+      corrente = ruotata.tokens.refreshToken;
+    }
+    expect(harness.repo.allTokens().length).toBeGreaterThan(2);
+
+    const conti = await harness.service.deleteAccount(telefono.user.id, {
+      currentPassword: PASSWORD,
+    });
+    expect(conti.sessioni).toBe(2);
+  });
+
+  it("una sessione gia' chiusa non si conta fra quelle scollegate", async () => {
+    const harness = build();
+    const telefono = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+    const portatile = await harness.service.login({ email: EMAIL, password: PASSWORD });
+    await harness.service.logout(portatile.tokens.refreshToken);
+
+    const conti = await harness.service.deleteAccount(telefono.user.id, {
+      currentPassword: PASSWORD,
+    });
+    expect(conti.sessioni).toBe(1);
+  });
+
+  it("e' UNAUTHORIZED se l'utente non esiste piu'", async () => {
+    const harness = build();
+
+    // Non INVALID_CREDENTIALS: qui l'access token era valido e l'utente non
+    // c'e'. E' lo stato di chi preme due volte, ed e' la stessa risposta che
+    // `me` da' nello stesso caso.
+    await expect(
+      harness.service.deleteAccount("utente-sparito", { currentPassword: PASSWORD }),
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("un conto senza niente dentro si cancella lo stesso", async () => {
+    const harness = build();
+    const sessione = await harness.service.signup({ email: EMAIL, password: PASSWORD });
+
+    const conti = await harness.service.deleteAccount(sessione.user.id, {
+      currentPassword: PASSWORD,
+    });
+
+    // Zero non e' un errore, ed e' il caso di chi si e' iscritto e ci ha
+    // ripensato: la 5.1.1(v) vale per lui esattamente come per gli altri.
+    expect(conti).toEqual({ vocali: 0, schede: 0, sessioni: 1 });
+    expect(harness.repo.snapshot().utenti).toEqual([]);
   });
 });
 

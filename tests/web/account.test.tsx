@@ -9,8 +9,13 @@ import { ApiError, PASSWORD_MIN_LENGTH } from "@wikimylife/shared";
 import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
+import {
+  CaptureContext,
+  type Capture,
+} from "../../apps/web/src/recording/CaptureProvider";
 import { AccountScreen } from "../../apps/web/src/screens/AccountScreen";
 import { SessionProvider } from "../../apps/web/src/session";
+import { creaCapturaFinta } from "./helpers/capturaFinta";
 import { creaClienteFinto } from "./helpers/clienteFinto";
 import { unaSessione } from "./helpers/dati";
 import { montaConApi } from "./helpers/render";
@@ -68,12 +73,19 @@ import { montaConApi } from "./helpers/render";
  * casi del file invece del solo caso che parla di lei, e la riga da leggere per
  * capire cos'e' successo finisce sepolta sotto altre dieci.
  */
-async function montaAccount(client: ApiClient): Promise<void> {
+async function montaAccount(client: ApiClient, capture?: Capture): Promise<void> {
+  // `CaptureContext` c'e' per una riga sola della schermata: la cancellazione
+  // del conto deve svuotare anche la coda dei caricamenti, e ci passa da qui.
+  // Il finto predefinito lancia su ogni metodo, quindi i casi che non parlano
+  // di cancellazione restano nella stessa condizione di prima — se la schermata
+  // cominciasse a toccare la cattura altrove, se ne accorgerebbero.
   montaConApi(
     client,
-    <SessionProvider>
-      <AccountScreen />
-    </SessionProvider>,
+    <CaptureContext.Provider value={capture ?? creaCapturaFinta()}>
+      <SessionProvider>
+        <AccountScreen />
+      </SessionProvider>
+    </CaptureContext.Provider>,
   );
   await act(async () => {});
 }
@@ -1082,27 +1094,247 @@ describe("AccountScreen: chiudere un dispositivo solo", () => {
   });
 });
 
-describe("AccountScreen: le tre sezioni", () => {
+describe("AccountScreen: le quattro sezioni", () => {
   it("ognuna dice cosa lascia in piedi, che e' l'unica differenza fra loro", async () => {
     await montaAccount(collegato());
 
-    // Tre pulsanti che si somigliano e tolgono cose diverse. Chi cerca di
+    // Quattro pulsanti che si somigliano e tolgono cose diverse. Chi cerca di
     // rimediare a un telefono perduto non ha modo di sceglierli, se non
     // leggendo: senza queste righe, «Esci» sembra il gesto piu' forte perche'
-    // e' quello che si conosce, e invece e' il piu' debole dei tre.
+    // e' quello che si conosce, e invece e' il piu' debole dei quattro.
     expect(screen.getByText(/scollega tutti gli altri dispositivi/)).toBeTruthy();
     expect(screen.getByText(/Questo dispositivo resta collegato/)).toBeTruthy();
     expect(screen.getByText(/Chiude solo questo dispositivo/)).toBeTruthy();
+    expect(screen.getByText(/non si torna indietro/)).toBeTruthy();
   });
 
-  it("i tre pulsanti hanno tre nomi diversi, e nessuno e' «Conferma»", async () => {
+  it("i quattro pulsanti hanno quattro nomi diversi, e nessuno e' «Conferma»", async () => {
     await montaAccount(collegato());
 
     // I nomi accessibili sono anche cio' che legge chi non vede lo schermo, e
-    // sono l'unica cosa che distingue tre gesti irreversibili in ordine
+    // sono l'unica cosa che distingue quattro gesti irreversibili in ordine
     // crescente di danno.
     expect(bottone("Cambia password")).toBeTruthy();
     expect(bottone("Scollega gli altri")).toBeTruthy();
     expect(bottone("Esci da questo dispositivo")).toBeTruthy();
+    expect(bottone("Voglio cancellare il conto")).toBeTruthy();
+  });
+});
+
+/**
+ * La quarta sezione, che e' l'unica di questa schermata a non avere un rimedio.
+ *
+ * Le altre tre tolgono qualcosa che si rimette: una password si ricambia, un
+ * dispositivo scollegato si ricollega, da un logout si rientra. Qui il gesto
+ * riuscito non si annulla, e quindi i casi guardano due cose che altrove non
+ * conterebbero: che il gesto NON parta quando non deve — un tocco solo, una
+ * schermata appena aperta — e che un rifiuto lasci l'utente esattamente dov'era,
+ * con la sessione viva e i vocali in coda ancora li'.
+ *
+ * `svuotaCoda` e' la parte piu' facile da sbagliare senza accorgersene: e' una
+ * promessa che nessuno guarda, chiamata dopo una richiesta riuscita. Se partisse
+ * prima della risposta, o anche nel ramo dell'errore, distruggerebbe i vocali
+ * non ancora caricati di un conto ancora vivo — e la prima volta che qualcuno
+ * lo scoprirebbe sarebbe sul proprio telefono.
+ */
+describe("AccountScreen: cancellare il conto", () => {
+  const CONTI = { vocali: 4, schede: 2, sessioni: 3 };
+
+  /** Una cattura che conta le volte che le hanno svuotato la coda. */
+  function catturaCheConta(): { capture: Capture; svuotate: () => number } {
+    let volte = 0;
+    const capture = creaCapturaFinta({
+      svuotaCoda: () => {
+        volte += 1;
+        return Promise.resolve();
+      },
+    });
+    return { capture, svuotate: () => volte };
+  }
+
+  it("il primo tocco non cancella niente: chiede la password", async () => {
+    const utente = userEvent.setup();
+    let chiamate = 0;
+    await montaAccount(
+      collegato({
+        deleteAccount: () => {
+          chiamate += 1;
+          return Promise.resolve(CONTI);
+        },
+      }),
+    );
+
+    // Il campo non c'e' prima: un campo password sempre visibile accanto a un
+    // pulsante rosso e' un invito a compilarlo.
+    expect(screen.queryByLabelText("Password, per cancellare il conto")).toBeNull();
+
+    await utente.click(bottone("Voglio cancellare il conto"));
+
+    expect(campo("Password, per cancellare il conto")).toBeTruthy();
+    expect(bottone("Cancella tutto per sempre")).toBeTruthy();
+    // La meta' che conta: un solo tocco non ha mandato niente al server.
+    expect(chiamate).toBe(0);
+  });
+
+  it("il secondo passo manda la password, e solo allora", async () => {
+    const utente = userEvent.setup();
+    let ricevuto: unknown = null;
+    const { capture, svuotate } = catturaCheConta();
+    await montaAccount(
+      collegato({
+        deleteAccount: (input) => {
+          ricevuto = input;
+          return Promise.resolve(CONTI);
+        },
+      }),
+      capture,
+    );
+
+    await utente.click(bottone("Voglio cancellare il conto"));
+    await utente.type(campo("Password, per cancellare il conto"), "la-mia-password");
+    await utente.click(bottone("Cancella tutto per sempre"));
+
+    await waitFor(() => {
+      expect(ricevuto).not.toBeNull();
+    });
+    expect(ricevuto).toEqual({ currentPassword: "la-mia-password" });
+    expect(svuotate()).toBe(1);
+  });
+
+  it("«Lascia stare» richiude e non lascia la password scritta", async () => {
+    const utente = userEvent.setup();
+    await montaAccount(collegato());
+
+    await utente.click(bottone("Voglio cancellare il conto"));
+    await utente.type(campo("Password, per cancellare il conto"), "la-mia-password");
+    await utente.click(bottone("Lascia stare"));
+
+    expect(screen.queryByLabelText("Password, per cancellare il conto")).toBeNull();
+
+    // E riaprendo, il campo e' vuoto. Senza questa seconda meta', un
+    // `setChiesta(false)` che si dimenticasse il `setPassword("")` passerebbe:
+    // il campo smontato non si puo' interrogare, ma il valore tornerebbe
+    // appena lo si rimonta.
+    await utente.click(bottone("Voglio cancellare il conto"));
+    expect(campo("Password, per cancellare il conto").value).toBe("");
+  });
+
+  it("finito, il modulo sparisce e restano i numeri", async () => {
+    const utente = userEvent.setup();
+    await montaAccount(
+      collegato({ deleteAccount: () => Promise.resolve(CONTI) }),
+      catturaCheConta().capture,
+    );
+
+    await utente.click(bottone("Voglio cancellare il conto"));
+    await utente.type(campo("Password, per cancellare il conto"), "la-mia-password");
+    await utente.click(bottone("Cancella tutto per sempre"));
+
+    // I tre numeri sono l'unica ricevuta che questo gesto avra' mai: dopo non
+    // c'e' piu' nessun posto dove tornare a verificare.
+    const fatto = await screen.findByRole("status");
+    expect(fatto.textContent).toContain("4 vocali");
+    expect(fatto.textContent).toContain("2 schede");
+    expect(fatto.textContent).toContain("3 dispositivi");
+
+    // Il pulsante non resta acceso: offrirebbe di cancellare un conto che non
+    // c'e' piu', e la risposta sarebbe un 401 senza spiegazione.
+    expect(screen.queryByRole("button", { name: "Cancella tutto per sempre" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Voglio cancellare il conto" })).toBeNull();
+  });
+
+  it("zero si legge come una frase, non come un conteggio", async () => {
+    const utente = userEvent.setup();
+    await montaAccount(
+      collegato({
+        deleteAccount: () => Promise.resolve({ vocali: 0, schede: 0, sessioni: 1 }),
+      }),
+      catturaCheConta().capture,
+    );
+
+    await utente.click(bottone("Voglio cancellare il conto"));
+    await utente.type(campo("Password, per cancellare il conto"), "la-mia-password");
+    await utente.click(bottone("Cancella tutto per sempre"));
+
+    // E' il caso di chi si iscrive e ci ripensa, cioe' il piu' probabile dei
+    // tre qui dentro. «Sono spariti 0 vocali» e' una ricevuta che sembra un
+    // guasto.
+    const fatto = await screen.findByRole("status");
+    expect(fatto.textContent).toContain("nessun vocale");
+    expect(fatto.textContent).toContain("nessuna scheda");
+    expect(fatto.textContent).toContain("1 dispositivo");
+  });
+
+  it("un errore lascia la sessione in piedi", async () => {
+    const utente = userEvent.setup();
+    let usciti = 0;
+    const { capture, svuotate } = catturaCheConta();
+    await montaAccount(
+      collegato({
+        logout: () => {
+          usciti += 1;
+          return Promise.resolve();
+        },
+        deleteAccount: () =>
+          Promise.reject(
+            new ApiError({
+              code: "CONFLICT",
+              message: "Ci sono 2 vocali ancora in lavorazione: finiscono da soli",
+              status: 409,
+            }),
+          ),
+      }),
+      capture,
+    );
+
+    await utente.click(bottone("Voglio cancellare il conto"));
+    await utente.type(campo("Password, per cancellare il conto"), "la-mia-password");
+    await utente.click(bottone("Cancella tutto per sempre"));
+
+    const avviso = await screen.findByRole("alert");
+    expect(avviso.textContent).toContain("in lavorazione");
+
+    // Le tre cose che NON devono essere successe. La coda e' la piu' silenziosa
+    // delle tre: svuotarla qui butterebbe via i vocali non ancora caricati di
+    // un conto che e' ancora vivo, e nessuno se ne accorgerebbe fino a quando
+    // non andasse a cercarli.
+    expect(usciti).toBe(0);
+    expect(svuotate()).toBe(0);
+    expect(bottone("Cancella tutto per sempre")).toBeTruthy();
+    // E le altre tre sezioni sono ancora al loro posto: la schermata non ha
+    // navigato via.
+    expect(bottone("Cambia password")).toBeTruthy();
+  });
+
+  it("scrivere nel campo toglie l'errore di prima", async () => {
+    const utente = userEvent.setup();
+    let risposte = 0;
+    await montaAccount(
+      collegato({
+        deleteAccount: () => {
+          risposte += 1;
+          return risposte === 1
+            ? Promise.reject(
+                new ApiError({
+                  code: "INVALID_CREDENTIALS",
+                  message: "Email o password non corretti",
+                  status: 401,
+                }),
+              )
+            : Promise.resolve(CONTI);
+        },
+      }),
+      catturaCheConta().capture,
+    );
+
+    await utente.click(bottone("Voglio cancellare il conto"));
+    await utente.type(campo("Password, per cancellare il conto"), "sbagliata");
+    await utente.click(bottone("Cancella tutto per sempre"));
+    await screen.findByRole("alert");
+
+    // Un «password non corretta» che resta sullo schermo mentre si digita
+    // quella giusta dice una cosa falsa su cio' che c'e' scritto adesso.
+    await utente.type(campo("Password, per cancellare il conto"), "x");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

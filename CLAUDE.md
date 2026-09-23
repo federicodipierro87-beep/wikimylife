@@ -86,10 +86,11 @@ uno più piccolo — e non tolta dall'elenco.
 forma «non è provato che X» va preceduta da un `grep`, sempre, anche quando sono
 sicuro, e **anche quando la fonte è un altro strumento**: il riassunto di un
 agente di ricerca ha la stessa autorità di un ricordo, cioè nessuna. È già
-successo **cinque volte** di scrivere un difetto noto falso — una di queste
-*dentro il commit che ne correggeva altri due*, tre righe sotto questa regola — e
-l'ultima non l'ha trovata un `grep` ma un processo che si rifiutava di partire.
-I cinque sono elencati uno per uno in `docs/diario.md`.
+successo **sei volte** di scrivere un difetto noto falso — una di queste
+*dentro il commit che ne correggeva altri due*, tre righe sotto questa regola;
+una non l'ha trovata un `grep` ma un processo che si rifiutava di partire; e
+l'ultima stava dentro un difetto noto *nuovo*, cioè descriveva una riparazione
+che non esiste. I sei sono elencati uno per uno in `docs/diario.md`.
 
 **I messaggi di commit sono in italiano**, con un titolo che dice l'effetto e un
 corpo che spiega il ragionamento. Finiscono con
@@ -127,6 +128,17 @@ Il caso da cui viene ciascuna sta in `docs/diario.md`.
   messaggi costruiti in due rami gemelli. In `listTags` le tre mutazioni hanno
   dato esattamente il caso previsto dalla regola: due cadute e una equivalente,
   dichiarata invece che coperta.
+- **Ogni comando del `.muta.json` deve cominciare con `npx tsc -b packages/shared`.**
+  Ripristinare il sorgente non basta, se nel frattempo qualcuno lo ha compilato:
+  `@wikimylife/shared` si consuma da `dist`, quindi una mutazione su
+  `packages/shared/src` finisce in `dist` e ci **resta** anche dopo che il
+  `finally` ha rimesso a posto il sorgente. Da lì in poi ogni comando — anche
+  quelli che con shared non c'entrano niente — gira contro la mutazione di prima.
+  Il sintomo è stato il controllo `[0]` caduto all'inizio di un giro pulito, e la
+  colpevole era una mutazione del giro **precedente**, che aveva lasciato in
+  `dist` una rotta `DELETE`. È la terza volta che un difetto dello strumento si
+  traveste da esito: le prime due facevano passare dei guasti per cadute, questa
+  faceva cadute vere su codice non mutato.
 - **`.muta.json` accetta una lista di sostituzioni per mutazione**, con un
   conteggio atteso per ciascuna. Serve per le mutazioni che altrimenti non
   compilerebbero (`<button>` → `<div>` vuole anche il tag di chiusura) e per
@@ -215,8 +227,8 @@ rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
 deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
-**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1148 test**
-unit + web su 49 file, **392** d'integrazione su 14 file, albero pulito.
+**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1169 test**
+unit + web su 49 file, **405** d'integrazione su 14 file, albero pulito.
 
 Il giro in corso è il guscio nativo: un'app vera per iOS e Android, con dentro il
 web già costruito, perché il cartello del microfono lo chieda il sistema una
@@ -224,6 +236,11 @@ volta sola invece del browser a ogni sessione. Le fasi sono sei (0 preparazione,
 1 Android, 2 iOS in CI, 3 TestFlight, 4 registratore nativo, 5 store); la 3 e la
 5 costano denaro e dipendono dall'iscrizione al programma Apple, che è la cosa
 più lenta e non dipende da nessun codice.
+
+Della fase 0 sono chiuse la **0a** (le guardie sanno che esisteranno cartelle
+native) e la **0b** (si cancella il proprio conto: la 5.1.1(v) di Apple, senza la
+quale il rifiuto alla revisione è certo). Resta la **0c**: `privacy.html` che
+nomini OpenAI e Anthropic, e le icone.
 
 ### Cosa gira, e dove
 

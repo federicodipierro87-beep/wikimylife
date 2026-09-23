@@ -1,7 +1,12 @@
-import { PASSWORD_MIN_LENGTH, type OpenSessionsResponse } from "@wikimylife/shared";
+import {
+  PASSWORD_MIN_LENGTH,
+  type DeleteAccountResponse,
+  type OpenSessionsResponse,
+} from "@wikimylife/shared";
 import { useState } from "react";
 import { useApi } from "../api";
 import { formatQuando } from "../format";
+import { useCapture } from "../recording/CaptureProvider";
 import { goBack } from "../router";
 import { messaggioDi, useSession } from "../session";
 import { useAsync, type Async } from "../useAsync";
@@ -29,15 +34,35 @@ import { useAsync, type Async } from "../useAsync";
  * chiamava nessuno. Dall'interfaccia non si poteva uscire — si poteva solo
  * svuotare lo storage del browser.
  *
- * ## Perche' tre sezioni e non due
+ * ## Perche' quattro sezioni e non due
  *
- * Perche' i modi di perdere il controllo di un account sono due, e finora
- * avevano una riparazione sola. «Qualcuno sa la mia password» si ripara
- * cambiandola. «Qualcuno ha il mio telefono» no: la password sta al sicuro nel
- * gestore, e cambiarla vuol dire riscriverla ovunque per un guasto che non la
- * riguarda. Le tre sezioni sono in ordine di quanto tolgono — la password e
- * tutti gli altri, tutti gli altri, solo questo — e ognuna dice in una riga
- * cosa lascia in piedi, perche' e' l'unica differenza che conta fra loro.
+ * Le prime tre riparano: i modi di perdere il controllo di un account sono
+ * due, e per un po' avevano una riparazione sola. «Qualcuno sa la mia
+ * password» si ripara cambiandola. «Qualcuno ha il mio telefono» no: la
+ * password sta al sicuro nel gestore, e cambiarla vuol dire riscriverla
+ * ovunque per un guasto che non la riguarda. Sono in ordine di quanto tolgono
+ * — la password e tutti gli altri, tutti gli altri, solo questo — e ognuna
+ * dice in una riga cosa lascia in piedi, perche' e' l'unica differenza che
+ * conta fra loro.
+ *
+ * ## Perche' la quarta e' legittima, dove quella del microfono non lo era
+ *
+ * La quarta non ripara: se ne va. Ed e' l'ultima di quella stessa scala —
+ * questo dispositivo, gli altri dispositivi, e poi tutto. Il posto e' questo
+ * perche' cancellare il conto e' una cosa *del conto*, come lo sono le altre
+ * tre, e chi la cerca la cerca qui.
+ *
+ * La distinzione vale la pena di scriverla perche' un giro precedente ha
+ * provato a mettere in questa schermata un riquadro sul permesso del
+ * microfono, e la ragione per cui era fuori posto e' la stessa che dice che
+ * questa ci sta: quello era un fatto *del telefono*, non dell'account. Lo
+ * stesso account su un altro dispositivo aveva un permesso diverso, e la
+ * schermata lo avrebbe detto sbagliato meta' delle volte. Qui l'oggetto del
+ * gesto e' esattamente la cosa che la schermata ha in cima — «Sei collegato
+ * come...» — e non cambia da un telefono all'altro.
+ *
+ * Il criterio, scritto per la prossima volta: in questa schermata ci sta cio'
+ * che e' vero dell'account ovunque lo si apra.
  */
 
 /**
@@ -80,6 +105,18 @@ type EsitoRevoca =
    * stesso account.
    */
   | { readonly kind: "chiusa"; readonly quante: number };
+
+/**
+ * Lo stesso, ma il successo porta tre numeri e non uno.
+ *
+ * Portano l'intera risposta invece di tre campi sciolti: sono tre conteggi che
+ * hanno senso solo insieme, e il giorno che il contratto ne aggiunge un quarto
+ * questo tipo non ha niente da cambiare.
+ */
+type EsitoCancellazione =
+  | { readonly kind: "niente" }
+  | { readonly kind: "errore"; readonly messaggio: string }
+  | { readonly kind: "fatto"; readonly conti: DeleteAccountResponse };
 
 export function AccountScreen(): React.JSX.Element {
   const apiClient = useApi();
@@ -265,8 +302,191 @@ export function AccountScreen(): React.JSX.Element {
           Esci da questo dispositivo
         </button>
       </section>
+
+      <CancellaConto />
     </main>
   );
+}
+
+/**
+ * La quarta sezione: cancellare il conto, in due passi.
+ *
+ * ## Perche' due passi e non una `confirm()`
+ *
+ * Perche' `window.confirm` e' una finestra del browser che si chiude con
+ * Invio, e il gesto piu' distruttivo dell'applicazione non deve poter
+ * succedere per un tasto premuto due volte. Qui il primo tocco non manda
+ * niente: apre il campo della password e mostra cosa sparisce. Il secondo e'
+ * un invio di modulo con una password dentro, cioe' una cosa che non si fa per
+ * sbaglio.
+ *
+ * C'e' anche una ragione piu' piccola e pratica: `confirm` blocca il thread e
+ * in jsdom non esiste, quindi un test dovrebbe sostituirla — e un gesto che si
+ * puo' provare solo mettendo una pezza al browser e' un gesto che si prova
+ * male. Questo si prova premendo due pulsanti, come lo fa l'utente.
+ *
+ * ## Perche' la password non sta nel primo passo
+ *
+ * Perche' un campo password sempre visibile in fondo alla schermata, accanto a
+ * un pulsante rosso, e' un invito a compilarlo. Il primo tocco e' la
+ * dichiarazione d'intenzione, e solo dopo quella la schermata chiede il
+ * segreto.
+ *
+ * ## Perche' i numeri si mostrano dopo, e non spariscono da soli
+ *
+ * Perche' sono l'unica ricevuta che questo gesto potra' mai avere: dopo non
+ * c'e' piu' nessun posto dove tornare a verificare. La schermata non naviga da
+ * nessuna parte e non chiama `logout()`: il deposito e' gia' vuoto — lo ha
+ * svuotato il client dentro `deleteAccount` — e la prossima chiamata al server
+ * portera' fuori da sola. Buttare subito l'utente sulla schermata d'ingresso
+ * vorrebbe dire far lampeggiare i tre numeri per un istante e portarli via.
+ */
+function CancellaConto(): React.JSX.Element {
+  const apiClient = useApi();
+  const { svuotaCoda } = useCapture();
+  const [chiesta, setChiesta] = useState(false);
+  const [password, setPassword] = useState("");
+  const [attesa, setAttesa] = useState(false);
+  const [esito, setEsito] = useState<EsitoCancellazione>({ kind: "niente" });
+
+  async function invia(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    setAttesa(true);
+    setEsito({ kind: "niente" });
+    try {
+      const conti = await apiClient.deleteAccount({ currentPassword: password });
+      setPassword("");
+      // Dopo la risposta e non prima: se il server rifiuta — password
+      // sbagliata, o un vocale ancora in lavorazione — il conto e' ancora li',
+      // e aver buttato via la coda avrebbe distrutto dei vocali di un account
+      // vivo per un gesto che non e' avvenuto.
+      await svuotaCoda();
+      setEsito({ kind: "fatto", conti });
+    } catch (error: unknown) {
+      // La sessione resta in piedi: `deleteAccount` non ha svuotato niente se
+      // ha lanciato, e questa schermata non chiama `logout`. Chi ha sbagliato
+      // la password deve poter riprovare da dov'e'.
+      setEsito({ kind: "errore", messaggio: messaggioDi(error) });
+    } finally {
+      setAttesa(false);
+    }
+  }
+
+  // Finito: il modulo sparisce e resta la ricevuta. Lasciare il pulsante
+  // acceso vorrebbe dire offrire di cancellare un conto che non c'e' piu', e
+  // la risposta sarebbe un 401 senza spiegazione.
+  if (esito.kind === "fatto") {
+    const { vocali, schede, sessioni } = esito.conti;
+    return (
+      <section className="sezione sezione--pericolo">
+        <h2>Conto cancellato</h2>
+        <p className="avviso avviso--fatto" role="status">
+          Il tuo conto non esiste piu&apos;. Sono spariti {plurale(vocali, "vocale", "vocali")},{" "}
+          {plurale(schede, "scheda", "schede")} e {plurale(sessioni, "dispositivo", "dispositivi")}.
+        </p>
+        <p className="muto">
+          Non c&apos;e&apos; modo di tornare indietro, nemmeno per noi: non
+          conserviamo nessuna copia.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="sezione sezione--pericolo">
+      <h2>Cancella il conto</h2>
+      <p className="muto">
+        Porta via tutto: i vocali, l&apos;audio, le schede, i tag e ogni
+        dispositivo collegato. Non e&apos; l&apos;archivio — e&apos; tutto, e non
+        si torna indietro.
+      </p>
+
+      {!chiesta ? (
+        <button
+          type="button"
+          className="bottone bottone--pericolo"
+          onClick={() => {
+            setChiesta(true);
+          }}
+        >
+          Voglio cancellare il conto
+        </button>
+      ) : (
+        <form
+          onSubmit={(e) => {
+            void invia(e);
+          }}
+        >
+          <p className="muto">
+            Scrivi la tua password per confermare. Dopo, non ci sara&apos;
+            nessun&apos; altra domanda.
+          </p>
+
+          {/*
+            L'etichetta nomina il gesto, e non e' un vezzo: «La tua password»
+            appartiene gia' alla sezione che scollega gli altri dispositivi,
+            sessanta righe piu' su in questo stesso file. Due campi con la
+            stessa etichetta nella stessa pagina sono ambigui per chi legge con
+            uno screen reader — e in questa schermata i due gesti non si
+            somigliano affatto.
+          */}
+          <label className="campo">
+            <span>Password, per cancellare il conto</span>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                setEsito((prima) => (prima.kind === "niente" ? prima : { kind: "niente" }));
+              }}
+              autoComplete="current-password"
+              required
+            />
+          </label>
+
+          {esito.kind === "errore" && (
+            <p className="avviso avviso--errore" role="alert">
+              {esito.messaggio}
+            </p>
+          )}
+
+          <button type="submit" className="bottone bottone--pericolo" disabled={attesa}>
+            {attesa ? "Un attimo…" : "Cancella tutto per sempre"}
+          </button>
+          <button
+            type="button"
+            className="bottone bottone--piatto"
+            disabled={attesa}
+            onClick={() => {
+              // Torna al primo passo e svuota il campo: chi ci ha ripensato non
+              // deve ritrovare la propria password scritta li' dentro la
+              // prossima volta che apre la schermata.
+              setChiesta(false);
+              setPassword("");
+              setEsito({ kind: "niente" });
+            }}
+          >
+            Lascia stare
+          </button>
+        </form>
+      )}
+    </section>
+  );
+}
+
+/**
+ * «1 vocale», «3 vocali», «nessun vocale».
+ *
+ * Lo zero non diventa «0 vocali»: e' il caso di chi si cancella subito dopo
+ * essersi iscritto, ed e' il piu' probabile fra i tre in questa schermata. Un
+ * numero scritto in cifra accanto a un sostantivo plurale si legge come un
+ * conteggio di un sistema, «nessuno» si legge come una frase.
+ */
+function plurale(quanti: number, singolare: string, plurale: string): string {
+  if (quanti === 0) {
+    return `nessun${singolare.endsWith("a") ? "a" : ""} ${singolare}`;
+  }
+  return `${String(quanti)} ${quanti === 1 ? singolare : plurale}`;
 }
 
 /**

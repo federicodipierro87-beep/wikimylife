@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import { describe, expect, it } from "vitest";
 import { JoseTokenIssuer } from "../../apps/api/src/infra/JoseTokenIssuer.js";
 import { createRequireAuth } from "../../apps/api/src/http/middleware/requireAuth.js";
+import { FakeStorageProvider } from "../../apps/api/src/providers/fake/FakeStorageProvider.js";
 import { createAuthService, type AuthService } from "../../apps/api/src/services/auth.service.js";
 import type { FamilyRegistry } from "../../apps/api/src/services/ports/AuthRepository.js";
 import { FakePasswordHasher, testAuthConfig } from "../support/auth.js";
@@ -253,6 +254,10 @@ describe("dal logout al 401, senza database", () => {
       tokens,
       clock,
       config: CONFIG,
+      // Obbligatorio dalla firma, e mai toccato da questo file: qui si prova
+      // `requireAuth`, e l'unico gesto dell'autenticazione che parli con lo
+      // storage e' `deleteAccount`, che sta altrove.
+      storage: new FakeStorageProvider(),
     });
 
     return {

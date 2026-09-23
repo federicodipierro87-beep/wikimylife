@@ -1,5 +1,6 @@
 import {
   changePasswordRequestSchema,
+  deleteAccountRequestSchema,
   loginRequestSchema,
   logoutRequestSchema,
   refreshRequestSchema,
@@ -176,6 +177,48 @@ export function createAuthRouter(deps: {
     const { userId } = authContext(req);
     const user = await deps.authService.me(userId);
     const body: MeResponse = { user };
+    res.status(200).json(body);
+  });
+
+  /**
+   * `POST /delete-account`, e non `DELETE /me`.
+   *
+   * ## Perche' il verbo e' sbagliato apposta
+   *
+   * Semanticamente la rotta giusta e' `DELETE /me`: si sta cancellando la
+   * risorsa `/me`, e non c'e' nessun dubbio su quale verbo lo dica. Non lo e'
+   * per la ragione gia' scritta sessanta righe piu' su, su `/sessions/revoke`,
+   * che qui vale identica e pesa di piu': serve mandare una password nel corpo,
+   * e un corpo su una DELETE e' consentito dallo standard ma trattato male da
+   * meta' del mondo che sta in mezzo. Proxy che lo scartano, `fetch` che in
+   * certe versioni non lo manda, e adesso anche una WebView dentro un guscio
+   * nativo — cioe' proprio l'ambiente per cui questa rotta e' stata scritta.
+   *
+   * Il modo in cui fallisce e' innocuo — il corpo sparisce, Zod rifiuta, non si
+   * cancella niente — ma il messaggio che ne esce e' un `VALIDATION_FAILED` su
+   * una richiesta che l'utente ha compilato per intero, e non c'e' niente in
+   * quella risposta che permetta a chiunque di capire cosa sia successo. Su un
+   * gesto che l'utente ha gia' confermato due volte, dopo aver deciso di
+   * andarsene, e' il modo peggiore di non funzionare.
+   *
+   * Chi legge questo file e vede due rotte distruttive con il verbo `POST`
+   * sara' tentato di sistemarle. Non e' una svista: e' scritto qui e li'
+   * perche' e' la stessa decisione, presa due volte per lo stesso motivo.
+   *
+   * ## Perche' sotto `rateLimit`
+   *
+   * Per la ragione di `/password`: accetta una password, quindi e' un posto da
+   * cui indovinarla online, e paga un argon2 per tentativo. Il percorso e'
+   * letterale, quindi la chiave del limitatore e' una sola e non si moltiplica
+   * — a differenza di quel che farebbe un id nel percorso.
+   *
+   * Risponde 200 con tre numeri e non 204. Un 204 e' il codice giusto per «non
+   * c'e' niente da dirti», e qui c'e' l'ultima cosa che questo conto dira' mai.
+   */
+  router.post("/delete-account", deps.rateLimit, deps.requireAuth, async (req, res) => {
+    const { userId } = authContext(req);
+    const input = parseBody(deleteAccountRequestSchema, req.body);
+    const body = await deps.authService.deleteAccount(userId, input);
     res.status(200).json(body);
   });
 

@@ -101,6 +101,22 @@ model User {
   passwordHash String
   locale       String @default("it-IT")
 
+  /// ## Perche' tutte e quattro cancellano a cascata
+  ///
+  /// Perche' esiste `DELETE /api/auth/me`, e senza la cascata quella rotta
+  /// sarebbe una promessa che il database rifiuta: `user.delete()` cadrebbe su
+  /// un vincolo di chiave esterna, e l'utente leggerebbe un errore tecnico
+  /// invece di vedersi cancellare il conto. Fino al commit che ha aggiunto
+  /// quella rotta solo `refreshTokens` cascadeva, e le altre tre erano
+  /// `Restrict` per difetto — che era la scelta giusta finche' nessuno poteva
+  /// cancellare un utente, perche' un `Restrict` e' una rete che ferma il
+  /// codice sbagliato prima che faccia danni.
+  ///
+  /// Il prezzo di averla tolta e' dichiarato: da qui in poi un `user.delete()`
+  /// scritto per errore da qualche altra parte porta via tutto in silenzio,
+  /// dove prima si sarebbe schiantato. Cio' che lo tiene stretto e' che il
+  /// servizio sia l'unico posto da cui si cancella un utente, e che quel posto
+  /// chieda la password prima.
   procedures    Procedure[]
   recordings    Recording[]
   /// [D6] Lato inverso di `Tag.userId`, che nella spec e' uno scalare orfano.
@@ -164,7 +180,11 @@ model RateLimitBucket {
 model Recording {
   id     String @id @default(cuid())
   userId String
-  user   User   @relation(fields: [userId], references: [id])
+  /// Cascata: vedi il commento su `User.procedures`. I byte dell'audio non
+  /// sono qui dentro, quindi la cascata da sola li lascerebbe nel bucket: le
+  /// chiavi si raccolgono *prima* di cancellare le righe, ed e' il servizio a
+  /// farlo.
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   audioUrl  String
   /// [D7] Il client dichiara il mime type, il server non lo da' per scontato:
@@ -237,7 +257,10 @@ model Recording {
 model Procedure {
   id     String @id @default(cuid())
   userId String
-  user   User   @relation(fields: [userId], references: [id])
+  /// Cascata: vedi il commento su `User.procedures`. Passi, prerequisiti,
+  /// esecuzioni e legami con i tag cascadevano gia' da qui, quindi togliere la
+  /// scheda porta via tutto il resto da solo.
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   titolo        String
   trigger       String?
@@ -369,8 +392,8 @@ model Execution {
 model Tag {
   id         String           @id @default(cuid())
   userId     String
-  /// [D6]
-  user       User             @relation(fields: [userId], references: [id])
+  /// [D6] Cascata: vedi il commento su `User.procedures`.
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   nome       String
   procedures TagOnProcedure[]
 

@@ -587,6 +587,31 @@ button:focus-visible {
   margin: 1.75rem 0;
 }
 
+/* L'ultima sezione dell'account: quella che cancella il conto.
+ *
+ * Un bordo e uno stacco, non un fondo rosso pieno: il rosso di `--bad` acceso
+ * su tutto un riquadro si legge come «qualcosa e' andato storto», e qui non e'
+ * andato storto niente — e' una cosa che si puo' fare. Il riquadro serve a
+ * staccarla dalle tre che la precedono, perche' si scorre con il pollice e
+ * quattro sezioni identiche una sotto l'altra si premono una per l'altra. */
+.sezione--pericolo {
+  margin-top: 3rem;
+  padding: 1rem;
+  border: 1px solid var(--bad);
+  border-radius: 0.6rem;
+}
+
+/* Il pulsante distruttivo. Fondo trasparente e bordo rosso e non il contrario:
+   pieno avrebbe lo stesso peso visivo di `--primario`, che e' il pulsante che
+   si preme per andare avanti, e i due finirebbero per assomigliarsi proprio
+   nella schermata in cui stanno insieme. */
+.bottone--pericolo {
+  border-color: var(--bad);
+  color: var(--bad);
+  font-weight: 600;
+  width: 100%;
+}
+
 /* I dispositivi collegati. Senza pallino: non e' un elenco da leggere in ordine,
    sono righe che si contano. */
 .dispositivi {

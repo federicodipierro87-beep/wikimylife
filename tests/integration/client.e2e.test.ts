@@ -509,6 +509,32 @@ describe("il ponte: la rotazione dopo un 401", () => {
     await expect(primo.client.me()).rejects.toThrow(ApiError);
     expect(primo.scaduta).toBe(1);
   });
+
+  it("cancellare il conto svuota il deposito e chiude anche gli altri dispositivi", async () => {
+    const email = emailNuova();
+    const primo = creaCliente();
+    await primo.client.signup({ email, password: PASSWORD });
+
+    const secondo = creaCliente();
+    await secondo.client.login({ email, password: PASSWORD });
+
+    const conti = await secondo.client.deleteAccount({ currentPassword: PASSWORD });
+    expect(conti).toEqual({ vocali: 0, schede: 0, sessioni: 2 });
+
+    // Il deposito: sotto un `fetch` finto e' gia' provato, ma qui la risposta
+    // arriva davvero da Express e passa davvero per `deleteAccountResponseSchema`.
+    // Un contratto che divergesse fra i due lati farebbe lanciare il client
+    // *dopo* che il conto e' stato cancellato — cioe' l'app direbbe «non e'
+    // riuscito» a chi non ha piu' niente.
+    expect(secondo.storage.snapshot()).toEqual({});
+    expect(secondo.client.getAccessToken()).toBeNull();
+
+    // E l'altro dispositivo cade alla prima richiesta, con la stessa strada di
+    // una sessione revocata: 401, rotazione tentata e fallita, sessione
+    // dichiarata morta una volta sola.
+    await expect(primo.client.me()).rejects.toThrow(ApiError);
+    expect(primo.scaduta).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1007,7 +1033,7 @@ describe("il ponte: guardia", () => {
     // del client da oggetto letterale a classe, che e' una riscrittura
     // plausibile — renderebbe la guardia sopra verde per sempre, e nessuno se ne
     // accorgerebbe perche' i test verdi non si rileggono.
-    expect(tuttiIMetodi()).toHaveLength(29);
+    expect(tuttiIMetodi()).toHaveLength(30);
     expect(attraversati.size).toBeGreaterThan(0);
   });
 });

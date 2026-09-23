@@ -1,10 +1,25 @@
 import type {
   AuthRepository,
+  DeleteAccountOutcome,
   NewRefreshToken,
   OpenSessionRecord,
   RefreshTokenRecord,
   UserRecord,
 } from "../../apps/api/src/services/ports/AuthRepository.js";
+
+/**
+ * Un vocale, ridotto ai tre campi che `deleteAccount` guarda.
+ *
+ * Non e' il `Recording` del database: qui non servono trascrizione, durata,
+ * mime type. Tenerli costringerebbe ogni test a inventarsi dei valori per
+ * campi che nessuna asserzione guarda, e la prima volta che il modello cresce
+ * di una colonna obbligatoria si romperebbero tutti insieme per niente.
+ */
+interface VocaleFinto {
+  readonly userId: string;
+  readonly audioUrl: string;
+  readonly inLavorazione: boolean;
+}
 
 /**
  * `AuthRepository` in memoria.
@@ -22,6 +37,17 @@ import type {
 export class InMemoryAuthRepository implements AuthRepository {
   readonly #users = new Map<string, UserRecord>();
   readonly #tokens = new Map<string, RefreshTokenRecord>();
+  /**
+   * I vocali e le schede, che nel database vero non stanno in questa porta.
+   *
+   * Ci stanno qui perche' `deleteAccount` li conta e li porta via: e' l'unico
+   * metodo dell'autenticazione che guardi oltre gli utenti e i token, e un
+   * doppio che fingesse di non vederli renderebbe impossibile provare l'unica
+   * cosa che quel metodo deve garantire — che porti via le proprie cose e
+   * lasci stare quelle degli altri.
+   */
+  #vocali: VocaleFinto[] = [];
+  #schede: { readonly userId: string }[] = [];
   #sequence = 0;
 
   #nextId(prefix: string): string {
@@ -46,6 +72,39 @@ export class InMemoryAuthRepository implements AuthRepository {
     };
     this.#users.set(user.id, user);
     return { ...user };
+  }
+
+  /** Un vocale preesistente. `inLavorazione` e' lo stato `IN_ELABORAZIONE`. */
+  seedRecording(input: {
+    readonly userId: string;
+    readonly audioUrl: string;
+    readonly inLavorazione?: boolean;
+  }): void {
+    this.#vocali.push({
+      userId: input.userId,
+      audioUrl: input.audioUrl,
+      inLavorazione: input.inLavorazione ?? false,
+    });
+  }
+
+  /** Una scheda preesistente: qui conta solo di chi e'. */
+  seedProcedure(userId: string): void {
+    this.#schede.push({ userId });
+  }
+
+  /** Ispezione: cosa e' rimasto dopo una cancellazione. */
+  snapshot(): {
+    readonly utenti: readonly string[];
+    readonly vocali: readonly string[];
+    readonly schede: number;
+    readonly token: number;
+  } {
+    return {
+      utenti: [...this.#users.keys()],
+      vocali: this.#vocali.map((v) => v.audioUrl),
+      schede: this.#schede.length,
+      token: this.#tokens.size,
+    };
   }
 
   /** Ispezione, per i test sulla revoca di famiglia. */
@@ -266,5 +325,55 @@ export class InMemoryAuthRepository implements AuthRepository {
     return [...nascite.entries()]
       .map(([familyId, createdAt]) => ({ familyId, createdAt }))
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  /**
+   * La cascata scritta a mano, perche' qui non c'e' nessun database a farla.
+   *
+   * Ogni filtro e' ripetuto con lo `userId`, come nell'adattatore vero, e per
+   * il motivo gia' scritto su `revokeFamilyOfUser`: un doppio che cancellasse
+   * tutto e restituisse i numeri giusti lascerebbe passare una query di Prisma
+   * senza `where`, e l'unico posto dove il difetto si vedrebbe sarebbe
+   * l'integrazione — cioe' dopo aver cancellato gli account di tutti.
+   *
+   * `sessioni` conta le *famiglie* vive e non le righe vive, come il `distinct`
+   * dell'adattatore vero: una famiglia viva ha una riga sola, ma qui non c'e'
+   * niente che lo imponga, e un test che facesse ruotare una sessione due volte
+   * otterrebbe un numero diverso dal server se questa contasse le righe.
+   */
+  async deleteAccount(userId: string): Promise<DeleteAccountOutcome> {
+    const inLavorazione = this.#vocali.filter(
+      (v) => v.userId === userId && v.inLavorazione,
+    ).length;
+    if (inLavorazione > 0) {
+      return { kind: "IN_LAVORAZIONE", quanti: inLavorazione };
+    }
+
+    const miei = this.#vocali.filter((v) => v.userId === userId);
+    const schede = this.#schede.filter((s) => s.userId === userId).length;
+
+    const famiglie = new Set<string>();
+    for (const token of this.#tokens.values()) {
+      if (token.userId === userId && token.revokedAt === null) {
+        famiglie.add(token.familyId);
+      }
+    }
+
+    this.#vocali = this.#vocali.filter((v) => v.userId !== userId);
+    this.#schede = this.#schede.filter((s) => s.userId !== userId);
+    for (const [id, token] of this.#tokens) {
+      if (token.userId === userId) {
+        this.#tokens.delete(id);
+      }
+    }
+    this.#users.delete(userId);
+
+    return {
+      kind: "CANCELLATO",
+      audioKeys: miei.map((v) => v.audioUrl),
+      vocali: miei.length,
+      schede,
+      sessioni: famiglie.size,
+    };
   }
 }

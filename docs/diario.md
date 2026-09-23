@@ -32,7 +32,7 @@ commit, non per la sua distanza da oggi.
 ## I difetti noti falsi, tutti quanti
 
 `CLAUDE.md` vieta di scrivere «non è provato che X» senza un `grep` prima. La
-regola esiste perché è stata violata cinque volte, e l'elenco sta qui perché una
+regola esiste perché è stata violata sei volte, e l'elenco sta qui perché una
 regola con sotto i suoi cadaveri si dimentica meno.
 
 | | scritto | perché era falso | trovato da |
@@ -42,12 +42,15 @@ regola con sotto i suoi cadaveri si dimentica meno.
 | 3 | «di schermate ne sono provate sette» | erano nove: mancavano all'elenco `account.test.tsx` e `trash.test.tsx` | una rilettura |
 | 4 | «`ReviewScreen`, dove si decide cosa fare di un duplicato sospetto» | `DUPLICATO_SOSPETTO` non compare in `ReviewScreen`: è un'etichetta di stato in `format.ts:213` | la scrittura dei test |
 | 5 | «il worker non ha bisogno di `CORS_ORIGINS`: non espone HTTP» | `loadConfig` è condiviso e non sa chi lo chiama | il processo che non partiva |
+| 6 | «la scopa rimette in coda le righe ferme da troppo tempo, ma la lancia un umano» | due affermazioni, tutte e due false: la scopa gira da sola nel ciclo del worker (`sweepSchedule.ts`), e guarda i file del bucket, non le righe | un `grep` fatto dopo aver scritto la frase |
 
-Due cose che questo elenco dice e le singole voci no. La quarta è stata scritta
+Tre cose che questo elenco dice e le singole voci no. La quarta è stata scritta
 **dentro il commit che correggeva la seconda e la terza**, tre righe sotto la
 regola — e veniva dal riassunto di un agente di ricerca, preso per buono senza
 verificarlo. La quinta non l'ha trovata nessuna rilettura: l'ha trovata la
-produzione, rifiutandosi di avviarsi.
+produzione, rifiutandosi di avviarsi. La sesta è l'unica scritta in un difetto
+noto *nuovo*, cioè nel posto dove si dichiarano i debiti: sbagliarla lì significa
+descrivere una riparazione che non esiste, e mandare il prossimo a cercarla.
 
 ---
 
@@ -836,3 +839,129 @@ dichiarata — ventotto su quello della scheda e del riquadro (**26 cadute e due
 vive, che sono esattamente i due controlli**) e dieci su quello del microfono:
 nove cadute e il controllo vivo. Nessuna saltata e nessun guasto del runner in
 nessuno dei tre giri.
+
+---
+
+## Giro 5 — verso un'app vera: le guardie, e cancellare il proprio conto
+
+Il giro nasce da una domanda pratica: che iOS chieda il permesso del microfono
+una volta sola. Su Safari non è ottenibile; dentro un guscio Capacitor sì, perché
+`WebViewDelegationHandler.swift` implementa `requestMediaCapturePermissionFor`
+con un `decisionHandler(.grant)` senza condizioni, e allora l'unico cartello che
+resta è quello di sistema, che il telefono ricorda perché è legato all'app
+installata e non alla scheda del browser. **Questa frase è una lettura di
+sorgente su GitHub, cioè ha l'autorità di un ricordo**: diventa vera quando la si
+misura su un iPhone, che è la fase 3 del piano e costa 99 $ l'anno.
+
+Le fasi sono sei. Questo giro chiude le prime due porzioni della fase 0, che è
+tutto ciò che va fatto *prima* di generare qualunque cartella nativa.
+
+### 0a — le guardie, prima e non dopo
+
+`guards.test.ts` cammina l'albero del repo. `apps/mobile/ios` e
+`apps/mobile/android` conterranno migliaia di file generati — Pods, Gradle,
+`.pbxproj` — e la guardia li leggerebbe tutti. `IGNORED_DIRS` si è allargata con
+`ios`, `android`, `Pods`, `build`, `.gradle`, e `BROWSER_GLOBALS` con `Capacitor`,
+che è un globale del browser a tutti gli effetti e che `packages/shared` non deve
+poter toccare.
+
+Allargare `IGNORED_DIRS` allarga un punto cieco, ed è scritto nei difetti noti:
+quelle cartelle non le controllerà più nessuna guardia. Il caso opposto è nel
+file — una cartella *nostra* con un nome simile viene camminata lo stesso —
+perché senza, `IGNORED_DIRS = tutto` passerebbe.
+
+### 0b — cancellare il proprio conto
+
+Non esisteva: `grep` per `deleteUser|deleteAccount|cancella.*account` dava zero.
+La linea guida Apple **5.1.1(v)** dice che un'app da cui si crea un account deve
+permettere di cancellarlo dentro l'app, e senza il rifiuto alla revisione è
+certo.
+
+**La cascata non c'era.** `Recording.user`, `Procedure.user` e `Tag.user` non
+avevano `onDelete: Cascade` — solo `RefreshToken` ce l'aveva — quindi
+`user.delete()` sarebbe morto su un vincolo di chiave esterna al primo utente con
+un vocale. La migrazione `20260922100000_delete_account_cascade` li allinea, e in
+`schema.test.ts` c'è una guardia che interroga `pg_constraint` con
+`confrelid = '"User"'::regclass` e pretende **esattamente quattro** chiavi
+esterne, tutte `CASCADE`. Scritta così e non elencando i nomi a mano perché una
+tabella nuova con uno `userId` che nessuno collega alla cascata deve far cadere
+quel caso.
+
+Quella guardia, alla prima stesura, era sbagliata. La premessa era «nessuna FK
+fuori da `%_userId_fkey` deve essere `CASCADE`», ed è falsa: `Step_procedureId_fkey`
+e altre otto cascano legittimamente da `Procedure`. Il caso è rosso al primo giro,
+e la verità l'ha detta un `psql` diretto, non il ragionamento.
+
+**`POST /delete-account` e non `DELETE /me`**, che era ciò che il piano
+prevedeva. Il motivo è già scritto nel repo per `/sessions/revoke`: il gesto
+vuole la password nel corpo, e un corpo su una `DELETE` è consentito dallo
+standard e trattato male da metà del mondo che sta in mezzo. La deviazione è
+dichiarata qui e una mutazione la rimette in `DELETE /api/auth/me`, così la
+scelta resta onesta.
+
+**La risposta porta tre numeri** — vocali, schede, sessioni — e non un `204`:
+sono l'unico momento in cui quell'archivio si può ancora contare. **Un vocale in
+`IN_ELABORAZIONE` ferma tutto con un 409**, ed è la decisione scomoda: la
+5.1.1(v) vuole un gesto che funziona, e qui esiste un istante in cui risponde
+«riprova». L'alternativa era cancellare sotto un worker che ci sta scrivendo.
+
+Il residuo vero, trovato verificando invece di supporre, è peggiore
+dell'istante: un vocale che in `IN_ELABORAZIONE` **ci resta** — worker ucciso a
+metà — non lo recupera nessuno. `claimNext` pesca solo fra le `BOZZA_AUDIO`,
+`requeue` rifiuta esplicitamente l'`IN_ELABORAZIONE`, la `DELETE` della
+registrazione pure. Era già un difetto prima di questa rotta; quello che la
+rotta aggiunge è che adesso quel vicolo cieco si porta dietro anche l'uscita.
+La prima stesura del difetto noto diceva che «la scopa rimette in coda le righe
+ferme, ma la lancia un umano»: **due affermazioni, tutte e due false**. La scopa
+gira da sola nel ciclo del worker e guarda i file del bucket, non le righe. È il
+sesto difetto noto falso scritto in questo repo, e di nuovo l'ha trovato un
+`grep` fatto *dopo* aver scritto la frase invece che prima.
+
+### Un'etichetta riusata, che nessun test avrebbe protetto
+
+Il campo nuovo si chiamava «La tua password». Sette casi web rossi con
+`Found multiple elements`: quella frase appartiene già, sessanta righe più su
+nello stesso file, al modulo che scollega gli altri dispositivi. Adesso dice
+«Password, per cancellare il conto». È esattamente la regola «prima di scrivere
+una stringa nuova destinata all'utente, `grep`ala», violata tre righe dopo averla
+riletta.
+
+E nel correggerla, un secondo inciampo evitato per un pelo: una sostituzione
+cieca di quella stringa nel file di test toccava **30 occorrenze**, 19 delle
+quali appartenevano ai casi preesistenti della revoca. Se ne è accorto il numero
+stampato, non un test.
+
+### Il difetto dello strumento che si è travestito da esito
+
+Il giro completo delle mutazioni ha dato il controllo `[0]` **caduto**, su un
+commit dove tutto era verde. La causa: `@wikimylife/shared` si consuma da `dist`,
+e i comandi che mutano `packages/shared/src` lo compilano lì dentro. `muta.py`
+ripristina il sorgente, ma `dist` resta mutato — quindi ogni comando successivo,
+compresi quelli del giro **dopo**, girava contro la rotta `DELETE` lasciata dalla
+mutazione 20. Adesso ogni comando del `.muta.json` comincia con
+`npx tsc -b packages/shared`.
+
+È la terza volta che un difetto del runner si traveste da esito. Le prime due
+facevano passare dei guasti per cadute; questa faceva cadute vere su codice non
+mutato. Le tre hanno in comune una cosa sola: **senza la mutazione di controllo
+non se ne sarebbe accorto nessuno**.
+
+### La precauzione doppia, ancora, e ancora con lo stesso esito
+
+Nel conteggio delle sessioni della ricevuta convivono `revokedAt: null` e
+`distinct: ["familyId"]`. Mutate nei tre modi previsti dalla regola: insieme
+cadono; togliere il filtro cade — ma solo dopo aver aggiunto un caso con un
+dispositivo *già scollegato*, perché con un dispositivo solo il `distinct`
+copriva la mancanza; togliere il `distinct` **sopravvive**, ed è equivalente. La
+rotazione revoca la riga di partenza nella stessa transazione in cui crea quella
+nuova, quindi di ogni famiglia viva esiste una riga sola.
+
+Non si è aggiunto nessun caso per coprirla. Si è corretto il commento, che
+diceva che il `distinct` serviva a non contare le antenate revocate — cosa che fa
+già il filtro — e adesso dichiara la ridondanza e perché resta.
+
+### I numeri
+
+Da **1148** test unit + web su 49 file a **1169**, e da **392** d'integrazione su
+14 file a **405**. Trenta mutazioni: **25 cadute, quattro controlli vivi come
+devono, una equivalente dichiarata**, zero guasti e zero saltate al giro finale.

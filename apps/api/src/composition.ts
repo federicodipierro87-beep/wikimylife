@@ -213,12 +213,25 @@ export function compose(config: AppConfig, overrides?: {
   });
   const repo = new PrismaAuthRepository(prisma);
 
+  // Costruiti qui e non piu' in fondo: da quando `DELETE` di un conto porta via
+  // anche i vocali, `authService` ha bisogno dello storage, e una costante non
+  // puo' essere usata prima della riga che la definisce. E' l'unico effetto
+  // visibile di quella dipendenza sul resto della composizione.
+  const providers = buildProviders(config);
+
   const authService = createAuthService({
     repo,
     hasher,
     tokens,
     clock,
     config: config.auth,
+    storage: providers.storage,
+    // Dopo il COMMIT non c'e' piu' nessuna riga, in nessun database, che nomini
+    // questa chiave: l'utente non esiste, i suoi vocali nemmeno. Questa riga di
+    // registro e' l'unica cosa al mondo che sappia che quell'oggetto e' li'.
+    onOrphanedAudio: ({ key, error }) => {
+      logger.error("audio non cancellato dopo il conto", { key, error });
+    },
   });
 
   // Sullo stesso `prisma` di tutto il resto, e quindi sullo stesso database:
@@ -228,7 +241,6 @@ export function compose(config: AppConfig, overrides?: {
   // c'e' ancora nessuno.
   const rateLimitStore = new PrismaRateLimitStore(prisma);
 
-  const providers = buildProviders(config);
   const recordingRepo = new PrismaRecordingRepository(prisma);
 
   const ingestionService = createIngestionService({

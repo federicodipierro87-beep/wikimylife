@@ -895,10 +895,11 @@ invece restano, perché il campo sbagliato è uno solo e ridigitare due volte un
 password nuova che era giusta sono due occasioni in più di sbagliarla.
 
 **Fra il cambio password e l'uscita c'è «Scollega gli altri dispositivi»**, che è
-arrivata dopo perché prima la rotta non esisteva. Le tre sezioni stanno in
+arrivata dopo perché prima la rotta non esisteva. Le sezioni stanno in
 quest'ordine per quanto tolgono: la prima cambia una credenziale e chiude ogni
 sessione, compresa quella su cui si sta premendo; la seconda chiude tutto tranne
-quella; la terza chiude solo quella. È l'unica cosa che le distingue davvero —
+quella; la terza chiude solo quella; la quarta — «Cancella il conto», l'ultima
+arrivata — non chiude niente perché non lascia niente da chiudere. È l'unica cosa che le distingue davvero —
 sotto ognuna c'è una riga che dice cosa lascia in piedi, perché il pulsante da
 premere si somiglia in tutti e tre i casi, e chi arriva qui di solito ha in testa
 un problema («ho perso il telefono», «la password è in giro») e non un verbo. La
@@ -997,6 +998,58 @@ gesto è diventato impossibile, e chi ha appena perso un telefono smetterebbe di
 provarci. Resta il gesto grosso al posto di quello mirato, che è il verso giusto
 in cui degradare — chi non riesce a vedere l'elenco non può nemmeno scegliere
 dentro l'elenco.
+
+**«Cancella il conto» è in fondo, e chiede la password come tutto il resto.** È
+arrivata per una ragione che non viene dal prodotto: la linea guida **5.1.1(v)**
+di Apple dice che un'app da cui si crea un account deve permettere di cancellarlo
+**dentro l'app**, e senza di essa il rifiuto alla revisione è certo. Ma il posto
+in cui è finita viene dal prodotto: è l'ultimo gradino della scala che le altre
+tre salgono — questo dispositivo, gli altri dispositivi, e poi tutto — e sta in
+questa schermata perché cancellare il conto è una cosa **del conto**, vera
+ovunque lo si apra. Il criterio è scritto nel commento in cima al file, e non per
+pignoleria: un giro precedente aveva provato a mettere qui un riquadro sul
+permesso del microfono, che è un fatto **del telefono** e che lo stesso account
+su un altro dispositivo avrebbe raccontato al contrario.
+
+**Si preme due volte, e il primo tocco non manda niente.** Il primo apre il campo
+della password, il secondo cancella. Non è la conferma con la parola da ricopiare
+che il cestino usa per lo svuotamento, perché qui la password c'è già ed è un
+segreto che chi sta al telefono di un altro non conosce: è la stessa difesa delle
+due sezioni sopra, e ricopiare una parola in più difenderebbe solo dallo scivolo
+del dito, che il secondo passo copre da sé. Accanto al pulsante c'è «Lascia
+stare», che richiude e **svuota il campo**: una password scritta e lasciata lì
+sotto un pulsante rosso è un secondo clic distratto che parte da solo, ed è lo
+stesso motivo per cui il campo si svuota dopo ogni revoca.
+
+L'etichetta del campo dice «Password, per cancellare il conto» e non «La tua
+password», che era la scelta ovvia e sarebbe stata sbagliata: quella frase
+appartiene già al modulo che scollega gli altri dispositivi, sessanta righe più
+su nella stessa pagina. Due campi con la stessa etichetta nello stesso documento
+sono ambigui per chi legge con uno screen reader, e questi due gesti non si
+somigliano affatto.
+
+**Alla fine non c'è un «fatto»: ci sono tre numeri.** «2 vocali», «1 scheda», «3
+dispositivi scollegati» — e il modulo sparisce, sostituito dalla ricevuta. Non è
+cortesia: è l'unica occasione in cui quei numeri si possono ancora leggere, e chi
+si aspettava di cancellare l'archivio di un altro account se ne accorge qui e non
+mai. Lo zero si scrive come una frase e non come una cifra, per la stessa ragione
+per cui lo fa lo zero dei dispositivi scollegati: «non c'era nessun vocale»
+racconta una cosa, «0 vocali» ne sembra un'altra.
+
+**La coda dei caricamenti si svuota, e si svuota dopo.** La coda offline vive in
+IndexedDB e sopravvive al logout — un vocale di un account cancellato resterebbe
+sul telefono a ritentare per sempre contro un utente che non esiste. Ma
+`svuotaCoda()` viene chiamata **dopo** che il server ha risposto bene, mai prima:
+se la richiesta fallisce — password sbagliata, o un vocale ancora in lavorazione
+— il conto è ancora lì, e aver buttato via la coda avrebbe distrutto i vocali di
+un account vivo per un gesto che non è avvenuto.
+
+**Un errore lascia la sessione in piedi.** Il client svuota il deposito solo dopo
+una risposta buona: chi sbaglia la password ottiene un messaggio rosso e resta
+dov'era, con il modulo ancora aperto e il campo da ridigitare. La schermata non
+chiama `logout` da nessuna parte, e il `clear()` del client sta **dopo** la
+`send` e non in un `finally` — che sarebbe la scrittura più naturale delle due, e
+butterebbe fuori dall'app chi ha soltanto digitato male.
 
 **Il cestino è una schermata e non un quarto chip.** I filtri dell'elenco sono
 gli ambiti — personale, lavoro, clienti — e sono tutti dello stesso tipo:
@@ -1447,6 +1500,80 @@ ha lo `userId`, l'altro *perché* ce l'ha.
 Come `/sessions/revoke` e `/password`, questa rotta sta **dentro** il limite dei
 tentativi: è autenticata ma accetta una password, quindi è un posto da cui
 indovinarla, e paga un argon2 per tentativo.
+
+### Cancellare il proprio conto
+
+```powershell
+$corpo = @{ currentPassword = "password-lunga-12" } | ConvertTo-Json
+
+curl.exe -X POST http://localhost:3000/api/auth/delete-account `
+  -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d $corpo
+# {"vocali":2,"schede":1,"sessioni":3}
+
+# Il refresh token del dispositivo rimasto acceso in tasca:
+curl.exe -X POST http://localhost:3000/api/auth/refresh `
+  -H "content-type: application/json" -d "{\"refreshToken\":\"<quello di prima>\"}"
+#   → 401. Non perché sia stato revocato: perché la riga non esiste più.
+```
+
+**`POST /delete-account` e non `DELETE /me`**, che era la scrittura più REST e che
+il piano di lavoro prevedeva. Il motivo è lo stesso già scritto per
+`/sessions/revoke`: questo gesto vuole la password nel corpo, e un corpo su una
+`DELETE` è consentito dallo standard e trattato male da metà del mondo che sta in
+mezzo — proxy che lo scartano, client che si rifiutano di mandarlo. La password
+nel percorso o in un header non è un'alternativa, è un peggioramento.
+
+**La risposta porta tre numeri e non un `204`.** Sono l'unico momento in cui
+quell'archivio si può ancora contare, e servono a chi ha premuto per capire se ha
+cancellato ciò che credeva. Un `{ok:true}` direbbe la stessa cosa che dice il
+codice di stato, cioè niente.
+
+**Un vocale in `IN_ELABORAZIONE` ferma tutto con un `409`**, e il messaggio dice
+**quanti** sono e che finiscono da soli. È la decisione scomoda di questa rotta,
+ed è dichiarata anche fra i difetti noti: la 5.1.1(v) vuole un gesto che
+*funziona*, e qui esiste un istante in cui risponde «riprova». L'alternativa era
+cancellare le righe sotto un worker che ci sta scrivendo, cioè farlo schiantare
+su una chiave sparita per un caso che passa da solo. Il numero sta nel messaggio
+perché cambia cosa si sta aspettando: «uno» è un istante, «dodici» è il momento
+di andare a prendere un caffè.
+
+**L'ordine dentro il servizio è la sicurezza**, come nelle altre rotte che
+accettano una password: rilegge l'utente (401 se non c'è più), verifica la
+password (401), poi chiama il repository. E dentro il repository tutto sta in una
+**transazione sola** — il conteggio dei vocali in lavorazione, la raccolta delle
+chiavi S3, i due conteggi della ricevuta e la `delete` — perché il 409 deciso
+fuori dalla transazione arriverebbe dopo aver già portato via i byte dal bucket.
+
+**I byte dell'audio si tolgono per ultimi, fuori dalla transazione**, e per
+questo esiste `togliDalBucket` anche in `auth.service`, copiata da
+`procedures.service` invece che condivisa: il bucket non partecipa al `COMMIT`,
+quindi un `delete` sullo storage fatto prima non si annulla se il `COMMIT`
+fallisce, e l'utente resterebbe con il conto intero e i vocali muti. Nell'ordine
+giusto il modo di sbagliare è l'altro — righe sparite, byte rimasti — che costa
+spazio e non dati. Un bucket che protesta **non** fa cadere il gesto: l'errore
+finisce in `onOrphanedAudio`, perché a quel punto non c'è più nessuno a cui
+riportarlo, e la scopa passa di lì.
+
+**Il resto va per cascata, e la cascata è stata aggiunta adesso.**
+`Recording.user`, `Procedure.user` e `Tag.user` non avevano `onDelete: Cascade` —
+solo `RefreshToken` ce l'aveva — quindi `user.delete()` sarebbe morto su un
+vincolo di chiave esterna al primo utente con un vocale. La migrazione
+`20260922100000_delete_account_cascade` li allinea, e in `schema.test.ts` c'è una
+guardia che interroga `pg_constraint` e pretende che verso `User` esistano
+**esattamente quattro** chiavi esterne, tutte `CASCADE`: una tabella nuova con uno
+`userId` che nessuno collega alla cascata fa cadere quel caso, che è l'unico modo
+di accorgersene prima della produzione.
+
+**Il numero `sessioni` conta i dispositivi, non le righe.** Un conto che ha
+ruotato quarantadue volte ha quarantadue righe in `RefreshToken` e un dispositivo
+solo, e il filtro è `revokedAt: null` — la stessa definizione di «viva» che usano
+`isFamilyActive` e `listOpenSessions`, e che deve restare la stessa, o la ricevuta
+direbbe un numero diverso da quello dell'elenco che l'utente ha appena finito di
+guardare.
+
+La rotta sta **dentro** il limite dei tentativi, come `/password` e le due
+`/sessions/revoke*`: è autenticata ma accetta una password, quindi è un posto da
+cui indovinarla, e paga un argon2 per tentativo.
 
 ### Un vocale che diventa una scheda, a mano
 
@@ -3680,6 +3807,33 @@ Non installate, e il perché:
   scadenza da custodire), e mezza implementazione sarebbe peggio di nessuna:
   un reset per mail fatto male è la porta di servizio da cui si entra
   nell'account senza saperne la password.
+- **Un vocale incastrato in `IN_ELABORAZIONE` blocca la cancellazione del conto,
+  e non c'è nessun modo di sbloccarla dall'app.** Il `409` è voluto: cancellare le
+  righe sotto un worker che ci sta scrivendo lo farebbe schiantare su una chiave
+  sparita, per un caso che di solito passa da solo in qualche minuto. Il prezzo
+  dichiarato è che la linea guida **5.1.1(v)** vuole un gesto che *funziona*, e
+  qui esiste un istante in cui risponde «riprova» — l'attenuante è che il
+  messaggio dice quanti sono e che finiscono da soli. Il residuo vero però non è
+  quell'istante: è il vocale che in `IN_ELABORAZIONE` **non ci entra per un
+  minuto, ci resta**, perché il worker è stato ucciso a metà lavoro. Quella riga
+  non la recupera nessuno, ed è un difetto che c'era già prima di questa rotta:
+  `claimNext` pesca solo fra le `BOZZA_AUDIO`, quindi il worker non la riprende;
+  `requeue` — cioè `POST /retry` — rifiuta esplicitamente l'`IN_ELABORAZIONE`,
+  per non avere due elaborazioni sulla stessa riga; e la `DELETE` di una
+  registrazione la rifiuta a sua volta. La scopa non c'entra: gira da sola nel
+  ciclo del worker, ma guarda i file del bucket, non le righe ferme. Quello che
+  la cancellazione del conto aggiunge è che adesso quel vicolo cieco **si porta
+  dietro anche l'uscita**: prima si perdeva un vocale, adesso non si può più
+  andarsene. Il rimedio è un recupero delle righe in volo da troppo tempo, che
+  non esiste in nessuna forma.
+- **La cancellazione del conto non ha una seconda conferma, e non si annulla.**
+  Due tocchi e la password, e l'archivio non c'è più: nessun periodo di grazia,
+  nessuna mail, nessun cestino. È coerente con il resto del prodotto — anche
+  svuotare il cestino è definitivo — ma è l'unico gesto che porta via *tutto*, e
+  l'unico di cui non resta traccia da nessuna parte per rimediare. Il rimedio
+  vero sarebbe una cancellazione differita (marcare il conto e cancellare fra
+  trenta giorni), che vuole un lavoro periodico e un modo di rientrare per
+  annullare: due cose che oggi non ci sono, e mezze non servirebbero.
 - **Un access token emesso prima di questo cambiamento non vale più.** Non porta
   `fid`, quindi non è revocabile, quindi viene rifiutato invece di essere
   accettato "finché non scade" — una scorciatoia del genere non la toglie più

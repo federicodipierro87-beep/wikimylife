@@ -53,6 +53,42 @@ export interface OpenSessionRecord {
 }
 
 /**
+ * Com'e' andata la cancellazione di un conto: un'unione, non un booleano.
+ *
+ * ## Perche' un'unione e non un'eccezione
+ *
+ * Perche' `IN_LAVORAZIONE` non e' un guasto: e' la risposta giusta a una
+ * domanda fatta nel momento sbagliato, e porta con se' un numero che chi
+ * chiama deve poter scrivere all'utente. Una porta che lancia costringerebbe il
+ * servizio a leggere il messaggio di un'eccezione per sapere quanti erano — che
+ * e' la forma piu' fragile di passaggio di dati che esista. E' lo stesso
+ * disegno di `deleteForUser` in `ProcedureRepository`.
+ *
+ * ## Perche' `audioKeys` esce da qui
+ *
+ * Perche' e' l'unica cosa che la cascata del database non porta via, e perche'
+ * dopo il `DELETE` non c'e' piu' nessun posto dove andarsela a prendere. La
+ * raccolta e la cancellazione devono stare nella stessa transazione, o esiste
+ * una finestra in cui un vocale nuovo entra fra le due e i suoi byte restano
+ * nel bucket per sempre senza nessuna riga che li nomini.
+ */
+export type DeleteAccountOutcome =
+  | {
+      /** C'e' del lavoro in corso su questo conto: non si cancella niente. */
+      readonly kind: "IN_LAVORAZIONE";
+      readonly quanti: number;
+    }
+  | {
+      readonly kind: "CANCELLATO";
+      /** Le chiavi S3 dei vocali. Il bucket lo svuota chi chiama, dopo. */
+      readonly audioKeys: readonly string[];
+      readonly vocali: number;
+      readonly schede: number;
+      /** Famiglie di refresh token vive, cioe' dispositivi scollegati. */
+      readonly sessioni: number;
+    };
+
+/**
  * La sola domanda che il middleware di autenticazione pone al database.
  *
  * E' una porta a se' e non `AuthRepository` intero perche' `requireAuth` non
@@ -230,4 +266,45 @@ export interface AuthRepository extends FamilyRegistry {
     readonly passwordHash: string;
     readonly revokedAt: Date;
   }): Promise<number>;
+
+  /**
+   * Cancella l'utente e tutto cio' che pende da lui. Non si torna indietro.
+   *
+   * ## Perche' non prende una data
+   *
+   * Ogni altro metodo distruttivo di questa porta prende un `revokedAt`, perche'
+   * marca righe che restano. Qui non resta niente da datare: non c'e' nessun
+   * campo su cui scrivere quando e' successo, perche' non c'e' nessuna riga su
+   * cui scriverlo. E' l'unico metodo di questo file che non ha bisogno
+   * dell'orologio, e vale la pena dirlo invece di lasciar credere a una
+   * dimenticanza.
+   *
+   * ## Perche' conta prima di cancellare, e dentro la stessa transazione
+   *
+   * I tre numeri sono l'unica ricevuta che questo gesto potra' mai avere: dopo
+   * non c'e' piu' niente da contare. Contarli fuori dalla transazione vorrebbe
+   * dire riportare un numero che nel frattempo e' cambiato — un vocale entrato
+   * mezzo secondo dopo il conteggio viene cancellato ma non compare nella
+   * ricevuta, e i suoi byte restano nel bucket perche' la sua chiave non era
+   * nell'elenco.
+   *
+   * ## Il rifiuto, e il suo prezzo
+   *
+   * Un vocale in `IN_ELABORAZIONE` ferma tutto e non cancella niente. Un worker
+   * ci sta lavorando adesso: cancellargli la riga sotto vuol dire farlo
+   * schiantare su una chiave che non c'e' piu', e per un caso che si risolve da
+   * solo aspettando. Il prezzo e' dichiarato ed e' scomodo: la 5.1.1(v) di
+   * Apple vuole un gesto che *funziona*, e qui esiste un istante in cui non
+   * funziona. La mitigazione e' che il messaggio dica quanti sono e che passa
+   * da se'; il residuo — un utente che riprova e trova lo stesso muro perche'
+   * un vocale e' rimasto incastrato — e' nei difetti noti.
+   *
+   * Resta una finestra che nessuna transazione chiude: fra il `SELECT` che
+   * conta e il `COMMIT`, un worker puo' prendersi un vocale in `BOZZA_AUDIO` e
+   * ritrovarselo cancellato sotto. Il caso e' innocuo — il worker fallisce quel
+   * lavoro e non ne ha altri su quel conto — ed e' l'unica cosa che l'alternativa
+   * (bloccare anche le bozze) impedirebbe, al prezzo di rendere impossibile
+   * cancellare un conto che ha un solo vocale mai elaborato.
+   */
+  deleteAccount(userId: string): Promise<DeleteAccountOutcome>;
 }

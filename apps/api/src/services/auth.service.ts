@@ -1,6 +1,8 @@
 import type {
   AuthSession,
   ChangePasswordRequest,
+  DeleteAccountRequest,
+  DeleteAccountResponse,
   LoginRequest,
   OpenSessionsResponse,
   PublicUser,
@@ -9,6 +11,7 @@ import type {
   RevokeSessionRequest,
   RevokeSessionResponse,
   SignupRequest,
+  StorageProvider,
 } from "@wikimylife/shared";
 import type { AuthConfig } from "../config/env.js";
 import { AppError } from "../errors/AppError.js";
@@ -32,6 +35,35 @@ export interface AuthServiceDeps {
   readonly tokens: TokenIssuer;
   readonly clock: Clock;
   readonly config: AuthConfig;
+  /**
+   * Il bucket, che serve a un solo gesto: `deleteAccount`.
+   *
+   * ## Perche' l'autenticazione ha imparato cos'e' un file
+   *
+   * Malvolentieri. Fino al commit che ha aggiunto la cancellazione del conto
+   * questo servizio parlava di utenti e di token e non sapeva che esistesse uno
+   * storage, il che e' la ragione per cui i suoi test girano in millisecondi
+   * senza rete. L'alternativa era lasciare il bucket a qualcun altro: una
+   * chiamata dalla rotta dopo il servizio, o un servizio terzo che coordina.
+   * Entrambe spostano di un piano la stessa dipendenza e in piu' mettono una
+   * riga di codice fra il `COMMIT` e la cancellazione dei byte — se il processo
+   * muore li', le chiavi le aveva in mano solo chi non le ha piu'.
+   *
+   * Qui resta almeno vero che chi cancella il conto e' anche chi ne raccoglie
+   * i resti. E' la stessa scelta gia' fatta in `procedures.service`, per lo
+   * stesso motivo.
+   */
+  readonly storage: StorageProvider;
+  /**
+   * Un oggetto rimasto nel bucket dopo che l'utente e' sparito.
+   *
+   * Stesso patto di `procedures.service`, e qui piu' stretto: dopo il `COMMIT`
+   * non esiste piu' nessuna riga che nomini quelle chiavi, in nessun database.
+   * Questo e' letteralmente l'ultimo istante in cui un nome puo' essere scritto
+   * da qualche parte, e se nessuno lo raccoglie l'oggetto resta nel bucket per
+   * sempre, senza che niente lo colleghi piu' a niente.
+   */
+  readonly onOrphanedAudio?: ((info: { key: string; error: unknown }) => void) | undefined;
 }
 
 export interface AuthService {
@@ -51,6 +83,7 @@ export interface AuthService {
     input: RevokeSessionRequest,
   ): Promise<RevokeSessionResponse>;
   listSessions(userId: string, familyId: string): Promise<OpenSessionsResponse>;
+  deleteAccount(userId: string, input: DeleteAccountRequest): Promise<DeleteAccountResponse>;
   me(userId: string): Promise<PublicUser>;
 }
 
@@ -67,6 +100,26 @@ export function toPublicUser(user: UserRecord): PublicUser {
 
 export function createAuthService(deps: AuthServiceDeps): AuthService {
   const { repo, hasher, tokens, clock, config } = deps;
+
+  /**
+   * Toglie i byte dal bucket, uno per volta, senza mai far cadere il gesto.
+   *
+   * Copia deliberata di `togliDalBucket` in `procedures.service`, e non un
+   * modulo condiviso: le due funzioni si assomigliano adesso perche' fanno la
+   * stessa cosa, ma il patto che le tiene e' diverso. La' l'utente ha avuto un
+   * 204 e la scheda e' sparita; qui l'utente ha avuto tre numeri e *non esiste
+   * piu'* — non c'e' nessuno a cui un errore potrebbe essere riportato. Unirle
+   * legherebbe l'autenticazione alle procedure per risparmiare otto righe.
+   */
+  async function togliDalBucket(keys: readonly string[]): Promise<void> {
+    for (const key of keys) {
+      try {
+        await deps.storage.delete(key);
+      } catch (error: unknown) {
+        deps.onOrphanedAudio?.({ key, error });
+      }
+    }
+  }
 
   async function issueSession(user: UserRecord, familyId: string): Promise<AuthSession> {
     const now = clock.now();
@@ -474,6 +527,94 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           createdAt: sessione.createdAt.toISOString(),
           current: sessione.familyId === familyId,
         })),
+      };
+    },
+
+    /**
+     * Cancella il conto, e con lui tutto. Non c'e' un annullamento.
+     *
+     * ## Perche' esiste
+     *
+     * La linea guida 5.1.1(v) di Apple vuole che un conto creato dentro l'app
+     * si possa cancellare dentro l'app, e senza questa rotta il rifiuto e'
+     * certo. Ma la ragione per cui merita di esistere anche senza Apple e'
+     * un'altra, e questo servizio e' il posto giusto per dirla: qui dentro
+     * finisce la voce di chi parla, e una voce che non si puo' riprendere
+     * indietro e' una cosa che non si affida.
+     *
+     * ## Perche' chiede la password
+     *
+     * Per la ragione di `revokeOtherSessions` portata al limite. La' chi ha in
+     * mano un telefono altrui puo' buttare fuori il proprietario; qui puo'
+     * cancellarlo. E' il gesto meno reversibile che esista in questa
+     * applicazione, quindi e' il posto dove il campo che sembra un fastidio
+     * serve di piu'. La verifica sta prima di tutto, per il motivo scritto
+     * sopra a `revokeOtherSessions`: nell'ordine opposto una password sbagliata
+     * avrebbe comunque cancellato l'account, e l'errore in risposta
+     * racconterebbe il contrario di quello che e' successo.
+     *
+     * ## Perche' non revoca le sessioni prima di cancellare
+     *
+     * Perche' le righe se ne vanno per cascata e la revoca sarebbe una scrittura
+     * su qualcosa che sta per sparire. `requireAuth` chiede `isFamilyActive`, e
+     * una famiglia le cui righe non esistono piu' non e' attiva: gli access
+     * token ancora firmati e non scaduti smettono di aprire qualcosa
+     * esattamente come se fossero stati revocati. Il numero `sessioni` nella
+     * risposta e' quindi un conteggio di cio' che e' caduto, non di cio' che e'
+     * stato marcato.
+     *
+     * ## Il 409, e il suo prezzo
+     *
+     * Un vocale in lavorazione ferma tutto. E' la decisione scomoda di questo
+     * metodo: la 5.1.1(v) vuole un gesto che *funziona*, e qui esiste un
+     * istante in cui risponde «riprova». L'alternativa era cancellare sotto un
+     * worker che sta scrivendo, cioe' farlo schiantare su una chiave sparita
+     * per un caso che passa da solo. Il messaggio dice quanti sono e che si
+     * risolve da se'; il residuo — un vocale incastrato in `IN_ELABORAZIONE`
+     * che non esce mai da li' e blocca la cancellazione per sempre — e' nei
+     * difetti noti, e la sua riparazione e' la scopa, non questa rotta.
+     *
+     * ## Perche' l'audio si toglie dopo, e non dentro
+     *
+     * Perche' il bucket non partecipa alla transazione: un `delete` sullo
+     * storage fatto prima del `COMMIT` non si annulla se il `COMMIT` fallisce,
+     * e l'utente resterebbe con il conto intero e i vocali muti. Nell'ordine
+     * giusto il modo di sbagliare e' l'altro — righe sparite, byte rimasti — che
+     * costa spazio e non dati.
+     */
+    async deleteAccount(
+      userId: string,
+      input: DeleteAccountRequest,
+    ): Promise<DeleteAccountResponse> {
+      const user = await repo.findUserById(userId);
+      if (user === null) {
+        throw AppError.unauthorized();
+      }
+
+      const ok = await hasher.verify(user.passwordHash, input.currentPassword);
+      if (!ok) {
+        throw AppError.invalidCredentials();
+      }
+
+      const esito = await repo.deleteAccount(user.id);
+
+      if (esito.kind === "IN_LAVORAZIONE") {
+        // Il numero sta nel messaggio perche' cambia cosa si sta aspettando:
+        // «uno» e' un istante, «dodici» e' il momento di andare a prendere un
+        // caffe'. Un messaggio fisso lascerebbe premere di nuovo subito, e
+        // trovare lo stesso muro.
+        throw AppError.conflict(
+          `Ci sono ${String(esito.quanti)} vocali ancora in lavorazione: ` +
+            "finiscono da soli, riprova fra poco",
+        );
+      }
+
+      await togliDalBucket(esito.audioKeys);
+
+      return {
+        vocali: esito.vocali,
+        schede: esito.schede,
+        sessioni: esito.sessioni,
       };
     },
 
