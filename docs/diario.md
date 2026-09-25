@@ -1169,3 +1169,17 @@ Undici: **9 cadute, 2 controlli vivi**, nessuna saltata.
 ### I numeri
 
 **1409** test unit + web su 53 file.
+
+### Le misure, dopo il push
+
+- **Il job `ios` è verde al primo colpo.** `xcodebuild` 42 secondi: il dubbio
+  sullo schema `App`, non condiviso in `xcshareddata`, era infondato. La durata
+  è stata controllata passo per passo prima di crederci, e torna:
+  `capacitor-swift-pm` distribuisce xcframework già compilati.
+- **`privacy.html` è sul sito**: il corpo della risposta contiene
+  «Privacy · WikiMyLife», e `apple-touch-icon.png` scaricato è identico al byte
+  a quello del repo. La fase 0 è chiusa.
+- **Un errore del mio controllo in background**: cercava la run con
+  `head_sha=131fec6`, e l'API di GitHub quel filtro lo vuole con lo SHA intero.
+  Ha aspettato trenta minuti una run che non poteva trovare, mentre la run era
+  già finita da ventotto.

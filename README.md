@@ -4260,13 +4260,13 @@ Non installate, e il perché:
   run del job `android` (commit `5134135`) l'ha costruito al primo colpo,
   `windowSplashScreenBackground` compreso, e l'ha lasciato come artefatto. Che
   l'APK si installi e si apra, però, non l'ha ancora visto nessuno.
-- **L'iOS si compila in CI, e il resto è tutto da vedere.** Il job `ios`
-  costruisce senza firma, quindi non c'è niente da installare: che il microfono
-  si chieda una volta sola anche lì — la frase del diario che ha fatto nascere
-  il guscio — si misura solo con TestFlight, cioè con l'account Apple. E fino a
-  quando il job non gira non si sa nemmeno se lo schema `App`, che il progetto
-  non condivide in `xcshareddata`, viene trovato da `xcodebuild` su un checkout
-  pulito. Il progetto porta anche un `UIRequiredDeviceCapabilities` con `armv7`
+- **L'iOS si compila in CI, e il resto è tutto da vedere.** La prima run del
+  job `ios` (commit `131fec6`) è verde: `xcodebuild` ha trovato lo schema `App`
+  e ha compilato per iPhone in 42 secondi, pochi perché `capacitor-swift-pm`
+  porta Capacitor già compilato. Ma costruisce senza firma, quindi non c'è
+  niente da installare: che il microfono si chieda una volta sola anche lì — la
+  frase del diario che ha fatto nascere il guscio — si misura solo con
+  TestFlight, cioè con l'account Apple. Il progetto porta anche un `UIRequiredDeviceCapabilities` con `armv7`
   dal modello di Capacitor, che su un iPhone di oggi non vuol dire niente e che
   alla revisione di Apple va guardato.
 - **Le app non parlano con l'API finché non si tocca il pannello.**
@@ -4279,7 +4279,9 @@ Non installate, e il perché:
   pubblica di GitHub, i log no: vogliono un token, e `gh` su questa macchina non
   è autenticato. Il job `integrazione` fallisce sul passo «il bucket dei test»
   già dalla run di `0fc6215`, prima del guscio nativo, e il motivo sta in un log
-  che da qui non si apre.
+  che da qui non si apre. E un avviso che per ora non rompe niente: GitHub
+  segnala che `actions/checkout@v4` e `actions/setup-node@v4` sono scritte per
+  Node 20, deprecato sui runner, e oggi le fa girare su Node 24 d'ufficio.
 - **L'APK è firmato con una chiave di debug, e l'identità dell'app è già
   decisa.** La chiave la crea Gradle sul runner, e niente garantisce che sia la
   stessa fra due run: può servire disinstallare prima di installare la
@@ -4293,16 +4295,14 @@ Non installate, e il perché:
   si usa l'icona adattiva e il problema non c'è; su 7 e 7.1, gli unici sotto
   quella soglia che il progetto supporta, un launcher che chiede l'icona tonda
   la mostra quadrata.
-- **`privacy.html` esiste nel repo, e sul sito non l'ha ancora vista nessuno.**
-  Il criterio della fase 0 è «risponde 200 su Netlify», e il `netlify.toml` ha un
-  catch-all `/*` → `/index.html` con status 200: che un file vero vinca sul
-  redirect è il comportamento documentato, ma un 200 lo dà **anche** il
-  catch-all, con dentro l'app invece della pagina. La misura giusta è un
-  `curl` sull'indirizzo pubblicato che cerchi nel corpo il titolo
-  «Privacy · WikiMyLife», non il codice di stato. Il service worker poi non la
-  precarica: aperta una volta con la rete resta in cache, mai aperta e senza
-  rete si vede l'app al suo posto. Nel guscio nativo il problema non c'è, perché
-  la pagina viaggia dentro il pacchetto.
+- **`privacy.html` senza rete, nel browser, può mostrare l'app.** Sul sito è
+  stata misurata il 25 settembre 2026: un `curl` su
+  `https://wikimylife.netlify.app/privacy.html` trova nel corpo il titolo
+  «Privacy · WikiMyLife» — non solo un 200, che il catch-all di `netlify.toml`
+  darebbe anche senza il file, con dentro l'app. Quello che resta è il service
+  worker, che non la precarica: aperta una volta con la rete resta in cache, mai
+  aperta e senza rete si vede l'app al suo posto. Nelle app native il problema
+  non c'è, perché la pagina viaggia dentro il pacchetto.
 - **Che iOS voglia un PNG per la schermata Home è un ricordo.** `index.html`
   puntava `apple-touch-icon` all'SVG; adesso punta a un PNG da 180, perché per
   quanto se ne sa Safari non accetta un SVG lì e ripiega su uno screenshot della

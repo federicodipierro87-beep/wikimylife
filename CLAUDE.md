@@ -276,16 +276,17 @@ colpo (artefatto `wikimylife-debug-apk`). `apps/mobile` con Capacitor 8.5.2,
 nell'app. **Qui c'è Java 8 e nessun SDK, e niente Xcode**: le app le costruisce
 solo la CI.
 
-La **fase 2 è scritta**: `apps/mobile/ios` (Swift Package Manager, niente
+La **fase 2 è verde**: `apps/mobile/ios` (Swift Package Manager, niente
 CocoaPods), le frasi dei permessi in `Info.plist`, e il job `ios` su
-`macos-latest` che compila senza firma.
+`macos-latest` che compila senza firma — riuscito al primo colpo. La fase 0 è
+chiusa anche sul sito: `privacy.html` misurata il 25 settembre 2026.
 
 ### Il prossimo passo: le misure che mancano
 
-1. **La run del job `ios`**: se cade, il primo indiziato è lo schema `App`, che
-   il progetto non condivide in `xcshareddata`. Lo stato si legge da
-   `https://api.github.com/repos/federicodipierro87-beep/wikimylife/actions/runs`;
-   i log vogliono un token (`gh auth login`, lo deve fare l'utente).
+1. Lo stato della CI si legge da
+   `https://api.github.com/repos/federicodipierro87-beep/wikimylife/actions/runs`
+   (il filtro `head_sha` vuole lo SHA **intero**); i log vogliono un token, e
+   `gh auth login` lo deve fare l'utente.
 2. **`CORS_ORIGINS` su Railway** deve diventare
    `https://wikimylife.netlify.app,https://localhost,capacitor://localhost`.
    Il classificatore dei permessi **nega** questa modifica da qui: la fa
@@ -293,8 +294,7 @@ CocoaPods), le frasi dei permessi in `Info.plist`, e il job `ios` su
    chiaro, che stampa le chiavi.
 3. **Sul telefono Android dell'utente**: login, registrazione, chiudere e
    riaprire, registrazione. La promessa: il cartello del microfono una volta sola.
-4. `privacy.html` sul sito, cercando nel corpo «Privacy · WikiMyLife».
-5. Il job `integrazione` fallisce sul passo del bucket **da prima del guscio
+4. Il job `integrazione` fallisce sul passo del bucket **da prima del guscio
    nativo** (run di `0fc6215`): va aperto il log.
 
 Poi la fase 3, TestFlight, che aspetta l'iscrizione all'**Apple Developer
