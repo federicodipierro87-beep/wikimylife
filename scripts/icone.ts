@@ -315,6 +315,19 @@ function icona(percorso: string, lato: number): FilePng {
 }
 
 const RES = "apps/mobile/android/app/src/main/res";
+const XCASSETS = "apps/mobile/ios/App/App/Assets.xcassets";
+
+/**
+ * Il lato del disegno negli splash iOS, che sono quadrati da 2732.
+ *
+ * `LaunchScreen.storyboard` li mostra con `scaleAspectFill`: su un iPhone in
+ * verticale (1179x2556) il quadrato si adatta all'altezza e se ne vede una
+ * striscia centrale larga circa 1260 dei suoi pixel. Perche' il microfono
+ * occupi la stessa parte dello schermo che occupa su Android — un disegno largo
+ * meta' del lato corto — deve essere largo circa 630. Su un iPad, dove si vede
+ * quasi tutto il quadrato, risulta piu' piccolo, ed e' giusto cosi'.
+ */
+const SPLASH_IOS_DISEGNO = 630;
 
 /** Le cinque densita' di Android e il loro moltiplicatore rispetto a mdpi. */
 const DENSITA = [
@@ -383,6 +396,16 @@ export const FILE_PNG: readonly FilePng[] = [
   }),
   // Il ripiego senza qualificatori, che Capacitor genera orizzontale mdpi.
   splash(`${RES}/drawable/splash.png`, 480, 320),
+  // L'icona iOS: una sola, da 1024, e le altre misure le ricava Xcode.
+  icona(`${XCASSETS}/AppIcon.appiconset/AppIcon-512@2x.png`, 1024),
+  ...["splash-2732x2732.png", "splash-2732x2732-1.png", "splash-2732x2732-2.png"].map(
+    (nome): FilePng => ({
+      percorso: `${XCASSETS}/Splash.imageset/${nome}`,
+      larghezza: 2732,
+      altezza: 2732,
+      disegno: SPLASH_IOS_DISEGNO,
+    }),
+  ),
 ];
 
 export const ROOT = resolve(import.meta.dirname, "..");

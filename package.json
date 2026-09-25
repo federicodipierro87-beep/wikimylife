@@ -17,6 +17,7 @@
     "build:worker": "prisma generate && tsc -b apps/worker",
     "build:web": "tsc -b packages/shared && npm run build --workspace @wikimylife/web",
     "build:android": "npm run build:web && npm run sync:android --workspace @wikimylife/mobile",
+    "build:ios": "npm run build:web && npm run sync:ios --workspace @wikimylife/mobile",
     "start:api": "prisma migrate deploy && node apps/api/dist/index.js",
     "start:worker": "node apps/worker/dist/index.js",
     "clean": "tsc -b --clean",

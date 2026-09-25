@@ -34,8 +34,9 @@ npm run test:integration  # richiede: docker compose up -d
 npm run dev              # shared, api, worker, web insieme
 npm run db:seed
 npm run sweep -- --cancella
-npm run icone            # riscrive icone web, icone e splash Android
+npm run icone            # riscrive icone e splash di web, Android e iOS
 npm run build:android    # web + cap sync; l'APK lo costruisce solo la CI
+npm run build:ios        # idem per iOS; lo compila solo la CI, su macOS
 ```
 
 Non c'è nessuno script di lint: il typecheck è tutto quello che c'è, e va
@@ -43,13 +44,19 @@ passato per intero prima di ogni commit. Non c'è nemmeno una configurazione di
 `prettier`: lanciato con i default riformatta a 80 colonne, e il codice sta
 intorno alle 100. Se proprio serve, `--print-width 100`, e solo sui file nuovi.
 
+Un `comando | tail` restituisce il codice d'uscita di `tail`: dopo un `&&` fa
+partire il passo successivo anche se il comando è fallito. Il typecheck si
+controlla leggendo `$?`, non guardando le ultime righe. E niente backtick
+dentro un `python -c "..."`: la shell li esegue.
+
 Le barre rovesciate non passano intatte attraverso un heredoc dato a Python: un
 `\\r` è arrivato nel file come ritorno a capo vero. Le sostituzioni con dentro
 delle regex si fanno con uno script scritto su file, o con lo strumento di
 modifica.
 
-`npm run icone` riscrive le tre icone in `apps/web/public/`: **non si toccano a
-mano**, `icone.test.ts` confronta i pixel con lo script.
+`npm run icone` riscrive tutte le immagini — web, Android, iOS — che sono in
+`FILE_PNG`: **non si toccano a mano**, `icone.test.ts` confronta i pixel con lo
+script.
 
 `@wikimylife/shared` viene consumato da `dist`, non da `src`. Se tocchi
 `packages/shared/src`, i test non vedono la modifica finché non gira
@@ -245,7 +252,7 @@ rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
 deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
-**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1377 test**
+**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1409 test**
 unit + web su 53 file, **405** d'integrazione su 14 file, albero pulito.
 
 Il giro in corso è il guscio nativo: un'app vera per iOS e Android, con dentro il
@@ -262,33 +269,36 @@ escono da `npm run icone`). La rotta di cancellazione è
 `POST /api/auth/delete-account` e non `DELETE /api/auth/me`: il corpo su una
 `DELETE` è maltrattato dai middlebox.
 
-La **fase 1 è scritta e non ancora costruita**. `apps/mobile` con Capacitor
-8.5.2, `appId` `com.wikimylife.app`, progetto Android versionato (la copia del
-web no), permessi letti dal codice di Capacitor e pinzati da `mobile.test.ts`,
-icone e splash da `scripts/icone.ts`, service worker spento nell'app
-(`apps/web/src/serviceWorker.ts`). L'APK lo costruisce il job `android` della CI:
-**qui c'è Java 8 e nessun SDK**, quindi non si prova a costruirlo in locale.
+La **fase 1 è costruita**: il job `android` della CI ha prodotto l'APK al primo
+colpo (artefatto `wikimylife-debug-apk`). `apps/mobile` con Capacitor 8.5.2,
+`appId` `com.wikimylife.app`, permessi letti dal codice di Capacitor e pinzati da
+`mobile.test.ts`, icone e splash da `scripts/icone.ts`, service worker spento
+nell'app. **Qui c'è Java 8 e nessun SDK, e niente Xcode**: le app le costruisce
+solo la CI.
 
-### Il prossimo passo: tre misure, poi la fase 2
+La **fase 2 è scritta**: `apps/mobile/ios` (Swift Package Manager, niente
+CocoaPods), le frasi dei permessi in `Info.plist`, e il job `ios` su
+`macos-latest` che compila senza firma.
 
-1. **Push**, e guardare il job `android`: è la prima volta che Gradle vede il
-   progetto. Se cade su `windowSplashScreenBackground` in `styles.xml`, è
-   l'unica riga scritta senza averla mai compilata.
-2. **`https://localhost` in `CORS_ORIGINS`** sul servizio `api` di Railway,
-   accanto a `https://wikimylife.netlify.app`. Senza, l'app si apre e il login
-   fallisce. Si legge la variabile filtrandola, mai `railway variables` in
-   chiaro: stampa le chiavi. È una modifica alla produzione: va chiesta.
-3. **Sul telefono Android dell'utente**: login, una registrazione, chiudere e
-   riaprire l'app, un'altra registrazione. La promessa è che il cartello del
-   microfono compaia una volta sola. Poi `privacy.html` sul sito, cercando nel
-   corpo «Privacy · WikiMyLife» e non il codice 200.
+### Il prossimo passo: le misure che mancano
 
-Poi la fase 2: iOS in CI, cioè `@capacitor/ios` 8.5.2 e un job su `macos-latest`
-che costruisca senza firmare. Le icone iOS nasceranno da `icona-1024.png`.
+1. **La run del job `ios`**: se cade, il primo indiziato è lo schema `App`, che
+   il progetto non condivide in `xcshareddata`. Lo stato si legge da
+   `https://api.github.com/repos/federicodipierro87-beep/wikimylife/actions/runs`;
+   i log vogliono un token (`gh auth login`, lo deve fare l'utente).
+2. **`CORS_ORIGINS` su Railway** deve diventare
+   `https://wikimylife.netlify.app,https://localhost,capacitor://localhost`.
+   Il classificatore dei permessi **nega** questa modifica da qui: la fa
+   l'utente. Si rilegge filtrando la sola variabile, mai `railway variables` in
+   chiaro, che stampa le chiavi.
+3. **Sul telefono Android dell'utente**: login, registrazione, chiudere e
+   riaprire, registrazione. La promessa: il cartello del microfono una volta sola.
+4. `privacy.html` sul sito, cercando nel corpo «Privacy · WikiMyLife».
+5. Il job `integrazione` fallisce sul passo del bucket **da prima del guscio
+   nativo** (run di `0fc6215`): va aperto il log.
 
-**E una cosa che non dipende da nessun codice:** l'iscrizione all'**Apple
-Developer Program** (99 $/anno). La verifica d'identità è la cosa più lenta del
-percorso e blocca la fase 3. Se non è partita, la fase 3 aspetta lì.
+Poi la fase 3, TestFlight, che aspetta l'iscrizione all'**Apple Developer
+Program** (99 $/anno): la verifica d'identità è la cosa più lenta del percorso.
 
 ### Cosa gira, e dove
 

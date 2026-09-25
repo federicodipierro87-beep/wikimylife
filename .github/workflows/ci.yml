@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
-# CI. Quattro job che girano in parallelo: i primi tre per il sito e l'API,
-# il quarto per l'app Android.
+# CI. Cinque job che girano in parallelo: i primi tre per il sito e l'API,
+# gli ultimi due per le app Android e iOS.
 #
 # `verifica` non ha nessun service container, e non e' una svista: il repository
 # promette che `npm test` giri senza Docker, e una promessa che nessuno verifica
@@ -254,3 +254,51 @@ jobs:
           path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+  ios:
+    name: build iOS senza firma
+    # Un Mac, perche' Xcode non esiste altrove. Sul repository pubblico i
+    # minuti macOS non si pagano; su uno privato costano dieci volte quelli
+    # Linux, ed e' la prima cosa da ricontrollare se il repository cambia.
+    runs-on: macos-latest
+
+    env:
+      PRISMA_SKIP_POSTINSTALL_GENERATE: "true"
+      # La stessa del job `android`, e per la stessa ragione: senza, l'app
+      # chiamerebbe `http://localhost:3000`, cioe' il telefono.
+      VITE_API_URL: https://api-production-15b2f.up.railway.app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build:ios
+
+      - name: il bundle parla con l'API vera
+        run: grep -rqF "$VITE_API_URL" apps/mobile/ios/App/App/public/assets
+
+      # Nel log, perche' Capacitor 8 pretende una versione minima di Xcode e
+      # `macos-latest` cambia sotto i piedi: se un giorno questo job cade, la
+      # prima cosa da sapere e' con quale Xcode.
+      - run: xcodebuild -version
+
+      # Per un iPhone vero e non per il simulatore: e' la stessa compilazione
+      # che servira' a TestFlight, meno la firma. `CODE_SIGNING_ALLOWED=NO`
+      # perche' la firma vuole un account Apple Developer, che e' la fase 3.
+      # Le dipendenze Swift (capacitor-swift-pm) le risolve xcodebuild da solo
+      # la prima volta: niente CocoaPods.
+      - name: xcodebuild
+        run: >-
+          xcodebuild
+          -project apps/mobile/ios/App/App.xcodeproj
+          -scheme App
+          -configuration Debug
+          -destination "generic/platform=iOS"
+          CODE_SIGNING_ALLOWED=NO
+          build

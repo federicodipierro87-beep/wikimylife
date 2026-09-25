@@ -1252,6 +1252,22 @@ Le quattro cose che l'app web ha dovuto sapere:
   posizione: se un aggiornamento di Capacitor chiedesse un permesso in più,
   cadrebbe lì e non su un telefono.
 
+**iOS** sta accanto, in `apps/mobile/ios`, con `@capacitor/ios` della stessa
+versione. Il progetto usa Swift Package Manager e non CocoaPods: il lato Swift di
+Capacitor (`capacitor-swift-pm`) lo scarica `xcodebuild` da GitHub, e
+`mobile.test.ts` controlla che la sua versione in `Package.swift` sia quella del
+pacchetto npm. Lo costruisce il job `ios` della CI, su `macos-latest`, per un
+iPhone vero ma **senza firma**: firmare vuole l'account Apple Developer, che è la
+fase 3. Quindi non produce niente da installare, e serve a sapere che si
+compila. `Info.plist` ha le due frasi che iOS mostra nel cartello dei permessi:
+senza quella del microfono iOS non nega, **chiude l'app**. Su iOS la WebView si
+presenta come `capacitor://localhost`, e anche questa origine va in
+`CORS_ORIGINS`.
+
+```powershell
+npm run build:ios       # web + cap sync ios; l'app la compila solo la CI
+```
+
 Le icone Android sono quadrati pieni RGB, come quelle web. Il primo piano
 dell'icona adattiva è il disegno intero, senza ridurlo: il microfono sta entro il
 28,9% del lato dal centro, e la zona che ogni launcher mostra di sicuro arriva al
@@ -4240,17 +4256,30 @@ Non installate, e il perché:
   sorgente, non una misura.** È la promessa per cui esiste `apps/mobile`, e la
   si è ricavata leggendo `BridgeWebChromeClient.java`: il permesso di sistema
   vale per l'app, e Capacitor lo concede alla pagina senza chiedere di nuovo.
-  Diventa vera quando la si vede su un telefono. Prima ancora, **l'APK non è
-  mai stato costruito**: il job `android` gira solo dopo un push, e su questa
-  macchina mancano Java 21 e l'SDK. Fino a quella run non si sa nemmeno se
-  Gradle accetta tutto ciò che è stato scritto a mano — in particolare
-  `windowSplashScreenBackground`, un attributo della libreria di splash che non
-  ha mai visto un compilatore.
-- **L'app Android non parla con l'API finché non si tocca il pannello.**
+  Diventa vera quando la si vede su un telefono. L'APK invece esiste: la prima
+  run del job `android` (commit `5134135`) l'ha costruito al primo colpo,
+  `windowSplashScreenBackground` compreso, e l'ha lasciato come artefatto. Che
+  l'APK si installi e si apra, però, non l'ha ancora visto nessuno.
+- **L'iOS si compila in CI, e il resto è tutto da vedere.** Il job `ios`
+  costruisce senza firma, quindi non c'è niente da installare: che il microfono
+  si chieda una volta sola anche lì — la frase del diario che ha fatto nascere
+  il guscio — si misura solo con TestFlight, cioè con l'account Apple. E fino a
+  quando il job non gira non si sa nemmeno se lo schema `App`, che il progetto
+  non condivide in `xcshareddata`, viene trovato da `xcodebuild` su un checkout
+  pulito. Il progetto porta anche un `UIRequiredDeviceCapabilities` con `armv7`
+  dal modello di Capacitor, che su un iPhone di oggi non vuol dire niente e che
+  alla revisione di Apple va guardato.
+- **Le app non parlano con l'API finché non si tocca il pannello.**
   `CORS_ORIGINS` su Railway ammette solo `https://wikimylife.netlify.app`; la
-  WebView si presenta come `https://localhost` e verrebbe rifiutata a ogni
-  chiamata. La modifica è una riga nel pannello, e nessun test di questo repo
-  può dire se è stata fatta: si vede solo dal login riuscito sul telefono.
+  WebView si presenta come `https://localhost` su Android e come
+  `capacitor://localhost` su iOS, e verrebbe rifiutata a ogni chiamata. La
+  modifica è una riga nel pannello, e nessun test di questo repo può dire se è
+  stata fatta: si vede solo dal login riuscito sul telefono.
+- **I log della CI non si leggono da qui.** Lo stato dei job si legge dall'API
+  pubblica di GitHub, i log no: vogliono un token, e `gh` su questa macchina non
+  è autenticato. Il job `integrazione` fallisce sul passo «il bucket dei test»
+  già dalla run di `0fc6215`, prima del guscio nativo, e il motivo sta in un log
+  che da qui non si apre.
 - **L'APK è firmato con una chiave di debug, e l'identità dell'app è già
   decisa.** La chiave la crea Gradle sul runner, e niente garantisce che sia la
   stessa fra due run: può servire disinstallare prima di installare la

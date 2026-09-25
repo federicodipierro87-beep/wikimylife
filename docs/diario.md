@@ -1117,3 +1117,55 @@ conta come caduta dichiarandolo; la prende la corsa, non un caso.
 Da **1202** test unit + web su 51 file a **1377** su 53 (quasi tutti i nuovi sono
 i casi per file delle icone Android). Integrazione non rilanciata: l'API non è
 cambiata.
+
+---
+
+## Giro 8 — la fase 2: iOS in CI, e la prima run del guscio Android
+
+### Android, misurato dalla CI
+
+Il push di `050f30b` e `5134135` ha fatto girare per la prima volta il job
+`android`: verde al primo colpo, compreso `windowSplashScreenBackground`, l'unica
+riga che non aveva mai visto un compilatore. L'artefatto è un APK di circa 4 MB.
+Lo stato si è letto dall'API pubblica di GitHub, perché `gh` qui non è
+autenticato; i log invece vogliono un token, e quindi restano chiusi.
+
+Due fatti che la run ha portato con sé:
+
+- Il job `integrazione` fallisce sul passo «il bucket dei test», **già dalla run
+  di `0fc6215`**, cioè prima di questo lavoro. Il perché sta nel log.
+- La modifica di `CORS_ORIGINS` su Railway è stata **negata dal classificatore
+  dei permessi**, perché tocca una risorsa di produzione condivisa. Non la si è
+  aggirata: è passata all'utente, con il comando pronto.
+
+L'utente ha anche ricordato che non lavora in `localhost` ma su Railway e
+Netlify. Vero, e non cambia l'origine da ammettere: `https://localhost` è il nome
+con cui la WebView di Capacitor serve i file **dentro il telefono**, non un
+server di sviluppo.
+
+### iOS
+
+`@capacitor/ios` 8.5.2, e un progetto che usa Swift Package Manager: niente
+CocoaPods sul runner. Le due frasi dei permessi in `Info.plist` sono state
+scritte prima di tutto il resto, perché la loro assenza non è un permesso negato
+ma un'app chiusa. Le icone e i tre splash quadrati da 2732 vengono dallo stesso
+script; il lato del disegno negli splash (630) è ricavato da come
+`scaleAspectFill` ritaglia un quadrato su un iPhone in verticale, per avere lo
+stesso ingombro dello splash Android.
+
+Il job `ios` compila per `generic/platform=iOS` con `CODE_SIGNING_ALLOWED=NO`: è
+la compilazione che servirà a TestFlight, meno la firma.
+
+### Un altro `| tail` che nasconde un codice d'uscita
+
+`npm run typecheck | tail -1 && npm test` ha eseguito i test comunque: il codice
+d'uscita della pipeline è quello di `tail`. Il typecheck era verde — rifatto
+leggendo `$?` — ma la riga non lo provava.
+
+### Le mutazioni
+
+Undici: **9 cadute, 2 controlli vivi**, nessuna saltata.
+
+### I numeri
+
+**1409** test unit + web su 53 file.

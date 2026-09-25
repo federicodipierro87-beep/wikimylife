@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { COLORE_FONDO } from "../../scripts/icone.js";
+import { COLORE_FONDO, FILE_PNG } from "../../scripts/icone.js";
 
 /**
  * Il guscio Android, letto da un test invece che da Gradle.
@@ -110,7 +110,7 @@ describe("la configurazione di Capacitor", () => {
     expect(gradle).toContain(`namespace = "${config.appId}"`);
   });
 
-  it("i tre pacchetti di Capacitor hanno la stessa versione, fissata", () => {
+  it("i quattro pacchetti di Capacitor hanno la stessa versione, fissata", () => {
     // Un `core` e un `android` di versioni diverse parlano due protocolli
     // diversi fra la pagina e il lato nativo, e il guasto si vede solo a
     // runtime. Fissata, senza `^`: un `npm install` non deve poterle separare.
@@ -121,6 +121,7 @@ describe("la configurazione di Capacitor", () => {
     const versioni = [
       pacchetto.dependencies["@capacitor/core"],
       pacchetto.dependencies["@capacitor/android"],
+      pacchetto.dependencies["@capacitor/ios"],
       pacchetto.devDependencies["@capacitor/cli"],
     ];
     expect(versioni[0]).toMatch(/^\d+\.\d+\.\d+$/);
@@ -151,5 +152,79 @@ describe("le risorse Android", () => {
     const ignora = leggi(`${MOBILE}/android/.gitignore`);
     expect(ignora).toMatch(/^app\/src\/main\/assets\/public$/m);
     expect(existsSync(join(ROOT, MAIN, "AndroidManifest.xml"))).toBe(true);
+  });
+});
+
+describe("il progetto iOS", () => {
+  const IOS = `${MOBILE}/ios/App`;
+  const PLIST = leggi(`${IOS}/App/Info.plist`);
+  const config = JSON.parse(leggi(`${MOBILE}/capacitor.config.json`)) as { appId: string };
+
+  /** Il valore stringa di una chiave dell'Info.plist, fuori dai commenti. */
+  function valore(plist: string, chiave: string): string | null {
+    const senzaCommenti = plist.replace(/<!--[\s\S]*?-->/g, "");
+    const m = new RegExp(`<key>${chiave}</key>\\s*<string>([^<]*)</string>`).exec(senzaCommenti);
+    return m?.[1] ?? null;
+  }
+
+  it.each(["NSMicrophoneUsageDescription", "NSLocationWhenInUseUsageDescription"])(
+    "%s c'e', e dice a cosa serve",
+    (chiave) => {
+      // Senza la frase, iOS non nega il permesso: chiude l'app nell'istante in
+      // cui la pagina lo chiede. Lunga almeno una frase vera, perche' Apple
+      // rifiuta alla revisione quelle che dicono solo «serve il microfono».
+      expect(valore(PLIST, chiave)?.length ?? 0).toBeGreaterThan(40);
+    },
+  );
+
+  it("valore legge le chiavi, e salta quelle nei commenti", () => {
+    const finto = `<!-- <key>A</key><string>commento</string> -->
+      <key>B</key>
+      <string>vero</string>`;
+    expect(valore(finto, "A")).toBeNull();
+    expect(valore(finto, "B")).toBe("vero");
+  });
+
+  it("usa lo stesso identificativo di Capacitor e di Android", () => {
+    // Il bundle id vive nel progetto Xcode, due volte (Debug e Release), e
+    // Capacitor ce lo scrive solo alla creazione.
+    const pbxproj = leggi(`${IOS}/App.xcodeproj/project.pbxproj`);
+    const id = [...pbxproj.matchAll(/PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);/g)].map((m) => m[1]);
+    expect(id).toHaveLength(2);
+    expect(new Set(id)).toEqual(new Set([config.appId]));
+  });
+
+  it("il pacchetto Swift di Capacitor e' della stessa versione di quello npm", () => {
+    // Il lato Swift non viene da npm ma da GitHub, via Swift Package Manager.
+    // Lo riscrive `cap sync`; se qualcuno aggiorna npm e non sincronizza, la
+    // pagina e il lato nativo parlano due versioni diverse del ponte.
+    const pacchetto = JSON.parse(leggi(`${MOBILE}/package.json`)) as {
+      dependencies: Record<string, string>;
+    };
+    const swift = /capacitor-swift-pm\.git", exact: "([^"]+)"/.exec(
+      leggi(`${IOS}/CapApp-SPM/Package.swift`),
+    )?.[1];
+    expect(swift).toBe(pacchetto.dependencies["@capacitor/ios"]);
+  });
+
+  it.each(["AppIcon.appiconset", "Splash.imageset"])(
+    "%s nomina solo immagini che lo script scrive",
+    (cartella) => {
+      // Xcode legge i file dal Contents.json: un nome che lo script non
+      // scrive e' un'immagine che resta quella di Capacitor, o che manca.
+      const contenuto = JSON.parse(
+        leggi(`${IOS}/App/Assets.xcassets/${cartella}/Contents.json`),
+      ) as { images: { filename?: string }[] };
+      const nomi = contenuto.images.map((i) => i.filename);
+      expect(nomi.length).toBeGreaterThan(0);
+      const scritti = FILE_PNG.map((f) => f.percorso);
+      for (const nome of nomi) {
+        expect(scritti).toContain(`${IOS}/App/Assets.xcassets/${cartella}/${String(nome)}`);
+      }
+    },
+  );
+
+  it("la copia del web non e' in git", () => {
+    expect(leggi(`${MOBILE}/ios/.gitignore`)).toMatch(/^App\/App\/public$/m);
   });
 });

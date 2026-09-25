@@ -178,16 +178,26 @@ describe("gli splash", () => {
     // Senza, uno splash disegnato come un'icona — il microfono a tutta
     // altezza — passerebbe tutti i casi qui sopra, che leggono `disegno` dalla
     // stessa lista che lo decide.
-    const splash = FILE_PNG.filter((f) => f.percorso.endsWith("/splash.png"));
-    expect(splash).toHaveLength(11);
-    for (const f of splash) {
+    const android = FILE_PNG.filter((f) => f.percorso.endsWith("/splash.png"));
+    expect(android).toHaveLength(11);
+    for (const f of android) {
       expect(f.disegno).toBe(Math.round(Math.min(f.larghezza, f.altezza) / 2));
+    }
+    // iOS: tre quadrati da 2732 ritagliati al centro. Il conto del lato sta
+    // accanto a `SPLASH_IOS_DISEGNO`; qui si pretende che sia molto piu'
+    // piccolo del quadrato, cioe' che non sia stato disegnato come un'icona.
+    const ios = FILE_PNG.filter((f) => f.percorso.includes("/Splash.imageset/"));
+    expect(ios).toHaveLength(3);
+    for (const f of ios) {
+      expect([f.larghezza, f.altezza]).toEqual([2732, 2732]);
+      expect(f.disegno).toBeGreaterThan(2732 / 6);
+      expect(f.disegno).toBeLessThan(2732 / 3);
     }
   });
 
   it("le icone invece sono il disegno intero", () => {
-    const icone = FILE_PNG.filter((f) => !f.percorso.endsWith("/splash.png"));
-    expect(icone).toHaveLength(17);
+    const icone = FILE_PNG.filter((f) => !/splash/i.test(f.percorso));
+    expect(icone).toHaveLength(18);
     for (const f of icone) {
       expect([f.larghezza, f.disegno]).toEqual([f.altezza, f.altezza]);
     }
