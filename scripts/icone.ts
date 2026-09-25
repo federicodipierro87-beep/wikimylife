@@ -3,12 +3,14 @@ import { join, resolve } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 
 /**
- * Le icone, disegnate una volta sola e scritte in tre file.
+ * Le icone, disegnate una volta sola e scritte in ventinove file.
  *
  * `npm run icone` riscrive `apps/web/public/icona.svg`, `icona-1024.png` e
- * `apple-touch-icon.png`. Tutti e tre escono dalla stessa `GEOMETRIA`, e
- * `tests/unit/icone.test.ts` ridisegna tutto e lo confronta con i file in git:
- * cambiare il disegno a mano in uno solo dei tre fa cadere quel test.
+ * `apple-touch-icon.png`, e nel progetto Android le icone di cinque densita' e
+ * gli undici splash (l'elenco e' `FILE_PNG`, in fondo). Escono tutti dalla
+ * stessa `GEOMETRIA`, e `tests/unit/icone.test.ts` ridisegna tutto e lo
+ * confronta con i file in git: cambiare il disegno a mano in uno solo fa cadere
+ * quel test.
  *
  * ## Perche' un rasterizzatore scritto qui
  *
@@ -172,33 +174,71 @@ function colore(px: number, py: number): Rgb {
 const CAMPIONI = 4;
 
 /**
- * I pixel dell'icona, RGB senza alfa, riga per riga.
+ * Il riquadro che contiene il microfono, tratti compresi, nelle unita' del
+ * `viewBox`. Fuori da qui ogni campione e' fondo, e non serve calcolarlo.
+ *
+ * Ricavato dalla geometria e non scritto a numeri: un ritocco al disegno che lo
+ * allargasse senza allargare il riquadro taglierebbe il microfono, e i pixel
+ * diversi farebbero cadere il test — ma la causa sarebbe qui, lontana dal
+ * ritocco.
+ */
+const RIQUADRO = {
+  x0: GEOMETRIA.arco.cx - GEOMETRIA.arco.raggio - GEOMETRIA.tratto / 2,
+  x1: GEOMETRIA.arco.cx + GEOMETRIA.arco.raggio + GEOMETRIA.tratto / 2,
+  y0: GEOMETRIA.corpo.y,
+  y1: GEOMETRIA.asta.y2 + GEOMETRIA.tratto / 2,
+};
+
+/**
+ * I pixel di un'immagine `larghezza` per `altezza`, RGB senza alfa, riga per
+ * riga, con il disegno a 512 ridotto a un quadrato di lato `disegno` al centro.
+ * Tutto cio' che sta fuori da quel quadrato e' fondo: per un'icona il quadrato
+ * e' l'immagine intera, per uno splash e' una parte.
  *
  * La media dei campioni si fa sui valori sRGB e non in luce lineare: e' cio' che
  * fa la maggior parte dei rasterizzatori per un'icona, e l'unico effetto e' un
  * bordo bianco-su-scuro un filo piu' sottile.
+ *
+ * ## La scorciatoia fuori dal riquadro
+ *
+ * Uno splash da 1920x1280 sono due milioni e mezzo di pixel, e a sedici
+ * campioni ciascuno il test impiegherebbe decine di secondi a ridisegnare gli
+ * undici splash. Ma il microfono ne occupa una parte piccola: un pixel che non
+ * tocca `RIQUADRO` e' fondo senza bisogno di campionarlo, e il risultato e'
+ * identico al byte, perche' sedici campioni di fondo fanno fondo.
  */
-export function pixel(lato: number): Uint8Array {
-  const scala = LATO / lato;
-  const out = new Uint8Array(lato * lato * 3);
-  for (let y = 0; y < lato; y += 1) {
-    for (let x = 0; x < lato; x += 1) {
+export function pixel(larghezza: number, altezza = larghezza, disegno = larghezza): Uint8Array {
+  const scala = LATO / disegno;
+  const ox = (larghezza - disegno) / 2;
+  const oy = (altezza - disegno) / 2;
+  const out = new Uint8Array(larghezza * altezza * 3);
+  const n = CAMPIONI * CAMPIONI;
+  for (let y = 0; y < altezza; y += 1) {
+    const v0 = (y - oy) * scala;
+    const fuoriY = v0 + scala < RIQUADRO.y0 || v0 > RIQUADRO.y1;
+    for (let x = 0; x < larghezza; x += 1) {
+      const i = (y * larghezza + x) * 3;
+      const u0 = (x - ox) * scala;
+      if (fuoriY || u0 + scala < RIQUADRO.x0 || u0 > RIQUADRO.x1) {
+        out[i] = FONDO[0];
+        out[i + 1] = FONDO[1];
+        out[i + 2] = FONDO[2];
+        continue;
+      }
       let r = 0;
       let g = 0;
       let b = 0;
       for (let sy = 0; sy < CAMPIONI; sy += 1) {
         for (let sx = 0; sx < CAMPIONI; sx += 1) {
           const [cr, cg, cb] = colore(
-            (x + (sx + 0.5) / CAMPIONI) * scala,
-            (y + (sy + 0.5) / CAMPIONI) * scala,
+            (x - ox + (sx + 0.5) / CAMPIONI) * scala,
+            (y - oy + (sy + 0.5) / CAMPIONI) * scala,
           );
           r += cr;
           g += cg;
           b += cb;
         }
       }
-      const n = CAMPIONI * CAMPIONI;
-      const i = (y * lato + x) * 3;
       out[i] = Math.round(r / n);
       out[i + 1] = Math.round(g / n);
       out[i + 2] = Math.round(b / n);
@@ -230,18 +270,18 @@ function blocco(tipo: string, dati: Uint8Array): Buffer {
  * un'icona a tinte piatte lo dimezzerebbe — ma resta sotto le decine di kB, e
  * un filtro in meno e' un pezzo di codice in meno da sbagliare.
  */
-export function png(lato: number): Buffer {
-  const rgb = pixel(lato);
-  const riga = lato * 3;
-  const grezzo = Buffer.alloc((riga + 1) * lato);
-  for (let y = 0; y < lato; y += 1) {
+export function png(larghezza: number, altezza = larghezza, disegno = larghezza): Buffer {
+  const rgb = pixel(larghezza, altezza, disegno);
+  const riga = larghezza * 3;
+  const grezzo = Buffer.alloc((riga + 1) * altezza);
+  for (let y = 0; y < altezza; y += 1) {
     // Il byte 0 di ogni riga e' il filtro: 0, nessuno.
     grezzo.set(rgb.subarray(y * riga, (y + 1) * riga), y * (riga + 1) + 1);
   }
 
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(lato, 0);
-  ihdr.writeUInt32BE(lato, 4);
+  ihdr.writeUInt32BE(larghezza, 0);
+  ihdr.writeUInt32BE(altezza, 4);
   ihdr[8] = 8; // bit per canale
   ihdr[9] = PNG_RGB;
   // 10 compressione, 11 filtro, 12 interlacciamento: tutti 0, gia' cosi'.
@@ -258,20 +298,100 @@ export function png(lato: number): Buffer {
 // I file
 // ---------------------------------------------------------------------------
 
-/** Cosa scrive `npm run icone`, e dove. Il test legge la stessa lista. */
-export const FILE_PNG = [
-  // L'icona dell'App Store, e la sorgente da cui Capacitor ricavera' le altre.
-  { nome: "icona-1024.png", lato: 1024 },
-  // La schermata Home di iOS, per la PWA.
-  { nome: "apple-touch-icon.png", lato: 180 },
+/** Il colore del fondo in esadecimale, per chi lo deve scrivere altrove (Android). */
+export const COLORE_FONDO = esadecimale(FONDO);
+
+export type FilePng = {
+  /** Dalla radice del repo, con le barre di Unix. */
+  readonly percorso: string;
+  readonly larghezza: number;
+  readonly altezza: number;
+  /** Il lato del quadrato in cui sta il disegno: l'immagine intera per un'icona. */
+  readonly disegno: number;
+};
+
+function icona(percorso: string, lato: number): FilePng {
+  return { percorso, larghezza: lato, altezza: lato, disegno: lato };
+}
+
+const RES = "apps/mobile/android/app/src/main/res";
+
+/** Le cinque densita' di Android e il loro moltiplicatore rispetto a mdpi. */
+const DENSITA = [
+  ["mdpi", 1],
+  ["hdpi", 1.5],
+  ["xhdpi", 2],
+  ["xxhdpi", 3],
+  ["xxxhdpi", 4],
 ] as const;
 
-export const PUBBLICA = resolve(import.meta.dirname, "..", "apps", "web", "public");
+/**
+ * Le misure degli splash che il progetto generato da Capacitor si porta
+ * dietro, in verticale; l'orizzontale e' lo stesso rovesciato. Sono le sue e
+ * non scelte qui: si sostituiscono i file che ci sono, non se ne aggiungono.
+ */
+const SPLASH_VERTICALE: Record<(typeof DENSITA)[number][0], readonly [number, number]> = {
+  mdpi: [320, 480],
+  hdpi: [480, 800],
+  xhdpi: [720, 1280],
+  xxhdpi: [960, 1600],
+  xxxhdpi: [1280, 1920],
+};
+
+/**
+ * Lo splash e' fondo con il microfono al centro, in un quadrato grande meta'
+ * del lato corto: quanto basta a riconoscerlo, senza che sembri un'icona
+ * ingrandita.
+ */
+function splash(percorso: string, larghezza: number, altezza: number): FilePng {
+  return { percorso, larghezza, altezza, disegno: Math.round(Math.min(larghezza, altezza) / 2) };
+}
+
+/**
+ * Cosa scrive `npm run icone`, e dove. Il test legge la stessa lista.
+ *
+ * ## Le icone Android
+ *
+ * - `ic_launcher` e `ic_launcher_round`, 48dp: le usano solo Android 7 e 7.1,
+ *   gli unici sotto l'API 26 che il progetto supporta (`minSdkVersion` 24).
+ *   Sono quadrati pieni tutte e due: quella tonda vorrebbe gli angoli
+ *   trasparenti, e questo script non scrive il canale alfa. Su quei due
+ *   sistemi un launcher che chiede l'icona tonda la mostra quadrata.
+ * - `ic_launcher_foreground`, 108dp: il primo piano dell'icona adattiva, da
+ *   Android 8 in su. Il sistema la ritaglia nella forma che vuole il launcher
+ *   e ne mostra con certezza solo il cerchio centrale di 66dp, cioe' il 30,6%
+ *   del lato come raggio. Il microfono sta tutto entro 148 unita' dal centro
+ *   su 512, il 28,9%: entra cosi' com'e', e un primo piano opaco con lo
+ *   stesso fondo dello sfondo e' indistinguibile da uno trasparente.
+ */
+export const FILE_PNG: readonly FilePng[] = [
+  // L'icona dell'App Store, e la sorgente da cui nasceranno quelle di iOS.
+  icona("apps/web/public/icona-1024.png", 1024),
+  // La schermata Home di iOS, per la PWA.
+  icona("apps/web/public/apple-touch-icon.png", 180),
+  ...DENSITA.flatMap(([nome, k]) => [
+    icona(`${RES}/mipmap-${nome}/ic_launcher.png`, 48 * k),
+    icona(`${RES}/mipmap-${nome}/ic_launcher_round.png`, 48 * k),
+    icona(`${RES}/mipmap-${nome}/ic_launcher_foreground.png`, 108 * k),
+  ]),
+  ...DENSITA.flatMap(([nome]) => {
+    const [l, a] = SPLASH_VERTICALE[nome];
+    return [
+      splash(`${RES}/drawable-port-${nome}/splash.png`, l, a),
+      splash(`${RES}/drawable-land-${nome}/splash.png`, a, l),
+    ];
+  }),
+  // Il ripiego senza qualificatori, che Capacitor genera orizzontale mdpi.
+  splash(`${RES}/drawable/splash.png`, 480, 320),
+];
+
+export const ROOT = resolve(import.meta.dirname, "..");
+export const PUBBLICA = join(ROOT, "apps", "web", "public");
 
 function main(): void {
   writeFileSync(join(PUBBLICA, "icona.svg"), svg());
-  for (const { nome, lato } of FILE_PNG) {
-    writeFileSync(join(PUBBLICA, nome), png(lato));
+  for (const f of FILE_PNG) {
+    writeFileSync(join(ROOT, f.percorso), png(f.larghezza, f.altezza, f.disegno));
   }
 }
 

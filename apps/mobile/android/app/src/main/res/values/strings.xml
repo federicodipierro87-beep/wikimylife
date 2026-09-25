@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">WikiMyLife</string>
+    <string name="title_activity_main">WikiMyLife</string>
+    <string name="package_name">com.wikimylife.app</string>
+    <string name="custom_url_scheme">com.wikimylife.app</string>
+</resources>

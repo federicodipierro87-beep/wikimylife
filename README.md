@@ -1170,10 +1170,12 @@ Tre sono le icone, e **nessuna delle tre si modifica a mano**:
 | file | a cosa serve |
 |---|---|
 | `icona.svg` | la favicon del browser, con gli angoli arrotondati |
-| `icona-1024.png` | l'icona dell'App Store, e la sorgente da cui Capacitor ricaverà le altre |
+| `icona-1024.png` | l'icona dell'App Store |
 | `apple-touch-icon.png` | 180×180, la schermata Home di iOS per la PWA |
 
-Escono tutti e tre da `npm run icone`, cioè da `scripts/icone.ts`, che descrive
+Lo stesso comando scrive anche le **26 immagini dell'app Android** (icone e
+splash, vedi «Il guscio Android» qui sotto). Escono tutte da `npm run icone`,
+cioè da `scripts/icone.ts`, che descrive
 il microfono una volta sola e lo scrive in SVG e in PNG. Il rasterizzatore è
 scritto lì, senza dipendenze: `sharp` o `resvg` porterebbero un binario nativo
 per piattaforma per disegnare quattro forme, e `node:zlib` sa già comprimere e
@@ -1199,6 +1201,63 @@ letterale nei sorgenti che girano, e pretende che ogni host abbia una voce in
 `TERZI` e che il nome di quella voce compaia **nel testo visibile** della
 pagina — non nei commenti, dove un terzo nominato non lo sa nessuno. Chi aggiunge
 un fornitore scopre lì che c'è una pagina da aggiornare.
+
+### Il guscio Android
+
+`apps/mobile` è un workspace con **Capacitor 8.5.2**: prende `apps/web/dist` così
+com'è e lo mette dentro un'app Android vera. La ragione per cui esiste è una
+sola: il permesso del microfono lo chiede **il sistema, una volta**, e lo ricorda
+per l'app, invece del browser che lo richiede a ogni sessione.
+
+```powershell
+npm run build:android   # build del web, poi `cap sync android`
+npm run icone           # icone e splash, se cambia il disegno
+```
+
+L'APK però **non si costruisce su questa macchina**: Capacitor 8 vuole Java 21 e
+l'SDK Android, e qui c'è Java 8 e nessun SDK. Lo costruisce il job `android` della
+CI, a ogni push su `master`, e lo lascia come artefatto `wikimylife-debug-apk`
+nella pagina della run su GitHub Actions. Per installarlo: si scarica lo zip
+dell'artefatto, lo si apre sul telefono e si accetta l'installazione da origini
+sconosciute.
+
+Cosa c'è in git e cosa no. Il progetto Android (`apps/mobile/android`) è
+versionato, perché ci sono file scritti a mano: il manifest, i colori, lo stile
+dello splash. La copia del web dentro l'app (`app/src/main/assets/public`) no:
+la rigenera `cap sync` a ogni build, e `android/.gitignore` la esclude.
+
+Le quattro cose che l'app web ha dovuto sapere:
+
+- **`VITE_API_URL` al momento della build.** Senza, `main.tsx` ripiega su
+  `http://localhost:3000`, che sul telefono è il telefono stesso: l'app si apre e
+  nessun login riesce. Il job della CI la imposta sull'API di Railway e poi
+  controlla con `grep -q` che l'indirizzo sia davvero nel bundle copiato.
+- **Il CORS dell'API deve ammettere `https://localhost`.** È l'origine con cui si
+  presenta la WebView di Capacitor su Android (`CapConfig.java`: schema `https`,
+  host `localhost`). Va aggiunta a `CORS_ORIGINS` nel pannello di Railway.
+  Ammetterla non apre niente a una pagina estranea che giri su quell'indirizzo:
+  l'API non usa cookie, l'identità viaggia solo nell'intestazione
+  `Authorization`, e quella pagina non avrebbe nessun token da mandare.
+- **Il service worker non si registra dentro l'app.** I file stanno già nel
+  pacchetto; un service worker aggiungerebbe una seconda copia del guscio che
+  sopravvive agli aggiornamenti. `apps/web/src/serviceWorker.ts` riconosce l'app
+  da `window.Capacitor.isNativePlatform()`, che il lato nativo inietta nella
+  pagina, senza che `apps/web` importi Capacitor.
+- **I permessi nel manifest sono quelli che Capacitor chiede davvero.** A ogni
+  `getUserMedia` con l'audio, `BridgeWebChromeClient` chiede `RECORD_AUDIO` **e**
+  `MODIFY_AUDIO_SETTINGS`, e dà il microfono alla pagina solo se li ottiene
+  tutti e due. Un permesso non dichiarato Android lo nega senza mostrare niente.
+  `tests/unit/mobile.test.ts` legge quel file Java in `node_modules` e pretende
+  che il manifest dichiari tutto ciò che chiede, per il microfono e per la
+  posizione: se un aggiornamento di Capacitor chiedesse un permesso in più,
+  cadrebbe lì e non su un telefono.
+
+Le icone Android sono quadrati pieni RGB, come quelle web. Il primo piano
+dell'icona adattiva è il disegno intero, senza ridurlo: il microfono sta entro il
+28,9% del lato dal centro, e la zona che ogni launcher mostra di sicuro arriva al
+30,6%. Lo sfondo (`ic_launcher_background`) e lo splash di Android 12
+(`windowSplashScreenBackground`) sono il fondo scuro del disegno, e il test lo
+confronta con `COLORE_FONDO` esportato dallo script.
 
 ---
 
@@ -4167,13 +4226,44 @@ Non installate, e il perché:
   guardie per codice di terzi, allungando insieme il test già più lento della
   suite. Il prezzo è che da qui in poi **niente di ciò che sta dentro una
   cartella con uno di quei nomi è controllato da nessuna guardia**: né il divieto
-  di `any`, né `process.env`, né altro. Finché quelle cartelle restano generate
-  la cosa è innocua; il giorno in cui ci scriviamo dentro codice nostro — e la
-  fase del registratore nativo è esattamente quel giorno — nessuno ce lo dirà.
-  Il confronto almeno è per nome intero e non per prefisso, quindi una cartella
-  nostra che si chiamasse `ios-bridge` continuerebbe a essere letta, e c'è un
-  caso che lo pinza; ma è una difesa contro l'allargamento accidentale, non
-  contro quello deliberato.
+  di `any`, né `process.env`, né altro. `apps/mobile/android` adesso esiste, e
+  dentro ci sono già tre file scritti da noi: il manifest, il colore dello
+  sfondo, lo stile dello splash. Quelli li pinza `mobile.test.ts`, uno per uno,
+  leggendoli per nome — che è una guardia su tre file e non su una cartella: un
+  quarto file nostro là dentro non lo controlla nessuno. Il codice nativo vero,
+  Java o Kotlin, arriverà con il registratore nativo, e da quel giorno questo
+  punto cieco smette di essere teorico. Il confronto almeno è per nome intero e
+  non per prefisso, quindi una cartella nostra che si chiamasse `ios-bridge`
+  continuerebbe a essere letta, e c'è un caso che lo pinza; ma è una difesa
+  contro l'allargamento accidentale, non contro quello deliberato.
+- **Che su Android il microfono si chieda una volta sola è una lettura di
+  sorgente, non una misura.** È la promessa per cui esiste `apps/mobile`, e la
+  si è ricavata leggendo `BridgeWebChromeClient.java`: il permesso di sistema
+  vale per l'app, e Capacitor lo concede alla pagina senza chiedere di nuovo.
+  Diventa vera quando la si vede su un telefono. Prima ancora, **l'APK non è
+  mai stato costruito**: il job `android` gira solo dopo un push, e su questa
+  macchina mancano Java 21 e l'SDK. Fino a quella run non si sa nemmeno se
+  Gradle accetta tutto ciò che è stato scritto a mano — in particolare
+  `windowSplashScreenBackground`, un attributo della libreria di splash che non
+  ha mai visto un compilatore.
+- **L'app Android non parla con l'API finché non si tocca il pannello.**
+  `CORS_ORIGINS` su Railway ammette solo `https://wikimylife.netlify.app`; la
+  WebView si presenta come `https://localhost` e verrebbe rifiutata a ogni
+  chiamata. La modifica è una riga nel pannello, e nessun test di questo repo
+  può dire se è stata fatta: si vede solo dal login riuscito sul telefono.
+- **L'APK è firmato con una chiave di debug, e l'identità dell'app è già
+  decisa.** La chiave la crea Gradle sul runner, e niente garantisce che sia la
+  stessa fra due run: può servire disinstallare prima di installare la
+  versione nuova. Una chiave di rilascio stabile, custodita fuori da git, è
+  lavoro della fase 5. L'`appId` invece, `com.wikimylife.app`, è definitivo dal
+  primo caricamento su uno store: finché non succede si cambia in due file
+  (`capacitor.config.json` e `app/build.gradle`), e `mobile.test.ts` controlla
+  che i due restino uguali.
+- **Su Android 7 l'icona tonda è quadrata.** I PNG sono RGB senza alfa, quindi
+  `ic_launcher_round` non può avere gli angoli trasparenti. Da Android 8 in su
+  si usa l'icona adattiva e il problema non c'è; su 7 e 7.1, gli unici sotto
+  quella soglia che il progetto supporta, un launcher che chiede l'icona tonda
+  la mostra quadrata.
 - **`privacy.html` esiste nel repo, e sul sito non l'ha ancora vista nessuno.**
   Il criterio della fase 0 è «risponde 200 su Netlify», e il `netlify.toml` ha un
   catch-all `/*` → `/index.html` con status 200: che un file vero vinca sul
@@ -4189,8 +4279,10 @@ Non installate, e il perché:
   quanto se ne sa Safari non accetta un SVG lì e ripiega su uno screenshot della
   pagina. Diventa vero o falso la prossima volta che l'app si aggiunge alla Home
   da un iPhone. Il manifest invece dichiara ancora solo l'SVG, con
-  `purpose: "any maskable"` su un disegno con gli angoli già tondi: per Android
-  le icone vere arriveranno con la fase 1, ricavate da `icona-1024.png`.
+  `purpose: "any maskable"` su un disegno con gli angoli già tondi. L'app Android
+  nativa ha adesso le sue icone, generate dallo stesso script; chi installa la
+  PWA da Chrome su Android vede ancora quella del manifest, che resta da
+  sistemare.
 - **Gli indirizzi IP restano nel database senza una scadenza garantita.** La
   pagina della privacy dice che la riga del limite dei tentativi «viene
   cancellata alla pulizia successiva», ed è vero; ma la pulizia parte ogni

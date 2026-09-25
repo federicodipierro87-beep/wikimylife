@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { inflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { FILE_PNG, PUBBLICA, pixel, png, svg } from "../../scripts/icone.js";
+import { FILE_PNG, PUBBLICA, ROOT, pixel, png, svg, type FilePng } from "../../scripts/icone.js";
 
 /**
  * Le icone in git sono quelle che `scripts/icone.ts` disegnerebbe adesso.
@@ -65,17 +65,17 @@ function ihdr(file: Buffer): {
  * letta male, cosi' un PNG ripassato da un ottimizzatore esterno si vede come
  * tale e non come «pixel diversi».
  */
-function decodifica(file: Buffer, lato: number): Uint8Array {
+function decodifica(file: Buffer, larghezza: number, altezza = larghezza): Uint8Array {
   const compressi = Buffer.concat(
     blocchi(file)
       .filter((b) => b.tipo === "IDAT")
       .map((b) => b.dati),
   );
   const grezzo = inflateSync(compressi);
-  const riga = lato * 3;
-  expect(grezzo.length).toBe((riga + 1) * lato);
-  const out = new Uint8Array(riga * lato);
-  for (let y = 0; y < lato; y += 1) {
+  const riga = larghezza * 3;
+  expect(grezzo.length).toBe((riga + 1) * altezza);
+  const out = new Uint8Array(riga * altezza);
+  for (let y = 0; y < altezza; y += 1) {
     const filtro = grezzo[y * (riga + 1)];
     if (filtro !== 0) {
       throw new Error(`riga ${String(y)} con filtro ${String(filtro)}`);
@@ -85,15 +85,19 @@ function decodifica(file: Buffer, lato: number): Uint8Array {
   return out;
 }
 
-function inGit(nome: string): Buffer {
-  return readFileSync(join(PUBBLICA, nome));
+function inGit(percorso: string): Buffer {
+  return readFileSync(join(ROOT, percorso));
 }
 
-/** Il colore del pixel che contiene il punto (x, y) del `viewBox` a 512. */
-function colore(rgb: Uint8Array, lato: number, x: number, y: number): number[] {
-  const px = Math.floor((x / 512) * lato);
-  const py = Math.floor((y / 512) * lato);
-  const i = (py * lato + px) * 3;
+/**
+ * Il colore del pixel che contiene il punto (x, y) del `viewBox` a 512, dentro
+ * il quadrato in cui il file mette il disegno: tutta l'immagine per un'icona,
+ * il centro per uno splash.
+ */
+function colore(rgb: Uint8Array, f: FilePng, x: number, y: number): number[] {
+  const px = Math.floor((f.larghezza - f.disegno) / 2 + (x / 512) * f.disegno);
+  const py = Math.floor((f.altezza - f.disegno) / 2 + (y / 512) * f.disegno);
+  const i = (py * f.larghezza + px) * 3;
   return [rgb[i] ?? -1, rgb[i + 1] ?? -1, rgb[i + 2] ?? -1];
 }
 
@@ -122,15 +126,11 @@ describe("icona.svg", () => {
   });
 });
 
-describe.each(FILE_PNG)("$nome", ({ nome, lato }) => {
-  const file = inGit(nome);
+describe.each(FILE_PNG)("$percorso", (f) => {
+  const file = inGit(f.percorso);
 
-  it(`misura ${String(lato)} per ${String(lato)}, a 8 bit per canale`, () => {
-    expect(ihdr(file)).toMatchObject({
-      larghezza: lato,
-      altezza: lato,
-      bit: 8,
-    });
+  it(`misura ${String(f.larghezza)} per ${String(f.altezza)}, a 8 bit per canale`, () => {
+    expect(ihdr(file)).toMatchObject({ larghezza: f.larghezza, altezza: f.altezza, bit: 8 });
   });
 
   it("non ha il canale alfa, che Apple rifiuta", () => {
@@ -145,28 +145,52 @@ describe.each(FILE_PNG)("$nome", ({ nome, lato }) => {
   // Il 1024 sono sedici milioni di campioni: sotto una suite intera i 5s di
   // default si sforano, come succede gia' a `guards.test.ts`.
   it("ha i pixel che lo script disegnerebbe adesso", { timeout: 30_000 }, () => {
-    expect(Buffer.from(decodifica(file, lato)).equals(Buffer.from(pixel(lato)))).toBe(true);
+    const atteso = pixel(f.larghezza, f.altezza, f.disegno);
+    const inFile = decodifica(file, f.larghezza, f.altezza);
+    expect(Buffer.from(inFile).equals(Buffer.from(atteso))).toBe(true);
   });
 
-  it("e' un quadrato pieno: l'angolo e' fondo, non trasparente e non chiaro", () => {
-    // Apple arrotonda da se'. Un angolo gia' tondo vorrebbe dire trasparenza,
-    // che l'IHDR ha appena escluso, oppure un colore sotto l'angolo che si
-    // vedrebbe come un bordo dopo la maschera.
-    const rgb = decodifica(file, lato);
-    expect(colore(rgb, lato, 0, 0)).toEqual(FONDO);
-    expect(colore(rgb, lato, 511, 511)).toEqual(FONDO);
+  it("e' pieno fino agli angoli: fondo, non trasparente e non chiaro", () => {
+    // Apple e Android arrotondano da se'. Un angolo gia' tondo vorrebbe dire
+    // trasparenza, che l'IHDR ha appena escluso, oppure un colore sotto
+    // l'angolo che si vedrebbe come un bordo dopo la maschera.
+    const rgb = decodifica(file, f.larghezza, f.altezza);
+    const ultimo = (f.larghezza * f.altezza - 1) * 3;
+    expect([rgb[0], rgb[1], rgb[2]]).toEqual(FONDO);
+    expect([rgb[ultimo], rgb[ultimo + 1], rgb[ultimo + 2]]).toEqual(FONDO);
   });
 
   it("contiene il microfono, e non soltanto il fondo", () => {
     // Il caso opposto a quello dei pixel uguali: uno script che non disegna
     // niente produrrebbe un quadrato scuro, identico a un file in git scuro
-    // a sua volta. Qui si pretende il disegno.
-    const rgb = decodifica(file, lato);
-    expect(colore(rgb, lato, 256, 200)).toEqual(ROSSO);
-    expect(colore(rgb, lato, 256, 364)).toEqual(BIANCO);
+    // a sua volta. Qui si pretende il disegno, dove il file dice di metterlo.
+    const rgb = decodifica(file, f.larghezza, f.altezza);
+    expect(colore(rgb, f, 256, 200)).toEqual(ROSSO);
+    expect(colore(rgb, f, 256, 364)).toEqual(BIANCO);
     // Il fondo del semicerchio, sotto il corpo: bianco, e fra i due il vuoto.
-    expect(colore(rgb, lato, 256, 336)).toEqual(BIANCO);
-    expect(colore(rgb, lato, 256, 300)).toEqual(FONDO);
+    expect(colore(rgb, f, 256, 336)).toEqual(BIANCO);
+    expect(colore(rgb, f, 256, 300)).toEqual(FONDO);
+  });
+});
+
+describe("gli splash", () => {
+  it("mettono il microfono al centro, piu' piccolo dell'immagine", () => {
+    // Senza, uno splash disegnato come un'icona — il microfono a tutta
+    // altezza — passerebbe tutti i casi qui sopra, che leggono `disegno` dalla
+    // stessa lista che lo decide.
+    const splash = FILE_PNG.filter((f) => f.percorso.endsWith("/splash.png"));
+    expect(splash).toHaveLength(11);
+    for (const f of splash) {
+      expect(f.disegno).toBe(Math.round(Math.min(f.larghezza, f.altezza) / 2));
+    }
+  });
+
+  it("le icone invece sono il disegno intero", () => {
+    const icone = FILE_PNG.filter((f) => !f.percorso.endsWith("/splash.png"));
+    expect(icone).toHaveLength(17);
+    for (const f of icone) {
+      expect([f.larghezza, f.disegno]).toEqual([f.altezza, f.altezza]);
+    }
   });
 });
 
@@ -177,6 +201,11 @@ describe("il PNG che lo script scrive", () => {
     // fresco dallo script e deve tornare ai pixel da cui e' partito.
     const lato = 24;
     expect(Buffer.from(decodifica(png(lato), lato)).equals(Buffer.from(pixel(lato)))).toBe(true);
+    // E rettangolare, dove larghezza e altezza scambiate si vedrebbero.
+    const splash = png(30, 20, 10);
+    expect(Buffer.from(decodifica(splash, 30, 20)).equals(Buffer.from(pixel(30, 20, 10)))).toBe(
+      true,
+    );
   });
 
   it("dichiara RGB senza alfa anche quando esce fresco", () => {
@@ -205,7 +234,7 @@ describe("index.html", () => {
     const html = readFileSync(resolve(PUBBLICA, "..", "index.html"), "utf8");
     const href = /<link rel="apple-touch-icon" href="\/([^"]+)"/.exec(html)?.[1];
     expect(href).toBe("apple-touch-icon.png");
-    expect(FILE_PNG.map((f) => f.nome)).toContain(href);
+    expect(FILE_PNG.map((f) => f.percorso)).toContain(`apps/web/public/${String(href)}`);
   });
 });
 

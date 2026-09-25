@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# CI. Tre job che girano in parallelo, e la ragione per cui sono tre.
+# CI. Quattro job che girano in parallelo: i primi tre per il sito e l'API,
+# il quarto per l'app Android.
 #
 # `verifica` non ha nessun service container, e non e' una svista: il repository
 # promette che `npm test` giri senza Docker, e una promessa che nessuno verifica
@@ -193,3 +194,63 @@ jobs:
       - run: npm run build:api
 
       - run: npm run build:worker
+
+  android:
+    name: APK Android di debug
+    runs-on: ubuntu-latest
+
+    env:
+      PRISMA_SKIP_POSTINSTALL_GENERATE: "true"
+      # L'indirizzo dell'API che l'app installata chiamera'. Non e' un segreto
+      # — sta in chiaro in ogni bundle che Netlify serve — ed e' scritto qui e
+      # non in un secret perche' chi legge questo file deve poter sapere con
+      # chi parla l'APK che scarica.
+      #
+      # Senza, `main.tsx` ripiega su `http://localhost:3000`, che sul telefono
+      # e' il telefono stesso: l'app si aprirebbe e nessun login riuscirebbe,
+      # senza un messaggio che dica perche'. Il passo «il bundle parla con
+      # l'API vera» qui sotto e' la guardia contro questo.
+      VITE_API_URL: https://api-production-15b2f.up.railway.app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # Il web con l'indirizzo vero, poi `cap sync` lo copia dentro il progetto
+      # Android. La copia non e' in git (`android/.gitignore`): esiste solo qui.
+      - run: npm run build:android
+
+      # `grep -q` e non `grep -c`: il bundle minificato e' una riga sola, e il
+      # conteggio delle righe ha gia' risposto 0 su un file che conteneva la
+      # stringa (CLAUDE.md, «Sulle piattaforme»).
+      - name: il bundle parla con l'API vera
+        run: grep -rqF "$VITE_API_URL" apps/mobile/android/app/src/main/assets/public/assets
+
+      # Capacitor 8 vuole Java 21. Il runner ha l'SDK Android gia' installato,
+      # e la piattaforma 36 che manca la scarica Gradle da solo.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: assembleDebug
+        working-directory: apps/mobile/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      # Firmato con la chiave di debug che Gradle trova o crea sul runner, e
+      # niente garantisce che sia la stessa da una run all'altra: se Android
+      # rifiuta di installare sopra la versione precedente, si disinstalla
+      # prima. Una chiave stabile e' roba della fase 5.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wikimylife-debug-apk
+          path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

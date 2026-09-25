@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lo sfondo dell'icona adattiva, e da Android 12 anche dello splash di sistema
+  (vedi styles.xml). E' il fondo del microfono: scripts/icone.ts lo esporta come
+  COLORE_FONDO e tests/unit/mobile.test.ts pretende che qui sia lo stesso.
+-->
+<resources>
+    <color name="ic_launcher_background">#101418</color>
+</resources>

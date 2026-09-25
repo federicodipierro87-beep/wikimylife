@@ -1,0 +1,5 @@
+{
+  "appId": "com.wikimylife.app",
+  "appName": "WikiMyLife",
+  "webDir": "../web/dist"
+}

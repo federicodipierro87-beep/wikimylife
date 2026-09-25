@@ -1054,3 +1054,66 @@ dicono solo com'era lo script l'ultima volta che qualcuno l'ha lanciato.
 Da **1169** test unit + web su 49 file a **1202** su 51, verdi due volte di
 seguito con le modifiche. Nessun cambiamento all'API, quindi l'integrazione non
 è stata rilanciata: resta a **405** su 14 file dall'ultimo giro.
+
+---
+
+## Giro 7 — la fase 1: il guscio Android, senza Android su questa macchina
+
+### Dove si costruisce
+
+Qui c'è Java 8 e nessun SDK Android; Capacitor 8.5.2 vuole Java 21. La scelta,
+dell'utente: l'APK lo costruisce GitHub Actions, in un job `android` accanto ai
+tre che c'erano, e lo lascia come artefatto. È anche lo schema che servirà per
+iOS nella fase 2. Il prezzo è che **l'APK non è mai stato costruito** nel momento
+in cui questo giro si chiude: la prima volta che Gradle vedrà il progetto sarà la
+run dopo il push.
+
+### Il manifest, letto dal codice di Capacitor
+
+Prima di scrivere i permessi è stato letto `BridgeWebChromeClient.java`. Due cose
+che una lista a memoria avrebbe sbagliato: per il microfono Capacitor chiede
+`RECORD_AUDIO` **e** `MODIFY_AUDIO_SETTINGS`, e concede la pagina solo se li ha
+tutti e due; per la posizione chiede la precisa e l'approssimativa insieme, e
+senza la precisa nel manifest nega tutto sotto Android 12. `mobile.test.ts` legge
+quel file Java in `node_modules` invece di una lista nostra, così un
+aggiornamento di Capacitor che chiede un permesso in più cade in un test.
+
+L'origine della WebView, `https://localhost`, è stata letta in `CapConfig.java`,
+e `CORS_ORIGINS` letto dal pannello con la CLI di Railway filtrando la sola
+variabile, senza stampare le altre, che contengono le chiavi. Vale solo
+`https://wikimylife.netlify.app`: senza toccare il pannello l'app non fa login.
+
+### Le icone Android dallo stesso script, e un conto che ha evitato un ritocco
+
+Capacitor genera le icone e undici splash con il suo logo. `@capacitor/assets`
+li rifarebbe da una sorgente, ma porta `sharp`, cioè il binario nativo scartato
+nel giro prima. `scripts/icone.ts` adesso scrive 28 PNG. Il primo piano delle
+icone adattive poteva volere un disegno ridotto; il conto dice di no: il punto
+più lontano del microfono (la base dell'asta, arrotondata) sta a 148 unità dal
+centro su 512, il 28,9%, e la zona che ogni launcher mostra arriva al 30,6%.
+
+Undici splash fino a 1920×1280 avrebbero portato il test a decine di secondi. Il
+rasterizzatore adesso salta i pixel fuori dal riquadro del microfono, che sono
+fondo per costruzione: i PNG web rigenerati sono rimasti **identici al byte**, e
+i 176 casi delle icone girano in meno di tre secondi.
+
+### Il service worker, spento nell'app
+
+La condizione di registrazione è uscita da `main.tsx`, che nessun test monta, ed
+è entrata in `serviceWorker.ts` con sette casi. Una finestra finta e non quella
+di jsdom: jsdom non ha `navigator.serviceWorker`, e il suo `load` è già scattato
+quando il caso parte.
+
+### Le mutazioni
+
+Ventiquattro su tre comandi, con un controllo ciascuno: **21 cadute, 3 controlli
+vivi, nessuna sopravvissuta, nessuna saltata**. Una precisazione su una di
+esse: togliere il `.catch` della registrazione lascia verdi i sette casi, e la
+corsa fallisce lo stesso perché Vitest vede il rifiuto non gestito. Il runner la
+conta come caduta dichiarandolo; la prende la corsa, non un caso.
+
+### I numeri
+
+Da **1202** test unit + web su 51 file a **1377** su 53 (quasi tutti i nuovi sono
+i casi per file delle icone Android). Integrazione non rilanciata: l'API non è
+cambiata.

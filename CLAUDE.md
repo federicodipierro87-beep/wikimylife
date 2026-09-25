@@ -34,6 +34,8 @@ npm run test:integration  # richiede: docker compose up -d
 npm run dev              # shared, api, worker, web insieme
 npm run db:seed
 npm run sweep -- --cancella
+npm run icone            # riscrive icone web, icone e splash Android
+npm run build:android    # web + cap sync; l'APK lo costruisce solo la CI
 ```
 
 Non c'è nessuno script di lint: il typecheck è tutto quello che c'è, e va
@@ -243,8 +245,8 @@ rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
 deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
-**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1202 test**
-unit + web su 51 file, **405** d'integrazione su 14 file, albero pulito.
+**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1377 test**
+unit + web su 53 file, **405** d'integrazione su 14 file, albero pulito.
 
 Il giro in corso è il guscio nativo: un'app vera per iOS e Android, con dentro il
 web già costruito, perché il cartello del microfono lo chieda il sistema una
@@ -254,26 +256,35 @@ volta sola invece del browser a ogni sessione. Le fasi sono sei (0 preparazione,
 più lenta e non dipende da nessun codice.
 
 Della fase 0 sono chiuse la **0a** (le guardie sanno che esisteranno cartelle
-native), la **0b** (si cancella il proprio conto: la 5.1.1(v) di Apple, senza la
-quale il rifiuto alla revisione è certo) e la **0c nel repo**: `privacy.html`
-nomina i terzi e si raggiunge dall'app, e le icone escono da `npm run icone`
-(`icona-1024.png` RGB senza alfa, `apple-touch-icon.png`, `icona.svg`). Una
-deviazione dal piano, dichiarata: la rotta è `POST /api/auth/delete-account` e
-non `DELETE /api/auth/me`, perché il corpo su una `DELETE` è ammesso dallo
-standard e maltrattato dai middlebox.
+native), la **0b** (si cancella il proprio conto: la 5.1.1(v) di Apple) e la
+**0c nel repo** (`privacy.html` nomina i terzi e si raggiunge dall'app; le icone
+escono da `npm run icone`). La rotta di cancellazione è
+`POST /api/auth/delete-account` e non `DELETE /api/auth/me`: il corpo su una
+`DELETE` è maltrattato dai middlebox.
 
-### Il prossimo passo: la misura della 0c, poi la fase 1
+La **fase 1 è scritta e non ancora costruita**. `apps/mobile` con Capacitor
+8.5.2, `appId` `com.wikimylife.app`, progetto Android versionato (la copia del
+web no), permessi letti dal codice di Capacitor e pinzati da `mobile.test.ts`,
+icone e splash da `scripts/icone.ts`, service worker spento nell'app
+(`apps/web/src/serviceWorker.ts`). L'APK lo costruisce il job `android` della CI:
+**qui c'è Java 8 e nessun SDK**, quindi non si prova a costruirlo in locale.
 
-La 0c è chiusa nel codice e **non ancora sul sito**: il commit non è stato
-spinto, e il criterio «`privacy.html` risponde» vuole un deploy. Attenzione a
-come si misura: il catch-all di `netlify.toml` risponde 200 **anche** quando il
-file non c'è, con dentro l'app. Si cerca nel corpo il titolo
-«Privacy · WikiMyLife», non il codice di stato.
+### Il prossimo passo: tre misure, poi la fase 2
 
-Poi la fase 1, Android: `apps/mobile` con Capacitor, le icone Android ricavate da
-`icona-1024.png` (il manifest dichiara ancora solo l'SVG). L'indirizzo della
-privacy per lo store è `https://wikimylife.netlify.app/privacy.html`; il
-titolare indicato è Federico Di Pierro, con la sua gmail, scelta dall'utente.
+1. **Push**, e guardare il job `android`: è la prima volta che Gradle vede il
+   progetto. Se cade su `windowSplashScreenBackground` in `styles.xml`, è
+   l'unica riga scritta senza averla mai compilata.
+2. **`https://localhost` in `CORS_ORIGINS`** sul servizio `api` di Railway,
+   accanto a `https://wikimylife.netlify.app`. Senza, l'app si apre e il login
+   fallisce. Si legge la variabile filtrandola, mai `railway variables` in
+   chiaro: stampa le chiavi. È una modifica alla produzione: va chiesta.
+3. **Sul telefono Android dell'utente**: login, una registrazione, chiudere e
+   riaprire l'app, un'altra registrazione. La promessa è che il cartello del
+   microfono compaia una volta sola. Poi `privacy.html` sul sito, cercando nel
+   corpo «Privacy · WikiMyLife» e non il codice 200.
+
+Poi la fase 2: iOS in CI, cioè `@capacitor/ios` 8.5.2 e un job su `macos-latest`
+che costruisca senza firmare. Le icone iOS nasceranno da `icona-1024.png`.
 
 **E una cosa che non dipende da nessun codice:** l'iscrizione all'**Apple
 Developer Program** (99 $/anno). La verifica d'identità è la cosa più lenta del
@@ -296,7 +307,9 @@ non fidandosi del pannello.
 
 ### Cosa resta da fare a mano, e l'utente lo sa
 
-- **Ruotare le due chiavi API**, perché sono passate dalla chat.
+- **Ruotare le due chiavi API**, perché sono passate dalla chat. L'utente ha
+  deciso di non farlo per ora (25 settembre 2026): non va riproposto a ogni giro,
+  e non lo si può fare da qui, perché si rigenerano dai pannelli dei fornitori.
 - **Le cinque righe `S3_*_TEST` nel proprio `.env`**, copiate da `.env.example`:
   `S3_ENDPOINT_TEST`, `S3_BUCKET_TEST`, `S3_REGION_TEST`, `S3_ACCESS_KEY_ID_TEST`,
   `S3_SECRET_ACCESS_KEY_TEST`. `.env` non è leggibile dagli strumenti, quindi non
