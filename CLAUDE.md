@@ -287,9 +287,10 @@ chiusa anche sul sito: `privacy.html` misurata il 25 settembre 2026.
    `https://api.github.com/repos/federicodipierro87-beep/wikimylife/actions/runs`
    (il filtro `head_sha` vuole lo SHA **intero**); i log vogliono un token, e
    `gh auth login` lo deve fare l'utente.
-2. **`CORS_ORIGINS` su Railway** deve diventare
-   `https://wikimylife.netlify.app,https://localhost,capacitor://localhost`.
-   Il classificatore dei permessi **nega** questa modifica da qui: la fa
+2. `CORS_ORIGINS` su Railway è
+   `https://wikimylife.netlify.app,https://localhost,capacitor://localhost`
+   dal 28 settembre 2026, verificato con un preflight sull'API dopo il deploy.
+   Le modifiche al pannello le nega il classificatore dei permessi: le fa
    l'utente. Si rilegge filtrando la sola variabile, mai `railway variables` in
    chiaro, che stampa le chiavi.
 3. **Sul telefono Android dell'utente**: login, registrazione, chiudere e

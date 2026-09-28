@@ -1183,3 +1183,12 @@ Undici: **9 cadute, 2 controlli vivi**, nessuna saltata.
   `head_sha=131fec6`, e l'API di GitHub quel filtro lo vuole con lo SHA intero.
   Ha aspettato trenta minuti una run che non poteva trovare, mentre la run era
   già finita da ventotto.
+
+### Il CORS, due letture diverse
+
+L'utente ha impostato `CORS_ORIGINS` dalla CLI. Il pannello, riletto subito,
+aveva il valore nuovo; l'API no: il preflight con `https://localhost` tornava
+senza `access-control-allow-origin`, perché il deploy con la variabile nuova era
+ancora in `BUILDING`. Dopo il `SUCCESS` le tre origini passano e una estranea no.
+È la regola «rileggere ciò che si è impostato», con un gradino in più: si rilegge
+dal servizio che lo usa, non dal pannello che lo conserva.

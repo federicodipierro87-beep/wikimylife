@@ -4269,12 +4269,15 @@ Non installate, e il perché:
   TestFlight, cioè con l'account Apple. Il progetto porta anche un `UIRequiredDeviceCapabilities` con `armv7`
   dal modello di Capacitor, che su un iPhone di oggi non vuol dire niente e che
   alla revisione di Apple va guardato.
-- **Le app non parlano con l'API finché non si tocca il pannello.**
-  `CORS_ORIGINS` su Railway ammette solo `https://wikimylife.netlify.app`; la
-  WebView si presenta come `https://localhost` su Android e come
-  `capacitor://localhost` su iOS, e verrebbe rifiutata a ogni chiamata. La
-  modifica è una riga nel pannello, e nessun test di questo repo può dire se è
-  stata fatta: si vede solo dal login riuscito sul telefono.
+- **Che le app parlino con l'API lo dice un preflight, non ancora un login.**
+  Il 28 settembre 2026 `CORS_ORIGINS` su Railway è diventato
+  `https://wikimylife.netlify.app,https://localhost,capacitor://localhost`, e
+  dopo il deploy un `OPTIONS` su `/api/auth/login` con ciascuna di quelle
+  origini torna `access-control-allow-origin` uguale all'origine, mentre una
+  estranea non ne riceve nessuno. Nel pannello il valore c'era già un deploy
+  prima che l'API lo applicasse: rileggere il pannello non bastava. Resta
+  fuori il resto della catena: che il login dall'APK riesca lo dice il
+  telefono, e nessun test di questo repo sa se quella variabile è ancora così.
 - **I log della CI non si leggono da qui.** Lo stato dei job si legge dall'API
   pubblica di GitHub, i log no: vogliono un token, e `gh` su questa macchina non
   è autenticato. Il job `integrazione` fallisce sul passo «il bucket dei test»
