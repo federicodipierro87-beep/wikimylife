@@ -4,6 +4,7 @@ import { useApi } from "../api";
 import { goBack } from "../router";
 import { useAsync } from "../useAsync";
 import { ProcedureCard } from "./ProcedureCard";
+import { Icona } from "../Icona";
 
 /**
  * La ricerca.
@@ -52,11 +53,11 @@ export function SearchScreen(): React.JSX.Element {
       <header className="testata">
         <button
           type="button"
-          className="bottone bottone--piatto"
+          className="bottone bottone--piatto bottone--icona"
           onClick={goBack}
           aria-label="Torna indietro"
         >
-          ‹
+          <Icona nome="indietro" />
         </button>
         <input
           className="ricerca"

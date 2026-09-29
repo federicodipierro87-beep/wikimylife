@@ -8,6 +8,7 @@ import { useApi } from "../api";
 import { goBack, navigate } from "../router";
 import { messaggioDi } from "../session";
 import { useAsync } from "../useAsync";
+import { Icona } from "../Icona";
 
 /**
  * La passata di redazione della §9.
@@ -111,11 +112,11 @@ function Testata(): React.JSX.Element {
     <header className="testata">
       <button
         type="button"
-        className="bottone bottone--piatto"
+        className="bottone bottone--piatto bottone--icona"
         onClick={goBack}
         aria-label="Torna indietro"
       >
-        ‹
+        <Icona nome="indietro" />
       </button>
     </header>
   );

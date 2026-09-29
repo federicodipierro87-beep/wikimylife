@@ -1118,6 +1118,30 @@ i primi due: zero cancellate e zero saltate con qualcosa ancora dentro non è un
 cestino già svuotato, è uno svuotamento che non è partito, e chiamarlo nello
 stesso modo sarebbe la bugia più cara di questa schermata.
 
+### L'aspetto: segue il tema del telefono
+
+L'app è chiara di giorno e scura quando il telefono è in modalità scura. Tutti i
+colori sono variabili in testa a `styles.css`, definite due volte — `:root` per
+il chiaro, `prefers-color-scheme: dark` per lo scuro — e sotto le due tavolozze
+non compare nessun esadecimale: un colore scritto a mano sarebbe giusto in un
+tema e sbagliato nell'altro. Le tinte tenui (fondo dei badge, degli avvisi)
+nascono da `color-mix()` sul colore pieno; dove manca (Safari prima della 16.2)
+si perde la tinta, e restano bordo e parola, che portano il significato.
+
+Il rosso è quello dell'icona in tutti e due i temi, ed è riservato al gesto che
+conta: il pulsante di registrazione, sollevato al centro della barra, e il
+pulsantone della schermata di registrazione. Per il testo rosso c'è
+`--accent-testo`, più scuro nel chiaro e più acceso nello scuro, perché il
+rosso del marchio su bianco non basta a una riga da leggere.
+
+Le icone sono otto disegni SVG in `apps/web/src/Icona.tsx`, sempre con
+`aria-hidden`: il nome di un pulsante lo porta il testo o l'`aria-label`, mai il
+disegno. `tests/web/barra.test.tsx` lo pinza per ognuna, insieme
+all'`aria-current` sulla voce attiva della barra.
+
+Le transizioni e le animazioni si spengono tutte insieme per chi ha chiesto meno
+movimento, con una regola sola in cima al foglio.
+
 ### Il service worker fa una cosa sola
 
 Tiene in cache il guscio, così che aprire l'app senza rete mostri il pulsante di
@@ -3867,13 +3891,26 @@ Non installate, e il perché:
 | `react-router` | `hashchange`, trenta righe per nove schermate |
 | `@tanstack/react-query` | `useAsync`, venti righe: carica e ricarica |
 | `vite-plugin-pwa` `workbox` | un service worker di sessanta righe |
-| `tailwind` e simili | un foglio di stile di 2 kB compressi |
+| `tailwind` e simili | un foglio di stile di 5 kB compressi, con due temi |
+| `lucide` e simili | otto icone in SVG, in `Icona.tsx` |
 | `@testing-library/jest-dom` | `.checked` e `.disabled` si leggono senza matcher |
 | `@vitejs/plugin-react` | il JSX lo compila l'esbuild che Vitest ha già dentro |
 
 ---
 
 ## Cosa non c'è ancora, e si sa
+
+- **Il nuovo aspetto è stato costruito, non guardato.** Due temi, icone, barra
+  con il pulsante sollevato: tutto passa typecheck, test e build, ma nessuno lo
+  ha ancora visto su un telefono vero, e nessun test guarda un colore. Tre cose
+  in particolare vanno misurate. La barra di stato della PWA su iOS è passata
+  da `black-translucent` a `default` perché il primo scrive l'orologio in bianco
+  anche sul tema chiaro; il prezzo atteso, **non verificato**, è una barra
+  chiara sopra l'app col tema scuro. I due gusci nativi non sono stati toccati:
+  dovrebbero seguire il tema di sistema da soli, e non si sa finché non si
+  aprono. E `privacy.html` è rimasta solo scura — `privacy.css` dichiara
+  `color-scheme: dark` e non ha un tema chiaro — quindi dall'accesso chiaro si
+  passa a una pagina scura.
 
 - **Il limite dei tentativi ferma la forza bruta, non la pazienza.** Adesso il
   conteggio è condiviso, quindi le repliche e i riavvii non lo diluiscono più; la

@@ -11,6 +11,7 @@ import { goBack } from "../router";
 import { messaggioDi, useSession } from "../session";
 import { useAsync, type Async } from "../useAsync";
 import { CollegamentoPrivacy } from "./Privacy";
+import { Icona } from "../Icona";
 
 /**
  * L'account: chi sei, cambia password, esci.
@@ -197,11 +198,11 @@ export function AccountScreen(): React.JSX.Element {
       <header className="testata">
         <button
           type="button"
-          className="bottone bottone--piatto"
+          className="bottone bottone--piatto bottone--icona"
           onClick={goBack}
           aria-label="Torna indietro"
         >
-          ‹
+          <Icona nome="indietro" />
         </button>
         <h1>Il tuo account</h1>
       </header>

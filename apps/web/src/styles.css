@@ -2,9 +2,9 @@
  * Il foglio di stile, scritto a mano.
  *
  * Non c'e' Tailwind e non c'e' una libreria di componenti perche' questa app ha
- * sei schermate e un pulsante che conta: la superficie visiva sta in
- * quattrocento righe, e quattrocento righe di CSS costano meno di una
- * dipendenza da configurare, aggiornare e spiegare.
+ * poche schermate e un pulsante che conta: un file di CSS costa meno di una
+ * dipendenza da configurare, aggiornare e spiegare. E la CSP di Netlify
+ * (`style-src 'self'`) vieta gli stili inline: tutto deve stare qui.
  *
  * Mobile first: nessuna media query allarga niente sotto i 40rem, perche'
  * sotto i 40rem c'e' il caso d'uso vero — qualcuno in piedi fuori da un
@@ -13,23 +13,83 @@
  *
  * Le aree di tocco stanno a 44px: e' il minimo sotto il quale un pollice
  * sbaglia, ed e' il motivo per cui i pulsanti qui sembrano grandi.
+ *
+ * ## Chiaro e scuro
+ *
+ * L'app segue il tema del telefono. Tutti i colori sono variabili definite due
+ * volte: una in `:root` (chiaro) e una dentro `prefers-color-scheme: dark`. Una
+ * regola che scrivesse un colore a mano invece di una variabile sarebbe giusta
+ * in un tema e sbagliata nell'altro, e se ne accorgerebbe solo chi usa quello
+ * sbagliato: per questo sotto le due tavolozze non compare nessun esadecimale.
+ *
+ * Il rosso e' lo stesso nei due temi ed e' quello dell'icona: e' il marchio, ed
+ * e' il colore del gesto che conta — registrare. Per il testo rosso esiste una
+ * seconda variabile, `--accent-testo`, perche' il rosso del marchio su bianco
+ * non arriva al contrasto che serve a una riga da leggere.
+ *
+ * `color-mix()` fa le tinte tenui (fondo dei badge, degli avvisi) a partire dal
+ * colore pieno, cosi' non servono altre quattordici variabili. Chi non lo
+ * conosce (Safari prima della 16.2) perde la tinta e tiene il bordo e il testo,
+ * che sono le due cose che portano il significato.
  */
 
 :root {
-  color-scheme: dark;
-  --bg: #101418;
-  --card: #171d24;
-  --line: #263140;
-  --text: #e6edf3;
-  --muted: #8b98a5;
-  --good: #3fb950;
-  --bad: #f85149;
-  --warn: #d29922;
+  color-scheme: light dark;
+
+  --bg: #f4f5f7;
+  --card: #ffffff;
+  --card-2: #eef0f3;
+  --campo: #f7f8fa;
+  --line: #e2e5ea;
+  --line-forte: #cdd2da;
+  --text: #0f1720;
+  --muted: #5d6877;
+  --good: #1a7f37;
+  --bad: #cf222e;
+  --warn: #9a6700;
   --accent: #e5484d;
+  --accent-testo: #c9343a;
+  --su-accent: #ffffff;
+  --barra-fondo: rgba(255, 255, 255, 0.86);
+  --ombra-1: 0 1px 2px rgba(15, 23, 32, 0.04), 0 1px 3px rgba(15, 23, 32, 0.06);
+  --ombra-2: 0 10px 30px rgba(15, 23, 32, 0.12), 0 2px 6px rgba(15, 23, 32, 0.06);
+  --ombra-accent: 0 8px 24px rgba(229, 72, 77, 0.35);
+
+  --raggio: 1rem;
+  --raggio-s: 0.75rem;
   --tocco: 2.75rem;
   --barra-h: 4.5rem;
-  font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --veloce: 140ms;
+
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
   font-size: 16px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --card-2: #1f262f;
+    --campo: #0f141a;
+    --line: #262e38;
+    --line-forte: #36404c;
+    --text: #e8edf2;
+    --muted: #8d99a8;
+    --good: #3fb950;
+    --bad: #f85149;
+    --warn: #d29922;
+    --accent-testo: #ff6b70;
+    --barra-fondo: rgba(13, 17, 23, 0.84);
+    --ombra-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --ombra-2: 0 12px 32px rgba(0, 0, 0, 0.55);
+    --ombra-accent: 0 8px 26px rgba(229, 72, 77, 0.4);
+  }
 }
 
 * {
@@ -42,6 +102,28 @@ body {
   color: var(--text);
   /* Il rimbalzo elastico su iOS sotto una barra fissa scopre il fondo bianco. */
   overscroll-behavior-y: none;
+  /* Il riquadro grigio che Android e iOS disegnano sotto il dito a ogni tocco:
+     qui ogni pulsante ha gia' il suo stato premuto, e i due insieme sembrano
+     un difetto. */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Chi ha chiesto meno movimento non vede nessuna transizione e nessuna
+   animazione, in tutta l'app: una regola sola invece di una per componente, cosi'
+   il prossimo componente animato la rispetta senza che nessuno se ne ricordi. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+.icona {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: none;
 }
 
 /* --------------------------------------------------------------------------
@@ -51,10 +133,24 @@ body {
 .schermata {
   max-width: 40rem;
   margin: 0 auto;
-  /* `safe-area-inset-bottom` e' l'altezza della barra gestuale su iPhone:
-     senza, l'ultimo pulsante finisce sotto una zona che intercetta i tocchi. */
-  padding: 1rem 1rem calc(var(--barra-h) + env(safe-area-inset-bottom) + 1.5rem);
+  /* `safe-area-inset-*` sono la tacca in alto e la barra gestuale in basso su
+     iPhone, e le barre di sistema nei gusci nativi: senza, il titolo finisce
+     sotto l'orologio e l'ultimo pulsante sotto una zona che intercetta i
+     tocchi. Fuori da quei casi valgono zero. */
+  padding: calc(1rem + env(safe-area-inset-top)) 1rem
+    calc(var(--barra-h) + env(safe-area-inset-bottom) + 2rem);
   min-height: 100vh;
+  animation: entrata 220ms ease-out;
+}
+
+/* Un'entrata appena accennata a ogni cambio di schermata: senza, il router a
+   hash sostituisce la pagina in un fotogramma e sembra un lampo. Otto pixel e
+   niente di piu': e' un'app da usare in piedi, non una presentazione. */
+@keyframes entrata {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
 }
 
 .schermata--centrata {
@@ -73,15 +169,21 @@ body {
 .testata {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
+  gap: 0.25rem;
+  margin-bottom: 1.25rem;
+  min-height: var(--tocco);
 }
 
+/* Il titolo grande in cima, come nelle app di sistema: e' la prima cosa che
+   dice dove si e', e su un telefono la testata e' l'unico posto in cui c'e'
+   spazio per dirlo in grande. */
 .testata h1 {
   flex: 1;
   margin: 0;
-  font-size: 1.35rem;
-  letter-spacing: -0.02em;
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
 }
 
 h1,
@@ -90,11 +192,12 @@ h2 {
 }
 
 h2 {
-  font-size: 1rem;
+  font-size: 0.75rem;
+  font-weight: 650;
   color: var(--muted);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin: 0 0 0.5rem;
+  letter-spacing: 0.08em;
+  margin: 0 0 0.75rem;
 }
 
 .muto {
@@ -107,27 +210,58 @@ h2 {
    -------------------------------------------------------------------------- */
 
 .bottone {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
   min-height: var(--tocco);
-  padding: 0 1rem;
-  border-radius: 0.6rem;
-  border: 1px solid var(--line);
+  padding: 0 1.1rem;
+  border-radius: var(--raggio-s);
+  border: 1px solid var(--line-forte);
   background: var(--card);
   color: var(--text);
   font: inherit;
+  font-weight: 550;
   cursor: pointer;
+  transition:
+    background-color var(--veloce),
+    border-color var(--veloce),
+    transform var(--veloce),
+    box-shadow var(--veloce);
+}
+
+/* Il premuto si vede anche senza mouse: sul telefono non c'e' `:hover`, e
+   senza questo un tocco non lascerebbe nessun segno fino alla pagina dopo. */
+.bottone:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 .bottone:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: default;
+}
+
+@media (hover: hover) {
+  .bottone:hover:not(:disabled) {
+    background: var(--card-2);
+  }
 }
 
 .bottone--primario {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
-  font-weight: 600;
+  color: var(--su-accent);
+  font-weight: 650;
   width: 100%;
+  min-height: 3rem;
+  box-shadow: var(--ombra-1);
+}
+
+@media (hover: hover) {
+  .bottone--primario:hover:not(:disabled) {
+    background: var(--accent);
+    filter: brightness(1.06);
+  }
 }
 
 .bottone--piatto {
@@ -136,55 +270,140 @@ h2 {
   color: var(--muted);
 }
 
+@media (hover: hover) {
+  .bottone--piatto:hover:not(:disabled) {
+    color: var(--text);
+  }
+}
+
+/* Il pulsante che e' solo un disegno: quadrato, rotondo, grande quanto un
+   pollice. Il nome ce l'ha nell'`aria-label`. */
+.bottone--icona {
+  width: var(--tocco);
+  padding: 0;
+  border-radius: 999px;
+  color: var(--text);
+  flex: none;
+}
+
+.bottone--icona .icona {
+  width: 1.4rem;
+  height: 1.4rem;
+}
+
 .campo {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 0.35rem;
   width: 100%;
   text-align: left;
-  margin-bottom: 0.9rem;
+  margin-bottom: 1rem;
 }
 
 .campo > span {
   font-size: 0.85rem;
+  font-weight: 550;
   color: var(--muted);
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   min-height: var(--tocco);
-  padding: 0.6rem 0.75rem;
-  border-radius: 0.6rem;
-  border: 1px solid var(--line);
-  background: var(--card);
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--raggio-s);
+  border: 1px solid var(--line-forte);
+  background: var(--campo);
   color: var(--text);
   /* Sotto 16px iOS ingrandisce la pagina quando il campo prende il fuoco, e
      non la rimpicciolisce piu'. */
   font: inherit;
   font-size: 1rem;
+  transition:
+    border-color var(--veloce),
+    box-shadow var(--veloce);
 }
 
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+/* Il campo con il fuoco si riconosce dal bordo rosso e da un alone, non da un
+   contorno staccato: il contorno di `button:focus-visible` qui sotto resta per
+   i pulsanti, dove un alone su un fondo rosso non si vedrebbe. */
 input:focus-visible,
 textarea:focus-visible,
-button:focus-visible {
+select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.modulo {
-  width: 100%;
-  max-width: 22rem;
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  min-height: 0;
+  accent-color: var(--accent);
+}
+
+/* --------------------------------------------------------------------------
+   Accesso
+   -------------------------------------------------------------------------- */
+
+.accesso {
+  gap: 0.5rem;
+  padding-bottom: calc(2rem + env(safe-area-inset-bottom));
+}
+
+.marchio__icona {
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 1.1rem;
+  box-shadow: var(--ombra-2);
+  margin-bottom: 0.75rem;
 }
 
 .marchio {
   margin: 0;
   font-size: 2rem;
+  font-weight: 750;
+  letter-spacing: -0.03em;
 }
 
 .sottotitolo {
-  margin: 0 0 1rem;
+  margin: 0 0 1.25rem;
   color: var(--muted);
+  font-size: 1.02rem;
+}
+
+/* Il modulo e' un pannello solo nell'accesso, dove sta da solo al centro
+   dello schermo: li' il riquadro dice «qui si scrive». Nell'account i moduli
+   stanno gia' dentro una `.sezione`, che e' lei il pannello. */
+.modulo {
+  width: 100%;
+  max-width: 24rem;
+}
+
+.accesso .modulo {
+  padding: 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 1.25rem;
+  background: var(--card);
+  box-shadow: var(--ombra-2);
+}
+
+.accesso .modulo .bottone--primario {
+  margin-top: 0.25rem;
 }
 
 /* --------------------------------------------------------------------------
@@ -192,45 +411,110 @@ button:focus-visible {
    -------------------------------------------------------------------------- */
 
 .registrazione {
-  gap: 1.5rem;
+  gap: 1.75rem;
 }
 
 .contatore {
   margin: 0;
-  font-size: 2.5rem;
+  font-size: 3.25rem;
+  font-weight: 300;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
+  transition: color var(--veloce);
+}
+
+/* A microfono acceso il contatore diventa del colore del testo: e' l'unica
+   cosa che si muove sulla schermata, e deve dire «sta andando» anche a chi
+   non guarda il pulsante. Chi non conosce `:has()` lo vede grigio, e perde
+   solo questo. */
+.registrazione:has(.pulsantone--attivo) .contatore {
+  color: var(--text);
 }
 
 .pulsantone {
-  width: 11rem;
-  height: 11rem;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 10rem;
+  height: 10rem;
   border-radius: 50%;
-  border: 4px solid var(--accent);
-  background: rgba(229, 72, 77, 0.12);
-  color: var(--accent);
-  font-size: 3.5rem;
-  cursor: pointer;
-}
-
-.pulsantone--attivo {
+  border: none;
+  /* Due righe e non una: senza `color-mix()` l'intera dichiarazione del
+     gradiente e' invalida e verrebbe scartata, e il pulsante piu' importante
+     dell'app resterebbe senza fondo. La prima e' la rete. */
   background: var(--accent);
-  color: #fff;
-  animation: respiro 2s ease-in-out infinite;
+  background: radial-gradient(
+    circle at 30% 25%,
+    color-mix(in srgb, var(--accent) 78%, white),
+    var(--accent) 60%,
+    color-mix(in srgb, var(--accent) 82%, black)
+  );
+  color: var(--su-accent);
+  box-shadow: var(--ombra-accent);
+  cursor: pointer;
+  transition:
+    transform var(--veloce),
+    box-shadow var(--veloce);
 }
 
-/* Un battito lento dice «sto registrando» senza occupare spazio. Chi ha
-   chiesto meno animazioni non lo vede: la registrazione resta evidente dal
-   colore pieno e dal contatore che sale. */
-@keyframes respiro {
-  50% {
-    box-shadow: 0 0 0 1.25rem rgba(229, 72, 77, 0.15);
+.pulsantone .icona {
+  width: 3.75rem;
+  height: 3.75rem;
+}
+
+.pulsantone:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.pulsantone:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Un anello tenue attorno al pulsante fermo: lo fa sembrare un oggetto da
+   premere e non un cerchio disegnato. */
+.pulsantone::before {
+  content: "";
+  position: absolute;
+  inset: -0.75rem;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  pointer-events: none;
+}
+
+.pulsantone--attivo .icona {
+  width: 3rem;
+  height: 3rem;
+}
+
+/* Un battito lento dice «sto registrando» senza occupare spazio: due onde che
+   partono dal bordo e si allargano. Chi ha chiesto meno animazioni non lo
+   vede: la registrazione resta evidente dal quadrato al posto del microfono e
+   dal contatore che sale. */
+.pulsantone--attivo::before,
+.pulsantone--attivo::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  animation: onda 2s ease-out infinite;
+  pointer-events: none;
+}
+
+.pulsantone--attivo::after {
+  animation-delay: 1s;
+}
+
+@keyframes onda {
+  from {
+    transform: scale(1);
+    opacity: 0.6;
   }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pulsantone--attivo {
-    animation: none;
+  to {
+    transform: scale(1.45);
+    opacity: 0;
   }
 }
 
@@ -238,6 +522,7 @@ button:focus-visible {
   margin: 0;
   color: var(--muted);
   max-width: 18rem;
+  font-size: 1.02rem;
 }
 
 /* --------------------------------------------------------------------------
@@ -248,33 +533,77 @@ button:focus-visible {
   display: flex;
   gap: 0.4rem;
   overflow-x: auto;
-  margin-bottom: 1rem;
-  padding-bottom: 0.25rem;
+  margin: 0 -1rem 0.9rem;
+  padding: 0 1rem 0.25rem;
+  scrollbar-width: none;
+}
+
+.filtri::-webkit-scrollbar {
+  display: none;
 }
 
 .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   min-height: 2.25rem;
-  padding: 0 0.9rem;
+  padding: 0 0.95rem;
   border-radius: 999px;
-  border: 1px solid var(--line);
-  background: transparent;
+  border: 1px solid var(--line-forte);
+  background: var(--card);
   color: var(--muted);
   font: inherit;
+  font-size: 0.9rem;
+  font-weight: 550;
   white-space: nowrap;
   cursor: pointer;
+  transition:
+    background-color var(--veloce),
+    color var(--veloce),
+    border-color var(--veloce);
 }
 
 .chip--attivo {
-  background: var(--card);
+  background: var(--text);
   border-color: var(--text);
+  color: var(--bg);
+}
+
+/* Gli ambiti sono quattro, fissi e si escludono a vicenda: e' un selettore, e
+   si disegna come quelli di sistema — una rotaia con dentro un cursore — invece
+   che come una fila di etichette. Cosi' si distingue a colpo d'occhio dalla
+   riga delle categorie sotto, che e' lunga, cambia, e si scorre. */
+.filtri--ambito {
+  margin: 0 0 0.75rem;
+  padding: 0.2rem;
+  gap: 0.2rem;
+  border-radius: var(--raggio-s);
+  background: var(--card-2);
+  overflow: visible;
+}
+
+.filtri--ambito .chip {
+  flex: 1;
+  justify-content: center;
+  min-height: 2.25rem;
+  padding: 0 0.4rem;
+  border: none;
+  border-radius: calc(var(--raggio-s) - 0.2rem);
+  background: transparent;
+}
+
+.filtri--ambito .chip--attivo {
+  background: var(--card);
   color: var(--text);
+  box-shadow: var(--ombra-1);
 }
 
 /* Il numero dentro una chip di categoria. Piu' piccolo e piu' smorto del nome:
    la cosa da leggere e' «Casa», il «7» serve solo a decidere fra due chip. */
 .chip__conteggio {
   font-size: 0.8em;
-  opacity: 0.7;
+  opacity: 0.65;
+  font-variant-numeric: tabular-nums;
 }
 
 /* La chip che non si preme. Stesso disegno delle altre, ma senza il
@@ -286,8 +615,12 @@ button:focus-visible {
    la scheda. */
 .chip--fermo {
   min-height: auto;
-  padding: 0.12rem 0.6rem;
+  padding: 0.15rem 0.6rem;
   font-size: 0.75rem;
+  font-weight: 550;
+  border-color: transparent;
+  background: var(--card-2);
+  color: var(--muted);
   cursor: inherit;
 }
 
@@ -297,34 +630,55 @@ button:focus-visible {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 0.65rem;
 }
 
 .riga {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.4rem;
   width: 100%;
-  padding: 0.9rem 1rem;
+  padding: 1rem 1.1rem;
   border: 1px solid var(--line);
-  border-radius: 0.75rem;
+  border-radius: var(--raggio);
   background: var(--card);
+  box-shadow: var(--ombra-1);
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition:
+    border-color var(--veloce),
+    transform var(--veloce),
+    box-shadow var(--veloce);
+}
+
+.riga:active {
+  transform: scale(0.99);
+}
+
+@media (hover: hover) {
+  .riga:hover {
+    border-color: var(--line-forte);
+    box-shadow: var(--ombra-2);
+  }
 }
 
 .riga__titolo {
   font-size: 1.05rem;
-  font-weight: 600;
+  font-weight: 650;
   line-height: 1.3;
+  letter-spacing: -0.01em;
 }
 
 .riga__trigger,
 .riga__meta {
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.86rem;
+}
+
+.riga__meta {
+  font-variant-numeric: tabular-nums;
 }
 
 .riga__perche {
@@ -336,6 +690,7 @@ button:focus-visible {
 .riga__sensibile {
   align-self: flex-start;
   font-size: 0.72rem;
+  font-weight: 600;
   color: var(--warn);
 }
 
@@ -352,14 +707,20 @@ button:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 0.3rem;
+  margin-top: 0.1rem;
 }
 
+/* Il badge porta il significato con la parola e con il bordo; il fondo tenue
+   c'e' per farlo sembrare un'etichetta e non un pulsante, ed e' la sola parte
+   che sparisce dove `color-mix()` non c'e'. */
 .badge {
-  padding: 0.12rem 0.5rem;
+  align-self: flex-start;
+  padding: 0.12rem 0.55rem;
   border-radius: 999px;
   font-size: 0.72rem;
-  font-weight: 600;
-  border: 1px solid currentcolor;
+  font-weight: 650;
+  border: 1px solid color-mix(in srgb, currentcolor 35%, transparent);
+  background: color-mix(in srgb, currentcolor 10%, transparent);
 }
 
 .badge--revisione {
@@ -380,8 +741,37 @@ button:focus-visible {
 }
 
 .vuoto {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   text-align: center;
-  padding: 3rem 1rem;
+  padding: 3rem 1.5rem;
+}
+
+.vuoto p {
+  margin: 0.25rem 0;
+  max-width: 20rem;
+}
+
+.vuoto__icona {
+  display: grid;
+  place-items: center;
+  width: 4rem;
+  height: 4rem;
+  margin-bottom: 1rem;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-testo);
+}
+
+.vuoto__icona .icona {
+  width: 1.9rem;
+  height: 1.9rem;
+}
+
+.vuoto__titolo {
+  font-weight: 650;
+  font-size: 1.05rem;
 }
 
 /* --------------------------------------------------------------------------
@@ -389,15 +779,10 @@ button:focus-visible {
    -------------------------------------------------------------------------- */
 
 .sospese {
-  margin-bottom: 1.25rem;
+  margin-bottom: 1.5rem;
 }
 
 .sospese h2 {
-  font-size: 0.85rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
   margin: 0 0 0.6rem;
 }
 
@@ -405,36 +790,48 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-  padding: 0.9rem 1rem;
+  padding: 0.95rem 1.1rem;
   border: 1px solid var(--line);
   /* Il bordo sinistro colorato distingue le quattro situazioni senza aggiungere
      una parola: il testo dice gia' cosa succede, il colore dice quanto e'
-     grave a chi sta scorrendo. */
-  border-left-width: 3px;
-  border-radius: 0.75rem;
+     grave a chi sta scorrendo. E' un'ombra interna e non un `border-left`,
+     perche' un bordo spesso su un angolo arrotondato si piega e sembra un
+     errore di disegno. */
+  box-shadow:
+    inset 3px 0 0 var(--muted),
+    var(--ombra-1);
+  border-radius: var(--raggio);
   background: var(--card);
 }
 
 .sospesa--attesa,
 .sospesa--lavorazione {
-  border-left-color: var(--muted);
+  box-shadow:
+    inset 3px 0 0 var(--muted),
+    var(--ombra-1);
 }
 
 .sospesa--ritento {
-  border-left-color: var(--warn);
+  box-shadow:
+    inset 3px 0 0 var(--warn),
+    var(--ombra-1);
 }
 
 .sospesa--ferma {
-  border-left-color: var(--bad);
+  box-shadow:
+    inset 3px 0 0 var(--bad),
+    var(--ombra-1);
 }
 
 .sospesa--duplicato {
-  border-left-color: var(--warn);
+  box-shadow:
+    inset 3px 0 0 var(--warn),
+    var(--ombra-1);
 }
 
 .sospesa__stato {
   margin: 0;
-  font-weight: 600;
+  font-weight: 650;
 }
 
 .sospesa__dettaglio {
@@ -458,6 +855,7 @@ button:focus-visible {
 
 .sospesa__azioni {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
   align-items: center;
 }
@@ -468,22 +866,16 @@ button:focus-visible {
   padding-left: 0;
 }
 
-/* Rosso e piatto, non rosso e pieno: e' l'unico gesto irreversibile
-   dell'applicazione, ma sta accanto a «Riprova adesso» in una sezione che si
-   scorre di fretta, e un blocco pieno di colore attirerebbe il pollice invece
-   di avvertirlo. */
-.bottone--pericolo {
-  background: transparent;
-  border-color: transparent;
-  color: var(--bad);
-}
-
 .paginazione {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
   margin-top: 1rem;
+}
+
+.paginazione .muto {
+  font-variant-numeric: tabular-nums;
 }
 
 /* --------------------------------------------------------------------------
@@ -506,10 +898,11 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-  padding: 0.9rem 1rem;
+  padding: 0.95rem 1.1rem;
   border: 1px solid var(--line);
-  border-radius: 0.75rem;
+  border-radius: var(--raggio);
   background: var(--card);
+  box-shadow: var(--ombra-1);
 }
 
 /* Un bottone che non sembra un bottone: e' il titolo, e apre la scheda. Gli
@@ -520,7 +913,7 @@ button:focus-visible {
   border: none;
   padding: 0;
   font: inherit;
-  font-weight: 600;
+  font-weight: 650;
   color: inherit;
   text-align: left;
   cursor: pointer;
@@ -528,6 +921,7 @@ button:focus-visible {
 
 .cestinata__azioni {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
   align-items: center;
   margin-top: 0.25rem;
@@ -553,12 +947,15 @@ button:focus-visible {
 
 .svuota__azioni {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
   align-items: center;
 }
 
 .ricerca {
   flex: 1;
+  border-radius: 999px;
+  padding-left: 1.1rem;
 }
 
 /* --------------------------------------------------------------------------
@@ -566,9 +963,11 @@ button:focus-visible {
    -------------------------------------------------------------------------- */
 
 .scheda__titolo {
-  margin: 0 0 0.5rem;
-  font-size: 1.5rem;
-  line-height: 1.25;
+  margin: 0 0 0.6rem;
+  font-size: 1.75rem;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
 }
 
 .scheda__trigger,
@@ -580,11 +979,34 @@ button:focus-visible {
 
 .scheda__sommario {
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.86rem;
+  font-variant-numeric: tabular-nums;
 }
 
+/* Ogni sezione e' un pannello, come i gruppi delle impostazioni di sistema: su
+   una scheda lunga il bordo dice dove finiscono i passi e cominciano le
+   trappole meglio di quanto possa fare un titolo in grigio. Le superfici che
+   stanno dentro un pannello scendono di un gradino (`--card-2`), o sparirebbero
+   sul fondo che hanno sotto. */
 .sezione {
-  margin: 1.75rem 0;
+  margin: 1rem 0;
+  padding: 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--raggio);
+  background: var(--card);
+  box-shadow: var(--ombra-1);
+}
+
+.sezione > :last-child {
+  margin-bottom: 0;
+}
+
+.sezione .trappola,
+.sezione .origine__vocale,
+.sezione .esito,
+.sezione .proposta {
+  background: var(--card-2);
+  border-color: transparent;
 }
 
 /* L'ultima sezione dell'account: quella che cancella il conto.
@@ -595,10 +1017,13 @@ button:focus-visible {
  * staccarla dalle tre che la precedono, perche' si scorre con il pollice e
  * quattro sezioni identiche una sotto l'altra si premono una per l'altra. */
 .sezione--pericolo {
-  margin-top: 3rem;
-  padding: 1rem;
-  border: 1px solid var(--bad);
-  border-radius: 0.6rem;
+  margin-top: 2.5rem;
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  box-shadow: none;
+}
+
+.sezione--pericolo h2 {
+  color: var(--bad);
 }
 
 /* Il pulsante distruttivo. Fondo trasparente e bordo rosso e non il contrario:
@@ -606,10 +1031,28 @@ button:focus-visible {
    si preme per andare avanti, e i due finirebbero per assomigliarsi proprio
    nella schermata in cui stanno insieme. */
 .bottone--pericolo {
-  border-color: var(--bad);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--bad) 55%, transparent);
   color: var(--bad);
-  font-weight: 600;
+  font-weight: 650;
   width: 100%;
+}
+
+@media (hover: hover) {
+  .bottone--pericolo:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--bad) 8%, transparent);
+  }
+}
+
+/* Rosso e piatto, non rosso e bordato: accanto a «Riprova adesso» in una
+   sezione che si scorre di fretta, un riquadro colorato attirerebbe il pollice
+   invece di avvertirlo. Qui basta la parola, in rosso. */
+.sospesa__azioni .bottone--pericolo,
+.cestinata__azioni .bottone--pericolo,
+.svuota__azioni .bottone--pericolo,
+.origine__azioni .bottone--pericolo {
+  border-color: transparent;
+  width: auto;
 }
 
 /* I dispositivi collegati. Senza pallino: non e' un elenco da leggere in ordine,
@@ -620,19 +1063,25 @@ button:focus-visible {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
   font-size: 0.9rem;
 }
 
 .dispositivo {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.5rem;
+  min-height: var(--tocco);
+  border-bottom: 1px solid var(--line);
+}
+
+.dispositivo:last-child {
+  border-bottom: none;
 }
 
 /* La parola, non il colore: chi non distingue il grigio dal testo normale legge
    comunque «questo dispositivo», ed e' l'unica cosa che deve arrivare. */
 .dispositivo__questo {
+  margin-left: auto;
   color: var(--muted);
   font-size: 0.8rem;
 }
@@ -653,15 +1102,26 @@ button:focus-visible {
   padding-left: 1.1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  line-height: 1.45;
+  gap: 0.55rem;
+  line-height: 1.5;
+}
+
+.lista-puntata li::marker {
+  color: var(--muted);
 }
 
 .tipo {
-  font-size: 0.7rem;
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  margin-right: 0.2rem;
+  border-radius: 0.3rem;
+  background: var(--card-2);
+  font-size: 0.68rem;
+  font-weight: 650;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--muted);
+  vertical-align: 0.1em;
 }
 
 .lista-trappole {
@@ -674,52 +1134,63 @@ button:focus-visible {
 }
 
 .trappola {
-  padding: 0.7rem 0.85rem;
-  border-radius: 0.6rem;
-  border-left: 3px solid var(--muted);
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--raggio-s);
+  box-shadow: inset 3px 0 0 var(--muted);
   background: var(--card);
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 /* Il colore da solo non basta: una persona su dodici non distingue il rosso,
    e la parola «Ti blocca» funziona anche in bianco e nero. */
 .trappola--bloccante {
-  border-left-color: var(--bad);
+  box-shadow: inset 3px 0 0 var(--bad);
 }
 
 .trappola--fastidio {
-  border-left-color: var(--warn);
+  box-shadow: inset 3px 0 0 var(--warn);
 }
 
 .trappola__marchio {
   display: inline-block;
   margin-right: 0.5rem;
-  padding: 0.05rem 0.4rem;
+  padding: 0.05rem 0.45rem;
   border-radius: 0.3rem;
   background: var(--bad);
-  color: #fff;
+  color: var(--su-accent);
   font-size: 0.68rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  vertical-align: 0.1em;
 }
 
+/* I numeri dei passi restano `::marker` e non un contatore disegnato: con
+   `list-style: none` Safari toglie a una lista il suo ruolo, e VoiceOver
+   smetterebbe di dire «passo 3 di 7» — che in una procedura e' l'informazione
+   piu' utile di tutte. */
 .lista-passi {
   margin: 0;
-  padding-left: 1.3rem;
+  padding-left: 1.5rem;
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
-  line-height: 1.45;
+  gap: 1rem;
+  line-height: 1.5;
+}
+
+.lista-passi li {
+  padding-left: 0.25rem;
 }
 
 .lista-passi li::marker {
-  color: var(--muted);
-  font-weight: 700;
+  color: var(--accent-testo);
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
 }
 
 .passo__azione {
   display: block;
+  font-weight: 550;
 }
 
 .passo__dettaglio {
@@ -735,35 +1206,40 @@ button:focus-visible {
 
 .avviso {
   margin: 0.75rem 0;
-  padding: 0.7rem 0.85rem;
-  border-radius: 0.6rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--raggio-s);
   border: 1px solid var(--line);
   background: var(--card);
   font-size: 0.9rem;
-  line-height: 1.4;
+  line-height: 1.45;
+  text-align: left;
 }
 
 .avviso--errore {
-  border-color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  background: color-mix(in srgb, var(--bad) 8%, var(--card));
   color: var(--bad);
 }
 
 /* Il verde non porta l'informazione: la porta la parola «cambiata» dentro il
    riquadro, che si legge anche senza distinguere il verde dal rosso. */
 .avviso--fatto {
-  border-color: var(--good);
+  border-color: color-mix(in srgb, var(--good) 45%, transparent);
+  background: color-mix(in srgb, var(--good) 8%, var(--card));
   color: var(--good);
 }
 
 .avviso--obsoleta,
 .avviso--spazio,
 .avviso--degradata {
-  border-color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 8%, var(--card));
   color: var(--warn);
 }
 
 .avviso--sensibile {
-  border-color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 6%, var(--card));
 }
 
 .avviso--sensibile p {
@@ -788,28 +1264,39 @@ button:focus-visible {
 
 .esito {
   min-height: 3.25rem;
-  border-radius: 0.7rem;
-  border: 1px solid var(--line);
+  border-radius: var(--raggio-s);
+  border: 1px solid var(--line-forte);
   background: var(--card);
   color: var(--text);
   font: inherit;
   font-size: 1rem;
   font-weight: 600;
   cursor: pointer;
+  transition:
+    border-color var(--veloce),
+    background-color var(--veloce),
+    transform var(--veloce);
+}
+
+.esito:active {
+  transform: scale(0.99);
 }
 
 .esito--ok.esito--scelto {
   border-color: var(--good);
+  background: color-mix(in srgb, var(--good) 10%, var(--card));
   color: var(--good);
 }
 
 .esito--cambiata.esito--scelto {
   border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, var(--card));
   color: var(--warn);
 }
 
 .esito--fallita.esito--scelto {
   border-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 10%, var(--card));
   color: var(--bad);
 }
 
@@ -834,6 +1321,9 @@ button:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  font-size: 0.82rem;
+  padding: 0.2rem 0.35rem 0.2rem 0.7rem;
+  color: var(--text);
 }
 
 /* Piccolo, ma non troppo: e' l'unico gesto distruttivo di questo riquadro, e a
@@ -867,6 +1357,12 @@ button:focus-visible {
 
 .categorie__aggiungi .campo {
   flex: 1;
+  margin-bottom: 0;
+}
+
+.categorie__aggiungi .bottone--primario {
+  width: auto;
+  min-height: var(--tocco);
 }
 
 /* --------------------------------------------------------------------------
@@ -875,10 +1371,14 @@ button:focus-visible {
 
 .origine__vocale {
   border: 1px solid var(--line);
-  border-radius: 0.6rem;
+  border-radius: var(--raggio-s);
   background: var(--card);
-  padding: 0.7rem 0.85rem;
+  padding: 0.25rem 0.9rem 0.75rem;
   margin-bottom: 0.6rem;
+}
+
+.origine__vocale:last-child {
+  margin-bottom: 0;
 }
 
 .origine__vocale summary {
@@ -887,6 +1387,7 @@ button:focus-visible {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  font-weight: 550;
 }
 
 /* In colonna, non in riga come le azioni delle sospese: qui le due scelte
@@ -907,6 +1408,7 @@ button:focus-visible {
 .origine__azioni .bottone {
   padding-left: 0;
   text-align: left;
+  justify-content: flex-start;
 }
 
 .player {
@@ -918,7 +1420,7 @@ button:focus-visible {
   margin: 0.5rem 0 0;
   color: var(--muted);
   font-size: 0.9rem;
-  line-height: 1.55;
+  line-height: 1.6;
   white-space: pre-wrap;
 }
 
@@ -954,9 +1456,9 @@ button:focus-visible {
   display: flex;
   gap: 0.75rem;
   align-items: flex-start;
-  padding: 0.75rem;
+  padding: 0.85rem;
   border: 1px solid var(--line);
-  border-radius: 0.6rem;
+  border-radius: var(--raggio-s);
   background: var(--card);
   cursor: pointer;
 }
@@ -986,7 +1488,7 @@ button:focus-visible {
  * decidere: e' li' che si capisce se «Rossi» era una persona o un'insegna.
  */
 .proposta--assistita {
-  border-left: 3px solid var(--warn);
+  box-shadow: inset 3px 0 0 var(--warn);
 }
 
 .proposta__dove {
@@ -1004,7 +1506,7 @@ button:focus-visible {
 }
 
 .proposta__contesto mark {
-  background: rgba(210, 153, 34, 0.22);
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
   color: var(--warn);
   padding: 0 0.15rem;
   border-radius: 0.2rem;
@@ -1048,52 +1550,97 @@ button:focus-visible {
   right: 0;
   bottom: 0;
   height: calc(var(--barra-h) + env(safe-area-inset-bottom));
-  padding-bottom: env(safe-area-inset-bottom);
+  padding: 0 max(1rem, calc((100vw - 40rem) / 2)) env(safe-area-inset-bottom);
   display: flex;
   align-items: center;
   justify-content: space-around;
-  background: rgba(16, 20, 24, 0.92);
-  backdrop-filter: blur(8px);
+  background: var(--barra-fondo);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+  backdrop-filter: saturate(180%) blur(16px);
   border-top: 1px solid var(--line);
 }
 
+/* Icona sopra e parola sotto, come le barre di sistema: la parola resta
+   perche' due icone da sole si imparano, ma una persona che apre l'app la prima
+   volta non deve imparare niente. */
 .barra__voce {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
   min-height: var(--tocco);
   border: none;
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 0.85rem;
+  font-size: 0.72rem;
+  font-weight: 550;
   cursor: pointer;
+  transition: color var(--veloce);
+}
+
+.barra__voce .icona {
+  width: 1.5rem;
+  height: 1.5rem;
 }
 
 .barra__voce--attiva {
-  color: var(--text);
-  font-weight: 600;
+  color: var(--accent-testo);
+  font-weight: 650;
 }
 
+/* Sollevato sopra la barra e con un anello del colore del fondo: e' il gesto
+   per cui l'app esiste, e deve sembrare l'unica cosa da premere anche a chi
+   guarda lo schermo con la coda dell'occhio. */
 .barra__registra {
-  width: 3.5rem;
-  height: 3.5rem;
+  display: grid;
+  place-items: center;
+  width: 4rem;
+  height: 4rem;
+  margin-top: -1.75rem;
   border-radius: 50%;
-  border: none;
+  border: 4px solid var(--bg);
   background: var(--accent);
-  color: #fff;
-  font-size: 1.5rem;
+  color: var(--su-accent);
+  box-shadow: var(--ombra-accent);
   cursor: pointer;
   flex: 0 0 auto;
+  transition: transform var(--veloce);
+}
+
+.barra__registra .icona {
+  width: 1.7rem;
+  height: 1.7rem;
+}
+
+.barra__registra:active {
+  transform: scale(0.95);
 }
 
 /* Sopra la barra e non dentro: sono avvisi di stato, non voci di navigazione,
    e non devono rubare il posto a un pulsante. In un unico contenitore perche'
    due `position: fixed` alla stessa altezza si coprirebbero a vicenda, e una
-   registrazione non salvata mentre la coda si carica e' uno stato normale. */
+   registrazione non salvata mentre la coda si carica e' uno stato normale.
+   Staccati dai bordi e con un'ombra: galleggiano sopra la pagina, e devono
+   sembrare una cosa che passa e non un pezzo della schermata. */
 .avvisi-bassi {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: calc(var(--barra-h) + env(safe-area-inset-bottom));
+  bottom: calc(var(--barra-h) + env(safe-area-inset-bottom) + 0.6rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 0 0.75rem;
+  pointer-events: none;
+}
+
+.avvisi-bassi > * {
+  pointer-events: auto;
 }
 
 .coda {
@@ -1101,43 +1648,55 @@ button:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.4rem 1rem;
+  min-height: var(--tocco);
+  padding: 0.3rem 0.4rem 0.3rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--raggio);
   background: var(--card);
-  border-top: 1px solid var(--line);
-  font-size: 0.82rem;
+  box-shadow: var(--ombra-2);
+  font-size: 0.85rem;
   color: var(--muted);
 }
 
 /* Piu' rumoroso della coda, e apposta: la coda si sistema da sola, questo no.
    E' l'unico punto dell'app in cui chiudere la scheda perde un dato. */
 .non-salvata {
-  padding: 0.7rem 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--bad) 55%, transparent);
+  border-radius: var(--raggio);
   background: var(--card);
-  border-top: 2px solid var(--bad);
+  box-shadow:
+    inset 3px 0 0 var(--bad),
+    var(--ombra-2);
 }
 
 .non-salvata__motivo {
   margin: 0;
-  font-size: 0.9rem;
-  font-weight: 600;
+  font-size: 0.92rem;
+  font-weight: 650;
   color: var(--bad);
 }
 
 .non-salvata__quando {
   margin: 0.25rem 0 0;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
 }
 
 .non-salvata__azioni {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  margin-top: 0.6rem;
+  margin-top: 0.7rem;
 }
 
 /* Il collegamento alla privacy, in fondo all'accesso e al conto. Del colore del
    testo tenue e sottolineato: si deve trovare, non chiamare. Il blu di default
    del browser su questo fondo si legge male. */
+.nota-privacy {
+  font-size: 0.82rem;
+}
+
 .nota-privacy a {
   color: inherit;
+  text-underline-offset: 0.2em;
 }

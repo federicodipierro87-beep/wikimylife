@@ -252,8 +252,8 @@ rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
 deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
-**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1409 test**
-unit + web su 53 file, **405** d'integrazione su 14 file, albero pulito.
+**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1430 test**
+unit + web su 54 file, **405** d'integrazione su 14 file, albero pulito.
 
 Il giro in corso è il guscio nativo: un'app vera per iOS e Android, con dentro il
 web già costruito, perché il cartello del microfono lo chieda il sistema una

@@ -1192,3 +1192,37 @@ senza `access-control-allow-origin`, perché il deploy con la variabile nuova er
 ancora in `BUILDING`. Dopo il `SUCCESS` le tre origini passano e una estranea no.
 È la regola «rileggere ciò che si è impostato», con un gradino in più: si rilegge
 dal servizio che lo usa, non dal pannello che lo conserva.
+
+## Giro: l'aspetto, per metterlo sul mercato
+
+La richiesta: renderla «vendibile», semplice e bella ma professionale. Una sola
+domanda all'utente, il tema: ha scelto **segue il telefono**.
+
+### Cosa è cambiato
+
+`styles.css` riscritto sulle stesse classi (i test ne cercano una ventina), con
+due tavolozze in variabili e nessun esadecimale fuori da lì. Icone SVG a mano in
+`Icona.tsx`, sempre `aria-hidden`. Barra in basso con icona e parola, pulsante
+di registrazione sollevato; ambiti come selettore segmentato; sezioni a
+pannello; accesso con l'icona vera (`/icona.svg`, non un disegno rifatto).
+
+### L'alternativa scartata: `black-translucent`
+
+Con il tema chiaro scrive l'orologio della PWA in bianco su bianco. Passato a
+`default`: il rischio diventa estetico (barra chiara sul tema scuro) invece che
+di leggibilità. **Non misurato su un iPhone.**
+
+### Un inciampo dello strumento
+
+Un `cat > file` senza heredoc davanti a un `python - <<EOF` ha aspettato lo
+standard input per due minuti: la modifica non è mai partita. Rifatta con lo
+strumento di modifica.
+
+### Le mutazioni
+
+Nove: **7 cadute, 2 controlli vivi**; una saltata al primo giro (il testo
+`focusable="false"` stava anche nel commento), corretta e rifatta da sola.
+
+### I numeri
+
+**1430** test unit + web su 54 file. CSS da 2 a 5 kB compressi.

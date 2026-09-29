@@ -1,6 +1,7 @@
 import { PROCEDURE_PAGE_SIZE, type ProcedureList, type TagList } from "@wikimylife/shared";
 import { useCallback, useState } from "react";
 import { useApi } from "../api";
+import { Icona } from "../Icona";
 import { navigate } from "../router";
 import { useAsync } from "../useAsync";
 import { PendingRecordings } from "./PendingRecordings";
@@ -86,14 +87,20 @@ export function ListScreen(): React.JSX.Element {
     <main className="schermata">
       <header className="testata">
         <h1>Le tue procedure</h1>
+        {/* Solo l'icona, e il nome nell'`aria-label`: la parola «Cerca» c'e'
+            gia' scritta sotto, nella barra bassa, e due volte la stessa parola
+            sulla stessa schermata fanno sembrare la testata un secondo menu. La
+            lente da sola e' uno dei pochi disegni che nessuno deve imparare. */}
         <button
           type="button"
-          className="bottone bottone--piatto"
+          className="bottone bottone--piatto bottone--icona"
+          aria-label="Cerca"
+          title="Cerca"
           onClick={() => {
             navigate({ name: "cerca" });
           }}
         >
-          Cerca
+          <Icona nome="cerca" />
         </button>
         {/* L'unica porta per l'account, e sta qui e non nella barra bassa: la
             barra ha tre voci e il tasto rosso al centro, che e' grande perche'
@@ -101,16 +108,18 @@ export function ListScreen(): React.JSX.Element {
             lo avrebbe stretto per una schermata che si apre due volte l'anno. */}
         <button
           type="button"
-          className="bottone bottone--piatto"
+          className="bottone bottone--piatto bottone--icona"
+          aria-label="Account"
+          title="Account"
           onClick={() => {
             navigate({ name: "account" });
           }}
         >
-          Account
+          <Icona nome="account" />
         </button>
       </header>
 
-      <div className="filtri" role="tablist" aria-label="Ambito">
+      <div className="filtri filtri--ambito" role="tablist" aria-label="Ambito">
         {AMBITI.map((a) => (
           <button
             key={a.etichetta}
@@ -202,7 +211,10 @@ export function ListScreen(): React.JSX.Element {
 
       {stato.kind === "pronto" && stato.dato.items.length === 0 && (
         <div className="vuoto">
-          <p>Qui non c&apos;e&apos; ancora niente.</p>
+          <span className="vuoto__icona">
+            <Icona nome="microfono" />
+          </span>
+          <p className="vuoto__titolo">Qui non c&apos;e&apos; ancora niente.</p>
           <p className="muto">
             Premi il pulsante rosso e racconta una procedura che hai appena
             finito di fare. Al resto pensa l&apos;app.
@@ -242,6 +254,7 @@ export function ListScreen(): React.JSX.Element {
             navigate({ name: "cestino" });
           }}
         >
+          <Icona nome="cestino" />
           Cestino
         </button>
       </footer>

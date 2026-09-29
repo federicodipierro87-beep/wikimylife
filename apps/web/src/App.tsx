@@ -1,6 +1,7 @@
 import type { ApiClient } from "@wikimylife/shared";
 import { ApiProvider } from "./api";
 import { formatDurataAudio, formatQuando } from "./format";
+import { Icona } from "./Icona";
 import { CaptureProvider, useCapture } from "./recording/CaptureProvider";
 import { navigate, useRoute } from "./router";
 import type { Route } from "./routes";
@@ -93,8 +94,13 @@ function Schermate(): React.JSX.Element {
  * L'unica eccezione e' l'avviso di registrazione non salvata, che segue le
  * stesse coordinate ma non e' altrettanto discreto: e' l'unico stato dell'app
  * in cui chiudere la scheda perde qualcosa per sempre.
+ *
+ * La voce della schermata aperta porta `aria-current="page"` oltre al colore:
+ * il colore lo vede chi guarda, l'attributo lo sente chi ascolta, e senza di
+ * lui un lettore di schermo leggerebbe due voci identiche senza dire dove si
+ * e'. Esportata per lo stesso motivo di `NonSalvata`: montarla da sola.
  */
-function BarraBassa(): React.JSX.Element {
+export function BarraBassa(): React.JSX.Element {
   const capture = useCapture();
   const route = useRoute();
 
@@ -131,11 +137,13 @@ function BarraBassa(): React.JSX.Element {
         <button
           type="button"
           className={`barra__voce ${route.name === "lista" ? "barra__voce--attiva" : ""}`}
+          aria-current={route.name === "lista" ? "page" : undefined}
           onClick={() => {
             navigate({ name: "lista" });
           }}
         >
-          Procedure
+          <Icona nome="elenco" />
+          <span>Procedure</span>
         </button>
 
         <button
@@ -146,17 +154,19 @@ function BarraBassa(): React.JSX.Element {
           }}
           aria-label="Registra"
         >
-          <span aria-hidden="true">●</span>
+          <Icona nome="microfono" />
         </button>
 
         <button
           type="button"
           className={`barra__voce ${route.name === "cerca" ? "barra__voce--attiva" : ""}`}
+          aria-current={route.name === "cerca" ? "page" : undefined}
           onClick={() => {
             navigate({ name: "cerca" });
           }}
         >
-          Cerca
+          <Icona nome="cerca" />
+          <span>Cerca</span>
         </button>
       </nav>
     </>

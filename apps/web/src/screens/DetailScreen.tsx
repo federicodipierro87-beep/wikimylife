@@ -20,6 +20,7 @@ import { goBack, navigate } from "../router";
 import { messaggioDi } from "../session";
 import { useAsync } from "../useAsync";
 import { AudioPlayer } from "./AudioPlayer";
+import { Icona } from "../Icona";
 
 /**
  * La scheda.
@@ -65,7 +66,8 @@ export function DetailScreen({ id }: { id: string }): React.JSX.Element {
     return (
       <main className="schermata">
         <button type="button" className="bottone bottone--piatto" onClick={goBack}>
-          ‹ Indietro
+          <Icona nome="indietro" />
+          Indietro
         </button>
         <p className="avviso avviso--errore" role="alert">
           {stato.messaggio}
@@ -91,11 +93,11 @@ function Scheda({
       <header className="testata">
         <button
           type="button"
-          className="bottone bottone--piatto"
+          className="bottone bottone--piatto bottone--icona"
           onClick={goBack}
           aria-label="Torna indietro"
         >
-          ‹
+          <Icona nome="indietro" />
         </button>
       </header>
 

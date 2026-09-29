@@ -31,7 +31,13 @@ export function LoginScreen(): React.JSX.Element {
   }
 
   return (
-    <main className="schermata schermata--centrata">
+    <main className="schermata schermata--centrata accesso">
+      {/* Lo stesso file dell'icona sulla schermata Home, e non un disegno
+          rifatto qui: chi ha appena toccato l'icona deve ritrovarla, e un
+          secondo disegno si sarebbe allontanato dal primo alla prima modifica
+          di `scripts/icone.ts`. `alt` vuoto perche' il nome lo dice gia' il
+          titolo subito sotto, e letto due volte e' rumore. */}
+      <img className="marchio__icona" src="/icona.svg" alt="" width="72" height="72" />
       <h1 className="marchio">WikiMyLife</h1>
       <p className="sottotitolo">Racconta una volta. Ritrovalo per sempre.</p>
 

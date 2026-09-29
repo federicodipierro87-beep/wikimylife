@@ -5,6 +5,7 @@ import { revisioneDa } from "../format";
 import { goBack, navigate } from "../router";
 import { messaggioDi } from "../session";
 import { useAsync } from "../useAsync";
+import { Icona } from "../Icona";
 
 /**
  * La revisione di una scheda `DA_RIVEDERE`.
@@ -123,11 +124,11 @@ function Revisione({ dati }: { dati: Dati }): React.JSX.Element {
       <header className="testata">
         <button
           type="button"
-          className="bottone bottone--piatto"
+          className="bottone bottone--piatto bottone--icona"
           onClick={goBack}
           aria-label="Torna indietro"
         >
-          ‹
+          <Icona nome="indietro" />
         </button>
       </header>
 

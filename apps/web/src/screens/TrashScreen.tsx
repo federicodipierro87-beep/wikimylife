@@ -11,6 +11,7 @@ import { formatQuando } from "../format";
 import { goBack, navigate } from "../router";
 import { messaggioDi } from "../session";
 import { useAsync } from "../useAsync";
+import { Icona } from "../Icona";
 
 /**
  * Il cestino, e l'unico posto da cui si svuota.
@@ -66,11 +67,11 @@ export function TrashScreen(): React.JSX.Element {
       <header className="testata">
         <button
           type="button"
-          className="bottone bottone--piatto"
+          className="bottone bottone--piatto bottone--icona"
           onClick={goBack}
           aria-label="Torna indietro"
         >
-          ‹
+          <Icona nome="indietro" />
         </button>
         <h1>Cestino</h1>
       </header>

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { formatDurataAudio } from "../format";
+import { Icona } from "../Icona";
 import { useCapture } from "../recording/CaptureProvider";
 import { avvisoSpazio } from "../recording/spazio";
 import { navigate } from "../router";
@@ -69,7 +70,7 @@ export function RecordScreen(): React.JSX.Element {
         // schermo trova un pulsante senza nome nella schermata principale.
         aria-label={inCorso ? "Ferma la registrazione" : "Inizia a registrare"}
       >
-        <span aria-hidden="true">{inCorso ? "■" : "●"}</span>
+        <Icona nome={inCorso ? "stop" : "microfono"} />
       </button>
 
       <p className="istruzione">
