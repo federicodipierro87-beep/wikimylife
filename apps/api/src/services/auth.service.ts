@@ -3,6 +3,7 @@ import type {
   ChangePasswordRequest,
   DeleteAccountRequest,
   DeleteAccountResponse,
+  GoogleLoginRequest,
   LoginRequest,
   OpenSessionsResponse,
   PublicUser,
@@ -17,6 +18,7 @@ import type { AuthConfig } from "../config/env.js";
 import { AppError } from "../errors/AppError.js";
 import type { AuthRepository, UserRecord } from "./ports/AuthRepository.js";
 import type { Clock } from "./ports/Clock.js";
+import type { GoogleIdentity, GoogleIdTokenVerifier } from "./ports/GoogleIdTokenVerifier.js";
 import type { PasswordHasher } from "./ports/PasswordHasher.js";
 import type { TokenIssuer } from "./ports/TokenIssuer.js";
 
@@ -64,11 +66,42 @@ export interface AuthServiceDeps {
    * sempre, senza che niente lo colleghi piu' a niente.
    */
   readonly onOrphanedAudio?: ((info: { key: string; error: unknown }) => void) | undefined;
+  /**
+   * Chi verifica i token di Google. Assente vuol dire accesso con Google
+   * spento: la rotta risponde `GOOGLE_DISABLED`, e un token Google usato come
+   * prova d'identita' non vale niente.
+   */
+  readonly google?: GoogleIdTokenVerifier | undefined;
 }
+
+/**
+ * Quanto puo' essere vecchio un token di Google per valere come prova
+ * d'identita' al posto della password.
+ *
+ * ## Perche' serve un limite, se il token ha gia' una scadenza
+ *
+ * Perche' la scadenza di Google e' un'ora, e un'ora e' la vita di una sessione
+ * del pulsante, non di una conferma. La password si digita *adesso*; un token
+ * rimasto in memoria da cinquanta minuti dice solo che cinquanta minuti fa
+ * qualcuno era entrato in Google da quel browser. Qui si vuole la stessa cosa
+ * che vuole la password: che la persona si sia appena fatta riconoscere.
+ *
+ * ## Perche' cinque minuti
+ *
+ * Il pulsante consegna un token firmato in quel momento, quindi il tempo vero
+ * fra la firma e l'arrivo qui e' di secondi. Il margine copre due cose: un
+ * orologio del server un po' indietro rispetto a quello di Google, e chi preme
+ * il pulsante e poi resta un momento sulla conferma prima di inviare. Sotto il
+ * minuto si rischia di rifiutare conferme legittime per uno sfasamento di
+ * orologi; sopra i dieci, la prova smette di essere piu' fresca di una
+ * sessione aperta — che e' proprio cio' che non basta.
+ */
+export const REAUTH_GOOGLE_MAX_MS = 5 * 60 * 1000;
 
 export interface AuthService {
   signup(input: SignupRequest): Promise<AuthSession>;
   login(input: LoginRequest): Promise<AuthSession>;
+  loginWithGoogle(input: GoogleLoginRequest): Promise<AuthSession>;
   refresh(rawRefreshToken: string): Promise<AuthSession>;
   logout(rawRefreshToken: string): Promise<void>;
   changePassword(userId: string, input: ChangePasswordRequest): Promise<AuthSession>;
@@ -95,8 +128,13 @@ export function toPublicUser(user: UserRecord): PublicUser {
     email: user.email,
     locale: user.locale,
     createdAt: user.createdAt.toISOString(),
+    hasPassword: user.passwordHash !== null,
+    hasGoogle: user.googleSub !== null,
   };
 }
+
+/** Le due prove d'identita' che i gesti protetti accettano: una sola per volta. */
+type Prova = { readonly currentPassword: string } | { readonly googleIdToken: string };
 
 export function createAuthService(deps: AuthServiceDeps): AuthService {
   const { repo, hasher, tokens, clock, config } = deps;
@@ -118,6 +156,68 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       } catch (error: unknown) {
         deps.onOrphanedAudio?.({ key, error });
       }
+    }
+  }
+
+  /**
+   * Chiede a Google chi e' il titolare del token.
+   *
+   * Un guasto della verifica — le chiavi di Google che non si scaricano —
+   * diventa un 503 e non un 401: l'utente non ha sbagliato niente, e un 401 gli
+   * direbbe che il suo account Google non va.
+   */
+  async function identitaGoogle(idToken: string): Promise<GoogleIdentity> {
+    if (deps.google === undefined) {
+      throw AppError.googleDisabled();
+    }
+    let identita: GoogleIdentity | null;
+    try {
+      identita = await deps.google.verify(idToken);
+    } catch {
+      throw AppError.serviceUnavailable("Google non risponde, riprova fra poco");
+    }
+    if (identita === null) {
+      throw AppError.googleTokenInvalid();
+    }
+    return identita;
+  }
+
+  /**
+   * La prova che di la' dallo schermo c'e' il proprietario: la password, o un
+   * token di Google appena emesso per l'account collegato a questo conto.
+   *
+   * ## Un conto senza password
+   *
+   * Chi si e' iscritto con Google e prova con una password riceve lo stesso
+   * rifiuto di una password sbagliata, dopo la stessa verifica fittizia del
+   * login: il tempo di risposta non deve dire quali conti sono solo Google.
+   *
+   * ## Un token di un altro account Google
+   *
+   * Valido, firmato, fresco — e di qualcun altro. E' `INVALID_CREDENTIALS` e non
+   * `GOOGLE_TOKEN_INVALID`: Google ha confermato benissimo *chi*, e' il chi a
+   * non essere il titolare. Lo stesso rifiuto vale per un conto a cui Google
+   * non e' mai stato collegato.
+   */
+  async function verificaProva(user: UserRecord, prova: Prova): Promise<void> {
+    if ("currentPassword" in prova) {
+      if (user.passwordHash === null) {
+        await hasher.verify(hasher.dummyHash, prova.currentPassword);
+        throw AppError.invalidCredentials();
+      }
+      const ok = await hasher.verify(user.passwordHash, prova.currentPassword);
+      if (!ok) {
+        throw AppError.invalidCredentials();
+      }
+      return;
+    }
+
+    const identita = await identitaGoogle(prova.googleIdToken);
+    if (user.googleSub === null || identita.sub !== user.googleSub) {
+      throw AppError.invalidCredentials();
+    }
+    if (clock.now().getTime() - identita.issuedAt.getTime() > REAUTH_GOOGLE_MAX_MS) {
+      throw AppError.googleTokenInvalid();
     }
   }
 
@@ -176,6 +276,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw AppError.invalidCredentials();
       }
 
+      if (user.passwordHash === null) {
+        // Un conto nato con Google: la password non c'e', e va detto con lo
+        // stesso messaggio e lo stesso tempo di una password sbagliata. Un
+        // messaggio diverso («entra con Google») sarebbe gentile, e direbbe a
+        // chiunque provi un indirizzo che quel conto esiste.
+        await hasher.verify(hasher.dummyHash, input.password);
+        throw AppError.invalidCredentials();
+      }
+
       const ok = await hasher.verify(user.passwordHash, input.password);
       if (!ok) {
         throw AppError.invalidCredentials();
@@ -184,6 +293,96 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Ogni login apre una famiglia nuova: le sessioni su dispositivi diversi
       // sono indipendenti, e revocarne una non butta giu' le altre.
       return issueSession(user, tokens.newFamilyId());
+    },
+
+    /**
+     * Entra con Google, collegando o creando il conto se serve.
+     *
+     *   1. il `sub` e' gia' di un conto                  => si entra in quello
+     *   2. Google non garantisce l'indirizzo              => GOOGLE_EMAIL_UNVERIFIED
+     *   3. l'indirizzo e' di un conto senza Google        => si collega, e si entra
+     *   4. l'indirizzo e' di un conto con un altro Google => CONFLICT
+     *   5. nessun conto, iscrizioni chiuse                => SIGNUP_DISABLED
+     *   6. nessun conto, iscrizioni aperte                => si crea, senza password
+     *
+     * ## Perche' il `sub` prima dell'indirizzo
+     *
+     * Perche' e' l'identita' vera: l'indirizzo di un account Google puo'
+     * cambiare, e chi l'ha cambiato deve continuare a entrare nel suo conto.
+     * L'indirizzo serve solo la prima volta, per trovare un conto che esisteva
+     * gia' con la password.
+     *
+     * ## Perche' il collegamento chiede l'indirizzo verificato
+     *
+     * Perche' collegare vuol dire consegnare un conto a chi presenta il token.
+     * Se Google non garantisce che l'indirizzo sia di chi ha l'account, chiunque
+     * potrebbe creare un account Google con l'indirizzo di un altro e prendersi
+     * il suo conto qui. Per la stessa ragione un indirizzo non verificato non
+     * crea un conto nuovo: occuperebbe l'indirizzo di qualcuno che poi non
+     * potrebbe piu' iscriversi.
+     *
+     * ## Perche' un conto gia' collegato a un altro Google e' un 409
+     *
+     * Perche' un conto ha un solo account Google, e il `sub` non si sostituisce
+     * da qui: se si potesse, il nuovo titolare dell'indirizzo — chi l'ha
+     * ereditato da un'azienda, per dire — prenderebbe il conto del vecchio.
+     *
+     * ## Perche' le iscrizioni chiuse chiudono anche Google
+     *
+     * Un interruttore solo per tutte le porte, per scelta del prodotto: ogni
+     * conto nuovo costa trascrizione ed estrazione, e un Google sempre aperto
+     * renderebbe `SIGNUP_ENABLED=false` una promessa con un buco.
+     */
+    async loginWithGoogle(input: GoogleLoginRequest): Promise<AuthSession> {
+      const identita = await identitaGoogle(input.idToken);
+
+      const collegato = await repo.findUserByGoogleSub(identita.sub);
+      if (collegato !== null) {
+        return issueSession(collegato, tokens.newFamilyId());
+      }
+
+      if (!identita.emailVerified) {
+        throw AppError.googleEmailUnverified();
+      }
+
+      const esistente = await repo.findUserByEmail(identita.email);
+      if (esistente !== null) {
+        // Questa riga e la condizione dentro `linkGoogle` sono la stessa regola
+        // scritta due volte, e si coprono a vicenda: tolta una, l'altra da'
+        // ancora 409 (le mutazioni lo hanno mostrato, e cadono solo insieme).
+        // La garanzia vera e' la scrittura condizionata, l'unica che regge a
+        // due richieste in parallelo; questa risparmia una scrittura e un giro
+        // nel ramo della corsa nel caso comune.
+        if (esistente.googleSub !== null) {
+          throw AppError.conflict("Questo indirizzo e' gia' collegato a un altro account Google");
+        }
+        const aggiornato = await repo.linkGoogle({
+          userId: esistente.id,
+          googleSub: identita.sub,
+        });
+        if (aggiornato === null) {
+          // Un altro collegamento e' arrivato fra la lettura e la scrittura. Se
+          // era questo stesso `sub` il conto e' gia' nostro; se era un altro,
+          // vale la regola di sopra.
+          const riletto = await repo.findUserByGoogleSub(identita.sub);
+          if (riletto === null) {
+            throw AppError.conflict("Questo indirizzo e' gia' collegato a un altro account Google");
+          }
+          return issueSession(riletto, tokens.newFamilyId());
+        }
+        return issueSession(aggiornato, tokens.newFamilyId());
+      }
+
+      if (!config.signupEnabled) {
+        throw AppError.signupDisabled();
+      }
+
+      const creato = await repo.createUser({
+        email: identita.email,
+        googleSub: identita.sub,
+        locale: input.locale ?? "it-IT",
+      });
+      return issueSession(creato, tokens.newFamilyId());
     },
 
     /**
@@ -321,27 +520,27 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw AppError.unauthorized();
       }
 
-      const ok = await hasher.verify(user.passwordHash, input.currentPassword);
-      if (!ok) {
-        // Lo stesso errore di `login`, e per la stessa ragione: qui non c'e'
-        // niente da enumerare, ma avere due codici diversi per «password
-        // sbagliata» significherebbe che prima o poi uno dei due percorsi
-        // cambia e l'altro no.
-        throw AppError.invalidCredentials();
-      }
+      // Lo stesso errore di `login`, e per la stessa ragione: qui non c'e'
+      // niente da enumerare, ma avere due codici diversi per «password
+      // sbagliata» significherebbe che prima o poi uno dei due percorsi cambia
+      // e l'altro no. Con Google la prova e' il token: e' cosi' che chi si e'
+      // iscritto con Google si da' una password la prima volta.
+      await verificaProva(user, input);
 
-      if (input.newPassword === input.currentPassword) {
+      if ("currentPassword" in input && input.newPassword === input.currentPassword) {
         throw AppError.conflict("La nuova password e' identica a quella attuale");
       }
 
       const now = clock.now();
-      await repo.changePassword({
-        userId: user.id,
-        passwordHash: await hasher.hash(input.newPassword),
-        revokedAt: now,
-      });
+      const passwordHash = await hasher.hash(input.newPassword);
+      await repo.changePassword({ userId: user.id, passwordHash, revokedAt: now });
 
-      return issueSession(user, tokens.newFamilyId());
+      // Il conto con l'hash nuovo e non quello letto prima: finche' ogni conto
+      // aveva una password la differenza non si vedeva, ma chi se ne da' una per
+      // la prima volta riceverebbe `hasPassword: false` nella stessa risposta
+      // che gliel'ha appena data, e la schermata continuerebbe a chiedergli
+      // Google.
+      return issueSession({ ...user, passwordHash }, tokens.newFamilyId());
     },
 
     /**
@@ -385,13 +584,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw AppError.unauthorized();
       }
 
-      const ok = await hasher.verify(user.passwordHash, input.currentPassword);
-      if (!ok) {
-        // Prima la verifica, poi la revoca: nell'ordine opposto una password
-        // sbagliata avrebbe comunque scollegato tutto, e l'errore in risposta
-        // racconterebbe il contrario di quello che e' successo.
-        throw AppError.invalidCredentials();
-      }
+      // Prima la verifica, poi la revoca: nell'ordine opposto una password
+      // sbagliata avrebbe comunque scollegato tutto, e l'errore in risposta
+      // racconterebbe il contrario di quello che e' successo.
+      await verificaProva(user, input);
 
       const revoked = await repo.revokeOtherFamilies({
         userId: user.id,
@@ -452,10 +648,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw AppError.unauthorized();
       }
 
-      const ok = await hasher.verify(user.passwordHash, input.currentPassword);
-      if (!ok) {
-        throw AppError.invalidCredentials();
-      }
+      await verificaProva(user, input);
 
       if (input.sessionId === familyId) {
         throw AppError.conflict(
@@ -591,10 +784,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw AppError.unauthorized();
       }
 
-      const ok = await hasher.verify(user.passwordHash, input.currentPassword);
-      if (!ok) {
-        throw AppError.invalidCredentials();
-      }
+      await verificaProva(user, input);
 
       const esito = await repo.deleteAccount(user.id);
 

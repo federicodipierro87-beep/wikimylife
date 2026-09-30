@@ -6,6 +6,7 @@ import {
 import { useState } from "react";
 import { useApi } from "../api";
 import { formatQuando } from "../format";
+import { useGoogle } from "../google";
 import { useCapture } from "../recording/CaptureProvider";
 import { goBack } from "../router";
 import { messaggioDi, useSession } from "../session";
@@ -120,11 +121,93 @@ type EsitoCancellazione =
   | { readonly kind: "errore"; readonly messaggio: string }
   | { readonly kind: "fatto"; readonly conti: DeleteAccountResponse };
 
+/**
+ * La prova d'identita' che i tre gesti mandano al server: la password scritta
+ * nel campo, o il token della conferma con Google. Lo stesso contratto di
+ * `packages/shared`, costruito qui da cio' che la schermata ha in mano.
+ */
+type Prova = { readonly currentPassword: string } | { readonly googleIdToken: string };
+
+/**
+ * La prova, se c'e'. `null` vuol dire che il pulsante del gesto non deve
+ * partire: il campo e' vuoto, o la conferma con Google non e' ancora arrivata.
+ */
+function provaDa(conPassword: boolean, password: string, tokenGoogle: string | null): Prova | null {
+  if (conPassword) {
+    return password === "" ? null : { currentPassword: password };
+  }
+  return tokenGoogle === null ? null : { googleIdToken: tokenGoogle };
+}
+
+/**
+ * «Conferma con Google», al posto del campo della password, per chi una
+ * password non ce l'ha.
+ *
+ * ## Perche' in due tempi, e non un pulsante che fa tutto
+ *
+ * Perche' il gesto resta quello di prima: si conferma, e poi si preme il
+ * pulsante del gesto — «Scollega gli altri», «Cancella tutto per sempre». Un
+ * pulsante di Google che cancellasse il conto appena Google risponde sarebbe
+ * un pulsante di Google con dentro il gesto piu' distruttivo dell'app, e con
+ * la scritta di Google sopra.
+ *
+ * ## Perche' la conferma scade
+ *
+ * Il server accetta il token solo per pochi minuti dalla firma
+ * (`REAUTH_GOOGLE_MAX_MS`). Se si aspetta troppo il gesto torna
+ * `GOOGLE_TOKEN_INVALID`, e le sezioni rimettono il pulsante: si conferma di
+ * nuovo e si riprova.
+ */
+function ConfermaGoogle({
+  gesto,
+  confermato,
+  onToken,
+}: {
+  /** Cosa si sta per fare, detto dopo «per»: «cancellare il conto». */
+  readonly gesto: string;
+  readonly confermato: boolean;
+  readonly onToken: (idToken: string) => void;
+}): React.JSX.Element {
+  const google = useGoogle();
+
+  if (confermato) {
+    return (
+      <p className="avviso avviso--fatto" role="status">
+        Confermato con Google. Adesso puoi {gesto}.
+      </p>
+    );
+  }
+
+  if (google === null) {
+    // Un conto solo Google su un dispositivo dove Google non c'e' — l'app
+    // nativa, per ora. Dirlo e' meglio di un pulsante che non parte senza
+    // spiegare perche'.
+    return (
+      <p className="avviso" role="status">
+        Per {gesto} devi confermare con Google, e da qui non si puo&apos;. Apri
+        WikiMyLife dal browser.
+      </p>
+    );
+  }
+
+  return (
+    <div className="campo">
+      <span>Conferma che sei tu, per {gesto}</span>
+      <google.Pulsante testo="signin_with" onToken={onToken} />
+    </div>
+  );
+}
+
 export function AccountScreen(): React.JSX.Element {
   const apiClient = useApi();
-  const { state, logout } = useSession();
+  const { state, logout, aggiornaUtente } = useSession();
+  // Con la password finche' non si sa altrimenti: e' il caso di quasi tutti i
+  // conti, e mostrare il campo per un istante a chi non ce l'ha costa meno che
+  // mostrare Google a chi non l'ha collegato.
+  const conPassword = state.kind === "attiva" ? state.user.hasPassword : true;
 
   const [attuale, setAttuale] = useState("");
+  const [tokenGoogle, setTokenGoogle] = useState<string | null>(null);
   const [nuova, setNuova] = useState("");
   const [conferma, setConferma] = useState("");
   const [attesa, setAttesa] = useState(false);
@@ -175,18 +258,34 @@ export function AccountScreen(): React.JSX.Element {
       return;
     }
 
+    const prova = provaDa(conPassword, attuale, tokenGoogle);
+    if (prova === null) {
+      // Solo il ramo di Google arriva qui: con la password il campo e'
+      // `required`, e il browser non lascia partire il modulo vuoto.
+      setEsito({ kind: "errore", messaggio: "Prima conferma con Google che sei tu." });
+      return;
+    }
+
     setAttesa(true);
     try {
-      await apiClient.changePassword({ currentPassword: attuale, newPassword: nuova });
+      const sessione = await apiClient.changePassword({ ...prova, newPassword: nuova });
       // Svuotare non e' pulizia. Dopo il cambio, `attuale` contiene una
       // password che non vale piu': lasciandola nel campo, un secondo invio
       // partirebbe con quella e tornerebbe INVALID_CREDENTIALS, cioe' un
       // «password sbagliata» subito sotto un «password cambiata».
       setAttuale("");
+      setTokenGoogle(null);
       setNuova("");
       setConferma("");
       setEsito({ kind: "fatto" });
+      // Chi si e' appena dato una password adesso ce l'ha: da qui in poi la
+      // schermata gliela chiede, come a tutti.
+      aggiornaUtente(sessione.user);
     } catch (error: unknown) {
+      // La conferma di Google non si riusa dopo un rifiuto: se era scaduta,
+      // riproporla darebbe lo stesso errore; se non lo era, rifarla costa un
+      // tocco. Il pulsante torna.
+      setTokenGoogle(null);
       setEsito({ kind: "errore", messaggio: messaggioDi(error) });
     } finally {
       setAttesa(false);
@@ -213,31 +312,50 @@ export function AccountScreen(): React.JSX.Element {
       {state.kind === "attiva" && <p className="muto">Sei collegato come {state.user.email}.</p>}
 
       <section className="sezione">
-        <h2>Cambia password</h2>
-        <p className="muto">
-          Cambiarla scollega tutti gli altri dispositivi: questo resta dentro,
-          gli altri dovranno rientrare con la password nuova. Scrivila due volte,
-          perche&apos; se la sbagli non c&apos;e&apos; modo di recuperarla.
-        </p>
+        <h2>{conPassword ? "Cambia password" : "Imposta una password"}</h2>
+        {conPassword ? (
+          <p className="muto">
+            Cambiarla scollega tutti gli altri dispositivi: questo resta dentro,
+            gli altri dovranno rientrare con la password nuova. Scrivila due volte,
+            perche&apos; se la sbagli non c&apos;e&apos; modo di recuperarla.
+          </p>
+        ) : (
+          <p className="muto">
+            Entri con Google. Se vuoi, puoi aggiungere una password per entrare
+            anche senza: Google continuera&apos; a funzionare. Gli altri
+            dispositivi verranno scollegati.
+          </p>
+        )}
 
         <form
           onSubmit={(e) => {
             void invia(e);
           }}
         >
-          <label className="campo">
-            <span>Password attuale</span>
-            <input
-              type="password"
-              value={attuale}
-              onChange={scrittura(setAttuale)}
-              // La rotta la chiede anche se siamo gia' autenticati: il token
-              // dice che c'e' una sessione aperta, non che davanti allo schermo
-              // ci sia il proprietario.
-              autoComplete="current-password"
-              required
+          {conPassword ? (
+            <label className="campo">
+              <span>Password attuale</span>
+              <input
+                type="password"
+                value={attuale}
+                onChange={scrittura(setAttuale)}
+                // La rotta la chiede anche se siamo gia' autenticati: il token
+                // dice che c'e' una sessione aperta, non che davanti allo schermo
+                // ci sia il proprietario.
+                autoComplete="current-password"
+                required
+              />
+            </label>
+          ) : (
+            <ConfermaGoogle
+              gesto="impostare la password"
+              confermato={tokenGoogle !== null}
+              onToken={(idToken) => {
+                setTokenGoogle(idToken);
+                setEsito({ kind: "niente" });
+              }}
             />
-          </label>
+          )}
 
           <label className="campo">
             <span>Password nuova</span>
@@ -280,12 +398,12 @@ export function AccountScreen(): React.JSX.Element {
           )}
 
           <button type="submit" className="bottone bottone--primario" disabled={attesa}>
-            {attesa ? "Un attimo…" : "Cambia password"}
+            {attesa ? "Un attimo…" : conPassword ? "Cambia password" : "Imposta la password"}
           </button>
         </form>
       </section>
 
-      <ScollegaAltri />
+      <ScollegaAltri conPassword={conPassword} />
 
       <section className="sezione">
         <h2>Esci</h2>
@@ -305,7 +423,7 @@ export function AccountScreen(): React.JSX.Element {
         </button>
       </section>
 
-      <CancellaConto />
+      <CancellaConto conPassword={conPassword} />
 
       <CollegamentoPrivacy />
     </main>
@@ -345,21 +463,28 @@ export function AccountScreen(): React.JSX.Element {
  * portera' fuori da sola. Buttare subito l'utente sulla schermata d'ingresso
  * vorrebbe dire far lampeggiare i tre numeri per un istante e portarli via.
  */
-function CancellaConto(): React.JSX.Element {
+function CancellaConto({ conPassword }: { readonly conPassword: boolean }): React.JSX.Element {
   const apiClient = useApi();
   const { svuotaCoda } = useCapture();
   const [chiesta, setChiesta] = useState(false);
   const [password, setPassword] = useState("");
+  const [tokenGoogle, setTokenGoogle] = useState<string | null>(null);
   const [attesa, setAttesa] = useState(false);
   const [esito, setEsito] = useState<EsitoCancellazione>({ kind: "niente" });
 
   async function invia(event: React.FormEvent): Promise<void> {
     event.preventDefault();
+    const prova = provaDa(conPassword, password, tokenGoogle);
+    if (prova === null) {
+      setEsito({ kind: "errore", messaggio: "Prima conferma con Google che sei tu." });
+      return;
+    }
     setAttesa(true);
     setEsito({ kind: "niente" });
     try {
-      const conti = await apiClient.deleteAccount({ currentPassword: password });
+      const conti = await apiClient.deleteAccount(prova);
       setPassword("");
+      setTokenGoogle(null);
       // Dopo la risposta e non prima: se il server rifiuta — password
       // sbagliata, o un vocale ancora in lavorazione — il conto e' ancora li',
       // e aver buttato via la coda avrebbe distrutto dei vocali di un account
@@ -369,7 +494,9 @@ function CancellaConto(): React.JSX.Element {
     } catch (error: unknown) {
       // La sessione resta in piedi: `deleteAccount` non ha svuotato niente se
       // ha lanciato, e questa schermata non chiama `logout`. Chi ha sbagliato
-      // la password deve poter riprovare da dov'e'.
+      // la password deve poter riprovare da dov'e'. La conferma di Google si
+      // rifa': quella di prima, se era scaduta, darebbe lo stesso errore.
+      setTokenGoogle(null);
       setEsito({ kind: "errore", messaggio: messaggioDi(error) });
     } finally {
       setAttesa(false);
@@ -422,8 +549,8 @@ function CancellaConto(): React.JSX.Element {
           }}
         >
           <p className="muto">
-            Scrivi la tua password per confermare. Dopo, non ci sara&apos;
-            nessun&apos; altra domanda.
+            {conPassword ? "Scrivi la tua password" : "Conferma con Google"} per
+            confermare. Dopo, non ci sara&apos; nessun&apos; altra domanda.
           </p>
 
           {/*
@@ -434,19 +561,30 @@ function CancellaConto(): React.JSX.Element {
             uno screen reader — e in questa schermata i due gesti non si
             somigliano affatto.
           */}
-          <label className="campo">
-            <span>Password, per cancellare il conto</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => {
-                setPassword(e.target.value);
-                setEsito((prima) => (prima.kind === "niente" ? prima : { kind: "niente" }));
+          {conPassword ? (
+            <label className="campo">
+              <span>Password, per cancellare il conto</span>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  setEsito((prima) => (prima.kind === "niente" ? prima : { kind: "niente" }));
+                }}
+                autoComplete="current-password"
+                required
+              />
+            </label>
+          ) : (
+            <ConfermaGoogle
+              gesto="cancellare il conto"
+              confermato={tokenGoogle !== null}
+              onToken={(idToken) => {
+                setTokenGoogle(idToken);
+                setEsito({ kind: "niente" });
               }}
-              autoComplete="current-password"
-              required
             />
-          </label>
+          )}
 
           {esito.kind === "errore" && (
             <p className="avviso avviso--errore" role="alert">
@@ -467,6 +605,7 @@ function CancellaConto(): React.JSX.Element {
               // prossima volta che apre la schermata.
               setChiesta(false);
               setPassword("");
+              setTokenGoogle(null);
               setEsito({ kind: "niente" });
             }}
           >
@@ -504,9 +643,11 @@ function plurale(quanti: number, singolare: string, plurale: string): string {
  * che non e' ancora partita. Sono due conversazioni diverse con lo stesso
  * server, e non devono avere una casella di testo in comune.
  */
-function ScollegaAltri(): React.JSX.Element {
+function ScollegaAltri({ conPassword }: { readonly conPassword: boolean }): React.JSX.Element {
   const apiClient = useApi();
   const [password, setPassword] = useState("");
+  const [tokenGoogle, setTokenGoogle] = useState<string | null>(null);
+  const prova = provaDa(conPassword, password, tokenGoogle);
   const [attesa, setAttesa] = useState(false);
   const [esito, setEsito] = useState<EsitoRevoca>({ kind: "niente" });
 
@@ -541,18 +682,20 @@ function ScollegaAltri(): React.JSX.Element {
    * riscrive la password, ed e' voluto — sono due decisioni diverse.
    */
   async function chiudiUna(sessionId: string): Promise<void> {
+    if (prova === null) {
+      return;
+    }
     setInVolo(sessionId);
     setEsito({ kind: "niente" });
     try {
-      const { revoked } = await apiClient.revokeSession({
-        sessionId,
-        currentPassword: password,
-      });
+      const { revoked } = await apiClient.revokeSession({ sessionId, ...prova });
       setPassword("");
+      setTokenGoogle(null);
       setEsito({ kind: "chiusa", quante: revoked });
       elenco.ricarica();
     } catch (error: unknown) {
       // Come sopra: niente `ricarica` quando non e' stato revocato niente.
+      setTokenGoogle(null);
       setEsito({ kind: "errore", messaggio: messaggioDi(error) });
     } finally {
       setInVolo(null);
@@ -561,14 +704,19 @@ function ScollegaAltri(): React.JSX.Element {
 
   async function invia(event: React.FormEvent): Promise<void> {
     event.preventDefault();
+    if (prova === null) {
+      setEsito({ kind: "errore", messaggio: "Prima conferma con Google che sei tu." });
+      return;
+    }
     setAttesa(true);
     setEsito({ kind: "niente" });
     try {
-      const { revoked } = await apiClient.revokeOtherSessions({ currentPassword: password });
+      const { revoked } = await apiClient.revokeOtherSessions(prova);
       // Come nel cambio password: il campo si svuota perche' quello che
       // contiene e' un segreto che non serve piu' a questa schermata, e perche'
       // un secondo invio involontario partirebbe da solo.
       setPassword("");
+      setTokenGoogle(null);
       setEsito({ kind: "fatto", quante: revoked });
       // L'elenco appena mostrato adesso e' falso: ci sono ancora scritti sopra
       // i dispositivi che questa chiamata ha appena chiuso. Ricaricarlo e' cio'
@@ -580,6 +728,7 @@ function ScollegaAltri(): React.JSX.Element {
       // a schermo e' ancora quella giusta, e rileggerla la farebbe sparire e
       // riapparire identica sotto un messaggio d'errore — come se il guasto
       // riguardasse anche lei.
+      setTokenGoogle(null);
       setEsito({ kind: "errore", messaggio: messaggioDi(error) });
     } finally {
       setAttesa(false);
@@ -613,29 +762,40 @@ function ScollegaAltri(): React.JSX.Element {
           // pulsante in fondo: senza password la richiesta partirebbe per
           // tornare indietro con un VALIDATION_FAILED, cioe' un errore rosso al
           // posto di un pulsante che si vede non essere ancora pronto.
-          puoiChiudere={password !== ""}
+          puoiChiudere={prova !== null}
           inVolo={inVolo}
           onChiudi={(id) => {
             void chiudiUna(id);
           }}
         />
 
-        <label className="campo">
-          <span>La tua password</span>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => {
-              setPassword(e.target.value);
-              setEsito((prima) => (prima.kind === "niente" ? prima : { kind: "niente" }));
+        {conPassword ? (
+          <label className="campo">
+            <span>La tua password</span>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                setEsito((prima) => (prima.kind === "niente" ? prima : { kind: "niente" }));
+              }}
+              // Chiesta anche qui, e qui e' quella che conta di piu': senza,
+              // basterebbe avere in mano il telefono per premere il pulsante e
+              // restare l'unico collegato.
+              autoComplete="current-password"
+              required
+            />
+          </label>
+        ) : (
+          <ConfermaGoogle
+            gesto="scollegare i dispositivi"
+            confermato={tokenGoogle !== null}
+            onToken={(idToken) => {
+              setTokenGoogle(idToken);
+              setEsito({ kind: "niente" });
             }}
-            // Chiesta anche qui, e qui e' quella che conta di piu': senza,
-            // basterebbe avere in mano il telefono per premere il pulsante e
-            // restare l'unico collegato.
-            autoComplete="current-password"
-            required
           />
-        </label>
+        )}
 
         {esito.kind === "errore" && (
           <p className="avviso avviso--errore" role="alert">

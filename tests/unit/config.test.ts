@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ConfigError,
   loadConfig,
+  parseClientIds,
   parseOrigins,
 } from "../../apps/api/src/config/env.js";
 
@@ -75,6 +76,63 @@ describe("parseOrigins", () => {
 
   it("conserva la porta, che fa parte dell'origine", () => {
     expect(parseOrigins("http://localhost:5173")).toEqual(["http://localhost:5173"]);
+  });
+});
+
+describe("parseClientIds", () => {
+  it("separa, toglie gli spazi e scarta i vuoti", () => {
+    expect(parseClientIds(" a.apps.googleusercontent.com, ,b.apps.googleusercontent.com,")).toEqual([
+      "a.apps.googleusercontent.com",
+      "b.apps.googleusercontent.com",
+    ]);
+    expect(parseClientIds("")).toEqual([]);
+  });
+
+  it("non tocca il valore, al contrario di parseOrigins", () => {
+    // Una barra finale in un'origine e' un errore di battitura; in un client
+    // id sarebbe il valore, e toglierla in silenzio vorrebbe dire rifiutare
+    // ogni token con un destinatario che nessuno ha scritto.
+    expect(parseClientIds("id/")).toEqual(["id/"]);
+  });
+});
+
+describe("loadConfig — l'accesso con Google", () => {
+  it("parte spento, anche senza nessuna variabile", () => {
+    expect(loadConfig({ ...MINIMO }).auth.google).toEqual({ provider: "nessuno", clientIds: [] });
+  });
+
+  it("con il verificatore vero vuole almeno un client id", () => {
+    expect(errore({ ...MINIMO, GOOGLE_AUTH_PROVIDER: "google" })).toContain("GOOGLE_CLIENT_IDS");
+    expect(
+      errore({ ...MINIMO, GOOGLE_AUTH_PROVIDER: "google", GOOGLE_CLIENT_IDS: " , " }),
+    ).toContain("GOOGLE_CLIENT_IDS");
+  });
+
+  it("con un client id parte, e li consegna separati", () => {
+    const config = loadConfig({
+      ...MINIMO,
+      GOOGLE_AUTH_PROVIDER: "google",
+      GOOGLE_CLIENT_IDS: "web.apps.googleusercontent.com,app.apps.googleusercontent.com",
+    });
+    expect(config.auth.google).toEqual({
+      provider: "google",
+      clientIds: ["web.apps.googleusercontent.com", "app.apps.googleusercontent.com"],
+    });
+  });
+
+  it("il finto non chiede client id: non verifica nessun destinatario", () => {
+    expect(loadConfig({ ...MINIMO, GOOGLE_AUTH_PROVIDER: "fake" }).auth.google.provider).toBe(
+      "fake",
+    );
+  });
+
+  it("in produzione il verificatore vero con un client id passa", () => {
+    const config = loadConfig({
+      ...PRODUZIONE,
+      GOOGLE_AUTH_PROVIDER: "google",
+      GOOGLE_CLIENT_IDS: "web.apps.googleusercontent.com",
+    });
+    expect(config.auth.google.provider).toBe("google");
   });
 });
 
@@ -291,6 +349,7 @@ describe("loadConfig — le regole che valgono solo in produzione", () => {
     ["EXTRACTION_PROVIDER"],
     ["EMBEDDING_PROVIDER"],
     ["REDACTION_PROVIDER"],
+    ["GOOGLE_AUTH_PROVIDER"],
   ])("rifiuta il provider finto: %s", (nome) => {
     // Schede finte in un database vero sono indistinguibili dalle buone.
     // Per la redazione il danno e' diverso: un fake che non trova mai niente

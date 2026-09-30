@@ -12,6 +12,7 @@ import { ConfigError, type AppConfig } from "./config/env.js";
 import { createPrismaClient, isDatabaseReachable } from "./db/client.js";
 import { createRequireAuth } from "./http/middleware/requireAuth.js";
 import { Argon2PasswordHasher } from "./infra/Argon2PasswordHasher.js";
+import { JoseGoogleIdTokenVerifier } from "./infra/JoseGoogleIdTokenVerifier.js";
 import { JoseTokenIssuer } from "./infra/JoseTokenIssuer.js";
 import { PrismaAuthRepository } from "./infra/PrismaAuthRepository.js";
 import { PrismaProcedureRepository } from "./infra/PrismaProcedureRepository.js";
@@ -28,11 +29,13 @@ import { S3StorageProvider } from "./providers/S3StorageProvider.js";
 import {
   FakeEmbeddingProvider,
   FakeExtractionProvider,
+  FakeGoogleIdTokenVerifier,
   FakeRedactionProvider,
   FakeStorageProvider,
   FakeTranscriptionProvider,
 } from "./providers/fake/index.js";
 import { createAuthService, type AuthService } from "./services/auth.service.js";
+import type { GoogleIdTokenVerifier } from "./services/ports/GoogleIdTokenVerifier.js";
 import { createIngestionService, type IngestionService } from "./services/ingestion.service.js";
 import {
   createProceduresService,
@@ -94,6 +97,12 @@ export interface Composition {
    */
   readonly storageSweepService: StorageSweepService;
   readonly providers: Providers;
+  /**
+   * Chi verifica i token di Google, o `undefined` se l'accesso con Google e'
+   * spento. Esposto per i test d'integrazione, che con il finto simulano un
+   * Google che non risponde.
+   */
+  readonly google: GoogleIdTokenVerifier | undefined;
   readonly app: Express;
   shutdown(): Promise<void>;
 }
@@ -194,6 +203,24 @@ function buildRedaction(p: AppConfig["providers"]): RedactionProvider | undefine
   }
 }
 
+/**
+ * Il verificatore dei token di Google, se l'accesso con Google e' acceso.
+ *
+ * Fuori da `buildProviders` perche' al worker non serve: nessuno entra nel
+ * worker. Metterlo li' costringerebbe il worker a validare una configurazione
+ * che non usa.
+ */
+function buildGoogleVerifier(config: AppConfig): GoogleIdTokenVerifier | undefined {
+  switch (config.auth.google.provider) {
+    case "nessuno":
+      return undefined;
+    case "fake":
+      return new FakeGoogleIdTokenVerifier();
+    case "google":
+      return new JoseGoogleIdTokenVerifier({ clientIds: config.auth.google.clientIds });
+  }
+}
+
 export function compose(config: AppConfig, overrides?: {
   readonly prisma?: PrismaClient | undefined;
   readonly logger?: Logger | undefined;
@@ -219,7 +246,10 @@ export function compose(config: AppConfig, overrides?: {
   // visibile di quella dipendenza sul resto della composizione.
   const providers = buildProviders(config);
 
+  const google = buildGoogleVerifier(config);
+
   const authService = createAuthService({
+    google,
     repo,
     hasher,
     tokens,
@@ -363,6 +393,7 @@ export function compose(config: AppConfig, overrides?: {
     ingestionService,
     storageSweepService,
     providers,
+    google,
     app,
     async shutdown(): Promise<void> {
       await prisma.$disconnect();

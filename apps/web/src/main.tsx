@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { WebSecureStorageAdapter } from "./adapters/WebSecureStorageAdapter";
+import { creaAccessoGoogle, GoogleContext, googleDisponibile } from "./google";
 import { registraServiceWorker } from "./serviceWorker";
 import "./styles.css";
 
@@ -15,14 +16,26 @@ import "./styles.css";
  * e non lo e' — chiunque lo importi si porta dietro anche una `fetch` verso
  * `VITE_API_URL`, compreso un test che voleva solo montare un componente.
  *
- * `VITE_API_URL` e' l'unica configurazione del frontend, perche' e' l'unica
- * cosa che il frontend ha il diritto di sapere: ogni regola di prodotto vive
- * nell'API. Netlify ospita asset statici e redirect, nient'altro.
+ * `VITE_API_URL` e' la configurazione del frontend, perche' e' la cosa che il
+ * frontend ha il diritto di sapere: ogni regola di prodotto vive nell'API.
+ * Netlify ospita asset statici e redirect, nient'altro.
+ *
+ * `VITE_GOOGLE_CLIENT_ID` e' l'altra, ed e' della stessa natura: non e' una
+ * regola ma un indirizzo — a quale applicazione Google chiedere il token. Non
+ * e' un segreto (finisce comunque nell'HTML che Google disegna), e deve essere
+ * uno dei `GOOGLE_CLIENT_IDS` dell'API, o i token che produce vengono
+ * rifiutati come emessi per un altro.
  */
 const apiClient = createApiClient({
   baseUrl: import.meta.env.VITE_API_URL ?? "http://localhost:3000",
   storage: new WebSecureStorageAdapter(),
 });
+
+const clientIdGoogle = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+const google =
+  clientIdGoogle !== undefined && googleDisponibile(clientIdGoogle, window)
+    ? creaAccessoGoogle(clientIdGoogle, window)
+    : null;
 
 const container = document.getElementById("root");
 if (container === null) {
@@ -31,7 +44,9 @@ if (container === null) {
 
 createRoot(container).render(
   <StrictMode>
-    <App client={apiClient} />
+    <GoogleContext.Provider value={google}>
+      <App client={apiClient} />
+    </GoogleContext.Provider>
   </StrictMode>,
 );
 

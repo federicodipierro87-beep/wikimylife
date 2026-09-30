@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useGoogle } from "../google";
 import { messaggioDi, useSession } from "../session";
 import { CollegamentoPrivacy } from "./Privacy";
 
@@ -10,12 +11,30 @@ import { CollegamentoPrivacy } from "./Privacy";
  * lo fa una volta sola nella vita dell'account.
  */
 export function LoginScreen(): React.JSX.Element {
-  const { login, signup } = useSession();
+  const { login, signup, loginWithGoogle } = useSession();
+  const google = useGoogle();
   const [nuovo, setNuovo] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errore, setErrore] = useState<string | null>(null);
   const [attesa, setAttesa] = useState(false);
+
+  /**
+   * Il token di Google, al server. Stesso errore e stessa attesa del modulo:
+   * sono due porte della stessa schermata, e un messaggio rosso deve stare in
+   * un posto solo, qualunque porta lo abbia prodotto.
+   */
+  async function conGoogle(idToken: string): Promise<void> {
+    setErrore(null);
+    setAttesa(true);
+    try {
+      await loginWithGoogle(idToken);
+    } catch (error: unknown) {
+      setErrore(messaggioDi(error));
+    } finally {
+      setAttesa(false);
+    }
+  }
 
   async function invia(event: React.FormEvent): Promise<void> {
     event.preventDefault();
@@ -86,6 +105,25 @@ export function LoginScreen(): React.JSX.Element {
         <button type="submit" className="bottone bottone--primario" disabled={attesa}>
           {attesa ? "Un attimo…" : nuovo ? "Crea l'account" : "Entra"}
         </button>
+
+        {/* Dentro il pannello e sotto il pulsante principale: e' la seconda
+            porta, non la prima. Chi ha gia' un conto con la password lo trova
+            dov'era; chi ha Google lo trova a un pollice di distanza. E il
+            pulsante e' lo stesso nei due modi — accesso e iscrizione — perche'
+            con Google la differenza la fa il server, non chi preme. */}
+        {google !== null && (
+          <div className="accesso__google">
+            <p className="separatore" aria-hidden="true">
+              oppure
+            </p>
+            <google.Pulsante
+              testo="continue_with"
+              onToken={(idToken) => {
+                void conGoogle(idToken);
+              }}
+            />
+          </div>
+        )}
       </form>
 
       <button

@@ -406,6 +406,36 @@ input[type="radio"] {
   margin-top: 0.25rem;
 }
 
+/* «oppure» fra due righe sottili: dice che sotto c'e' un'altra porta, e non un
+   secondo passo della stessa. */
+.separatore {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1.1rem 0 0.9rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.separatore::before,
+.separatore::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* Il contenitore del pulsante di Google. Il pulsante lo disegna Google dentro
+   un suo riquadro, largo quanto gli si dice in pixel: qui gli si da' tutta la
+   larghezza e lo si centra, e un'altezza minima perche' la schermata non
+   salti quando lo script arriva. */
+.google {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  min-height: 2.75rem;
+}
+
 /* --------------------------------------------------------------------------
    Registrazione
    -------------------------------------------------------------------------- */

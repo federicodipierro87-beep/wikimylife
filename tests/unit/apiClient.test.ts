@@ -35,6 +35,8 @@ function session(suffix: string): AuthSession {
       email: "chi@esempio.it",
       locale: "it-IT",
       createdAt: "2026-01-01T00:00:00.000Z",
+      hasPassword: true,
+      hasGoogle: false,
     },
     tokens: {
       accessToken: `access-${suffix}`,
@@ -200,6 +202,58 @@ describe("login", () => {
     await expect(
       client.login({ email: "chi@esempio.it", password: "password-lunga-abbastanza" }),
     ).rejects.toMatchObject({ code: "INTERNAL_ERROR", status: 502 });
+  });
+});
+
+describe("loginWithGoogle", () => {
+  it("va in POST a /api/auth/google con il token, senza Authorization, e conserva la sessione", async () => {
+    const storage = createInMemorySecureStorage();
+    const { fetchImpl, calls } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      "POST /api/auth/google": () => ({ status: 200, payload: session("g") }),
+    });
+    const client = createApiClient({ baseUrl: BASE, storage, fetchImpl });
+    // Prima un'altra sessione, perche' il caso abbia qualcosa da non mandare:
+    // da un client vuoto «niente Authorization» sarebbe vero per forza.
+    await client.login({ email: "chi@esempio.it", password: "password-lunga-abbastanza" });
+
+    await client.loginWithGoogle({ idToken: "id-token-di-google", locale: "it-IT" });
+
+    const richiesta = calls[1];
+    expect(richiesta?.method).toBe("POST");
+    expect(richiesta?.url).toBe(`${BASE}/api/auth/google`);
+    expect(richiesta?.body).toEqual({ idToken: "id-token-di-google", locale: "it-IT" });
+    // Chi chiama non ha ancora una sessione: un Authorization qui sarebbe un
+    // token avanzato da un conto di prima, spedito a una rotta che non lo usa.
+    expect(richiesta?.authorization).toBeUndefined();
+    expect(client.getAccessToken()).toBe("access-g");
+    expect(storage.snapshot()).toEqual({ [AUTH_STORAGE_KEYS.refreshToken]: "refresh-g" });
+  });
+
+  it("un 401 di Google non fa partire nessuna rotazione", async () => {
+    // L'opposto della rotazione automatica qui sotto: un 401 su questa rotta
+    // dice che Google non ha confermato, non che un access token e' scaduto.
+    // Se partisse una rotazione, il test troverebbe una rotta non prevista.
+    // Il deposito ha un refresh token, cioe' tutto cio' che servirebbe a una
+    // rotazione: se il client la tentasse, qui ci riuscirebbe.
+    const { fetchImpl, calls } = stubFetch({
+      "POST /api/auth/google": () => ({
+        status: 401,
+        payload: errorPayload("GOOGLE_TOKEN_INVALID", "Google non ha confermato chi sei. Riprova."),
+      }),
+      "POST /api/auth/refresh": () => ({ status: 200, payload: session("2") }),
+    });
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage: createInMemorySecureStorage({ [AUTH_STORAGE_KEYS.refreshToken]: "refresh-0" }),
+      fetchImpl,
+    });
+
+    await expect(client.loginWithGoogle({ idToken: "scaduto" })).rejects.toMatchObject({
+      code: "GOOGLE_TOKEN_INVALID",
+      status: 401,
+    });
+    expect(calls.map((c) => c.url)).toEqual([`${BASE}/api/auth/google`]);
   });
 });
 
@@ -424,6 +478,45 @@ describe("cambio password", () => {
     await expect(
       client.changePassword({ ...CORPO, currentPassword: "non-e-quella" }),
     ).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
+
+    expect(refreshCalls).toBe(0);
+    expect(client.getAccessToken()).toBe("access-1");
+    expect(storage.snapshot()[AUTH_STORAGE_KEYS.refreshToken]).toBe("refresh-1");
+    expect(expiredNotifications).toBe(0);
+  });
+
+  it("una conferma di Google scaduta non butta fuori chi stava cancellando il conto", async () => {
+    // Lo stesso 401 «che parla del corpo», per chi conferma con Google: il
+    // server rifiuta un token firmato da piu' di cinque minuti, e la sessione e'
+    // viva. E' stato trovato dopo: i test della schermata usano un client
+    // finto, e il giro «ruota, riprova, svuota» succede solo in quello vero.
+    let refreshCalls = 0;
+    const { fetchImpl } = stubFetch({
+      "POST /api/auth/login": () => ({ status: 200, payload: session("1") }),
+      "POST /api/auth/refresh": () => {
+        refreshCalls += 1;
+        return { status: 200, payload: session("2") };
+      },
+      "POST /api/auth/delete-account": () => ({
+        status: 401,
+        payload: errorPayload("GOOGLE_TOKEN_INVALID", "Google non ha confermato chi sei. Riprova."),
+      }),
+    });
+    const storage = createInMemorySecureStorage();
+    let expiredNotifications = 0;
+    const client = createApiClient({
+      baseUrl: BASE,
+      storage,
+      fetchImpl,
+      onSessionExpired: () => {
+        expiredNotifications += 1;
+      },
+    });
+
+    await client.login({ email: "chi@esempio.it", password: CORPO.currentPassword });
+    await expect(client.deleteAccount({ googleIdToken: "scaduto" })).rejects.toMatchObject({
+      code: "GOOGLE_TOKEN_INVALID",
+    });
 
     expect(refreshCalls).toBe(0);
     expect(client.getAccessToken()).toBe("access-1");

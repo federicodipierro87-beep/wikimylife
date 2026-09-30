@@ -72,6 +72,13 @@ export interface TestServerOptions {
    * e l'altro: quello vero vive quanto il container, non quanto il file.
    */
   readonly storage?: "fake" | "s3";
+  /**
+   * `nessuno` di default, come in produzione finche' qualcuno non lo accende.
+   * `fake` fa comporre all'API il verificatore finto, che accetta i token di
+   * `tokenGoogleFinto`: la rotta, lo schema e il database sono quelli veri, la
+   * firma di Google no.
+   */
+  readonly google?: "nessuno" | "fake";
 }
 
 export async function startTestServer(options: TestServerOptions = {}): Promise<TestServer> {
@@ -86,6 +93,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     CORS_ORIGINS: options.corsOrigins ?? "",
     AUTH_RATE_LIMIT_MAX: String(options.authRateLimitMax ?? 10_000),
     REDACTION_PROVIDER: options.redactionProvider ?? "nessuno",
+    GOOGLE_AUTH_PROVIDER: options.google ?? "nessuno",
     // Le variabili dello storage entrano solo quando servono: passarle sempre
     // legherebbe ogni file della suite al bucket di test, e i quindici che non
     // sanno nemmeno di avere un bucket comincerebbero a fallire per una

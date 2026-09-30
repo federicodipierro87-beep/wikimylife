@@ -1142,6 +1142,63 @@ all'`aria-current` sulla voce attiva della barra.
 Le transizioni e le animazioni si spengono tutte insieme per chi ha chiesto meno
 movimento, con una regola sola in cima al foglio.
 
+### Entrare con Google
+
+Il pulsante «Continua con Google» sta sotto il modulo d'accesso, e fa accesso e
+iscrizione insieme: chi lo preme non sa se un conto ce l'ha, e non deve saperlo.
+Il pulsante è quello di Google (Google Identity Services, in `google.tsx`):
+restituisce un **ID token** senza reindirizzare la pagina, e il token va a
+`POST /api/auth/google`. Il server lo verifica con le chiavi pubbliche di Google
+(`JoseGoogleIdTokenVerifier`, con `jose`: firma RS256, emittente, destinatario fra
+i `GOOGLE_CLIENT_IDS`, scadenza) e poi decide, in quest'ordine:
+
+1. il `sub` di Google è già di un conto → si entra in quello;
+2. Google non garantisce l'indirizzo → `403 GOOGLE_EMAIL_UNVERIFIED`;
+3. l'indirizzo è di un conto con la password → **si collega**, e da lì valgono
+   tutte e due le porte;
+4. l'indirizzo è di un conto già collegato a un altro Google → `409 CONFLICT`;
+5. nessun conto e `SIGNUP_ENABLED=false` → `403 SIGNUP_DISABLED`: **un
+   interruttore solo per tutte le porte**;
+6. nessun conto e iscrizioni aperte → nasce un conto **senza password** (D12).
+
+**Chi non ha una password conferma con Google.** I quattro gesti che chiedono la
+password — cambiarla, scollegare gli altri dispositivi, chiuderne uno, cancellare
+il conto — accettano al suo posto un ID token dello stesso account Google firmato
+da meno di cinque minuti (`REAUTH_GOOGLE_MAX_MS`). Nella schermata dell'account,
+chi non ha una password vede «Accedi con Google» dove gli altri vedono il campo,
+e «Cambia password» diventa «Imposta una password». Senza questa strada un conto
+solo Google non potrebbe cancellarsi, cioè il caso che la 5.1.1(v) di Apple vieta.
+
+**Nel guscio nativo il pulsante non c'è.** Google rifiuta l'accesso da una
+WebView, e `googleDisponibile` lo spegne quando c'è `window.Capacitor`. Servirà un
+plugin nativo, con un client OAuth per piattaforma aggiunto a `GOOGLE_CLIENT_IDS`.
+
+**La CSP ammette Google solo nei quattro percorsi del pulsante** (`gsi/client`,
+`gsi/style`, `frame-src gsi/`, e `connect-src` che era già `https:`), e la
+`Referrer-Policy` di Netlify è passata da `no-referrer` a
+`strict-origin-when-cross-origin`, il valore che la documentazione di Google
+raccomanda: il pulsante riconosce il sito dal referrer.
+
+**Per accenderlo**, a mano, una volta:
+
+1. Google Cloud Console → *API e servizi* → *Schermata di consenso OAuth*:
+   tipo «Esterno», nome dell'app, email di supporto, dominio
+   `wikimylife.netlify.app`, la pagina `https://wikimylife.netlify.app/privacy.html`.
+   Ambiti: solo `openid`, `email`, `profile`. Finché è «In test» entrano solo gli
+   utenti di prova elencati lì.
+2. *Credenziali* → *Crea credenziali* → *ID client OAuth* → «Applicazione web».
+   Origini JavaScript autorizzate: `https://wikimylife.netlify.app`, e per lo
+   sviluppo `http://localhost` e `http://localhost:5173`. Nessun URI di
+   reindirizzamento: il pulsante non ne usa.
+3. Railway, servizio `api`: `GOOGLE_AUTH_PROVIDER=google`,
+   `GOOGLE_CLIENT_IDS=<l'id client>`.
+4. Netlify: `VITE_GOOGLE_CLIENT_ID=<lo stesso id>`, e un nuovo deploy — le `VITE_*`
+   valgono alla build.
+
+L'id client non è un segreto (finisce nell'HTML che Google disegna); il *client
+secret* che la console mostra accanto **non serve** e non va messo da nessuna
+parte.
+
 ### Il service worker fa una cosa sola
 
 Tiene in cache il guscio, così che aprire l'app senza rete mostri il pulsante di
@@ -3439,6 +3496,9 @@ significherebbe quattro deploy.
 | `EMBEDDING_DIMENSIONS` | ✓ | ✓ | | ✓ | 1536 |
 | `SEED_USER_EMAIL` `SEED_USER_PASSWORD` | | | | ✓ | il seed non gira in produzione |
 | `VITE_API_URL` | | | ✓ | ✓ | il dominio Railway dell'API |
+| `GOOGLE_AUTH_PROVIDER` | ✓ | | | ✓ | default `nessuno`: la rotta risponde `GOOGLE_DISABLED`. `google` in produzione per accenderlo; `fake` è rifiutato in produzione |
+| `GOOGLE_CLIENT_IDS` | ✓ | | | | obbligatoria con `google`: i client OAuth di cui si accettano i token, separati da virgola |
+| `VITE_GOOGLE_CLIENT_ID` | | | ✓ | | il client OAuth «applicazione web». Senza, il pulsante di Google non compare. Deve essere uno dei `GOOGLE_CLIENT_IDS` |
 
 Le API delle chiavi le vede solo Railway: **le `VITE_*` finiscono nel bundle in
 chiaro**, quindi su Netlify va un URL e nient'altro. E vale al momento della
@@ -3899,6 +3959,24 @@ Non installate, e il perché:
 ---
 
 ## Cosa non c'è ancora, e si sa
+
+- **L'accesso con Google non ha mai parlato con Google.** Server, schermate e
+  CSP sono provati contro un verificatore finto e contro una chiave RSA generata
+  nei test; nessun token vero di Google è ancora passato di qui, perché il client
+  OAuth va creato a mano (README, «Entrare con Google»). Tre cose si sapranno
+  solo allora: che la `Referrer-Policy` nuova basti al pulsante, che la CSP non
+  blocchi niente di ciò che lo script di Google carica davvero, e che la
+  finestrella di Google si apra sui browser dei telefoni.
+- **Nelle app native Google non c'è.** `googleDisponibile` spegne il pulsante
+  dentro Capacitor, perché Google rifiuta le WebView. Un conto nato con Google,
+  aperto nell'app, non può confermare i gesti protetti: la schermata lo dice e
+  manda al browser. Servirà un plugin nativo — e, **per l'App Store, anche
+  «Accedi con Apple»**: la linea guida 4.8 lo chiede a ogni app che offre un
+  accesso di terzi.
+- **Il sito non conosce ancora l'utente che ha collegato Google senza saperlo.**
+  Chi ha un conto con la password ed entra con Google lo collega in silenzio: è
+  la scelta (l'indirizzo è garantito da Google), ma nessuna schermata gli dice
+  «da oggi entri anche con Google», né gli permette di scollegarlo.
 
 - **Il nuovo aspetto è stato costruito, non guardato.** Due temi, icone, barra
   con il pulsante sollevato: tutto passa typecheck, test e build, ma nessuno lo

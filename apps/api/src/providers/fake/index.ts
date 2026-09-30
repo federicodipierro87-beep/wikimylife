@@ -3,3 +3,4 @@ export { FakeExtractionProvider } from "./FakeExtractionProvider.js";
 export { FakeRedactionProvider } from "./FakeRedactionProvider.js";
 export { FakeStorageProvider } from "./FakeStorageProvider.js";
 export { FakeTranscriptionProvider } from "./FakeTranscriptionProvider.js";
+export { FakeGoogleIdTokenVerifier, tokenGoogleFinto } from "./FakeGoogleIdTokenVerifier.js";

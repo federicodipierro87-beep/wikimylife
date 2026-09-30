@@ -52,6 +52,68 @@ export const loginRequestSchema = z
   .strict();
 
 /**
+ * Una password che esiste gia', da verificare: `min(1).max(256)` come in
+ * `login`, per le ragioni scritte sotto a ogni schema che la usa.
+ */
+export const passwordAttualeSchema = z.string().min(1).max(256);
+
+/**
+ * Un ID token di Google, cosi' come lo consegna il pulsante di Google.
+ *
+ * Qui si controlla solo che sia una stringa di una lunghezza plausibile: un JWT
+ * firmato RS256 con i campi che Google ci mette sta sotto i due kB, e il tetto
+ * a quattro esiste perche' un corpo arbitrario non arrivi fino alla verifica
+ * della firma. Che sia *valido* — firma, emittente, destinatario, scadenza — lo
+ * decide il server con le chiavi di Google, non uno schema.
+ */
+export const googleIdTokenSchema = z.string().min(1).max(4096);
+
+/**
+ * Entrare con Google, o iscriversi con Google: una rotta sola per le due cose.
+ *
+ * ## Perche' non due rotte, come `/login` e `/signup`
+ *
+ * Perche' chi preme «Continua con Google» non sa, e non deve sapere, se un
+ * conto ce l'ha gia'. Con la password la differenza la fa l'utente — sceglie
+ * una password nuova o ne digita una vecchia — mentre qui Google consegna la
+ * stessa prova nei due casi. Decide il server: il conto c'e' e si apre, o non
+ * c'e' e si crea se le iscrizioni sono aperte.
+ *
+ * `locale` come in `signup`, e serve solo nel ramo in cui il conto nasce.
+ */
+export const googleLoginRequestSchema = z
+  .object({
+    idToken: googleIdTokenSchema,
+    locale: z.string().min(2).max(35).optional(),
+  })
+  .strict();
+
+/**
+ * ## La prova d'identita': password oppure Google
+ *
+ * I quattro gesti qui sotto — cambiare la password, scollegare gli altri
+ * dispositivi, chiuderne uno, cancellare il conto — chiedono una prova che di
+ * la' dallo schermo ci sia il proprietario, e non solo una sessione aperta. Fino
+ * all'accesso con Google la prova era una sola, la password. Adesso un conto
+ * puo' non averla: chi si e' iscritto con Google non ne ha mai scelta una. Senza
+ * un'alternativa, quel conto non potrebbe cancellarsi — che e' il caso
+ * esatto che la 5.1.1(v) di Apple vieta.
+ *
+ * L'alternativa e' un ID token di Google **appena emesso**, e il server lo
+ * accetta solo se e' dello stesso account Google collegato al conto e se e'
+ * stato firmato da pochi minuti (`auth.service.ts`, `REAUTH_GOOGLE_MAX_MS`).
+ * Non e' una prova piu' debole della password: per ottenerlo bisogna
+ * autenticarsi con Google in quel momento, cioe' sapere la password di Google o
+ * avere il telefono che la sostituisce.
+ *
+ * Un'unione di due oggetti `strict()` e non un oggetto con due campi
+ * facoltativi: con due facoltativi, un corpo che non ne ha nessuno passerebbe
+ * lo schema e arriverebbe al servizio senza prova; e un corpo che li ha
+ * entrambi lascerebbe al servizio scegliere quale guardare. Con l'unione ne
+ * serve esattamente uno.
+ */
+
+/**
  * Cambio password.
  *
  * `currentPassword` c'e' anche se la rotta sta dietro `requireAuth`: il token
@@ -67,12 +129,22 @@ export const loginRequestSchema = z
  * condannare quegli account a tenersela. `newPassword` segue `passwordSchema`,
  * perche' cio' che entra da oggi rispetta la regola di oggi.
  */
-export const changePasswordRequestSchema = z
-  .object({
-    currentPassword: z.string().min(1).max(256),
-    newPassword: passwordSchema,
-  })
-  .strict();
+export const changePasswordRequestSchema = z.union([
+  z
+    .object({
+      currentPassword: passwordAttualeSchema,
+      newPassword: passwordSchema,
+    })
+    .strict(),
+  // Con Google al posto della password attuale: e' anche il modo in cui chi
+  // e' entrato solo con Google si da' una password per la prima volta.
+  z
+    .object({
+      googleIdToken: googleIdTokenSchema,
+      newPassword: passwordSchema,
+    })
+    .strict(),
+]);
 
 /**
  * «Scollega tutti gli altri dispositivi», senza toccare la password.
@@ -100,11 +172,10 @@ export const changePasswordRequestSchema = z
  * corta del minimo di oggi deve poter essere digitata proprio da chi ha un
  * problema da risolvere adesso.
  */
-export const revokeOtherSessionsRequestSchema = z
-  .object({
-    currentPassword: z.string().min(1).max(256),
-  })
-  .strict();
+export const revokeOtherSessionsRequestSchema = z.union([
+  z.object({ currentPassword: passwordAttualeSchema }).strict(),
+  z.object({ googleIdToken: googleIdTokenSchema }).strict(),
+]);
 
 /**
  * Quante sessioni sono cadute — e non `{ ok: true }`.
@@ -208,13 +279,21 @@ export const openSessionsResponseSchema = z
  * gia' scritto li': si sta verificando una password che esiste gia', non
  * accettandone una nuova.
  */
-export const revokeSessionRequestSchema = z
-  .object({
-    /** L'`id` di una riga di `openSessionsResponseSchema`, cioe' un `familyId`. */
-    sessionId: z.string().min(1),
-    currentPassword: z.string().min(1).max(256),
-  })
-  .strict();
+export const revokeSessionRequestSchema = z.union([
+  z
+    .object({
+      /** L'`id` di una riga di `openSessionsResponseSchema`, cioe' un `familyId`. */
+      sessionId: z.string().min(1),
+      currentPassword: passwordAttualeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      sessionId: z.string().min(1),
+      googleIdToken: googleIdTokenSchema,
+    })
+    .strict(),
+]);
 
 /**
  * Quante ne sono cadute: zero o uno, e il tetto non e' nello schema.
@@ -270,11 +349,10 @@ export const revokeSessionResponseSchema = z
  * doppia conferma sta in `AccountScreen`, dove si puo' cambiare senza cambiare
  * il contratto.
  */
-export const deleteAccountRequestSchema = z
-  .object({
-    currentPassword: z.string().min(1).max(256),
-  })
-  .strict();
+export const deleteAccountRequestSchema = z.union([
+  z.object({ currentPassword: passwordAttualeSchema }).strict(),
+  z.object({ googleIdToken: googleIdTokenSchema }).strict(),
+]);
 
 /**
  * Che cosa e' sparito — e non `{ ok: true }`.
@@ -319,6 +397,13 @@ export const publicUserSchema = z
     email: z.string(),
     locale: z.string(),
     createdAt: z.string(),
+    /**
+     * Quali prove d'identita' ha questo conto. Due booleani e non il valore:
+     * alla schermata serve sapere se mostrare il campo della password o il
+     * pulsante di Google, e nient'altro. Il `sub` di Google resta sul server.
+     */
+    hasPassword: z.boolean(),
+    hasGoogle: z.boolean(),
   })
   .strict();
 
@@ -362,6 +447,7 @@ export const healthResponseSchema = z
 
 export type SignupRequest = z.infer<typeof signupRequestSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
+export type GoogleLoginRequest = z.infer<typeof googleLoginRequestSchema>;
 export type ChangePasswordRequest = z.infer<typeof changePasswordRequestSchema>;
 export type RevokeOtherSessionsRequest = z.infer<typeof revokeOtherSessionsRequestSchema>;
 export type RevokeOtherSessionsResponse = z.infer<typeof revokeOtherSessionsResponseSchema>;

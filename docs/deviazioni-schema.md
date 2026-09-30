@@ -28,6 +28,7 @@ silenzio è una colonna che fra sei mesi nessuno saprà spiegare.
 | [D9](#d9) | `RecordingStatus` += `DUPLICATO_SOSPETTO`, `Recording.duplicateOfId` + `duplicateSimilarity` | conseguenza della dedup §5 in Fase 2 |
 | [D10](#d10) | `Procedure.searchText` + `Procedure.searchVector` + indice GIN | modellazione della ricerca full-text §7 |
 | [D11](#d11) | `Recording.nextAttemptAt`, e `@@index([status])` → `@@index([status, nextAttemptAt])` | il «retry» della §5 aveva bisogno di un quando |
+| [D12](#d12) | `User.passwordHash` facoltativo + `User.googleSub` unico | l'accesso con Google |
 
 Tutto il resto è invariato: `Procedure` (incluso `status @default(BOZZA_AUDIO)`), `Step`,
 `Prerequisite`, `Pitfall`, `Cost`, `Reference`, `Attachment`, `Execution`, `Tag`,
@@ -481,6 +482,33 @@ solo `status` costringerebbe a leggere riga per riga tutte le registrazioni fall
 La migration `20260906120000_recording_next_attempt_at` è scritta a mano, e contiene l'unico
 `DROP INDEX` volontario del progetto — con la motivazione accanto, perché la regola operativa qui
 sotto dice di cancellarli tutti.
+
+<a id="d12"></a>
+## D12 — `User.passwordHash` facoltativo, `User.googleSub` unico
+
+**Cosa.** `passwordHash` passa da `String` a `String?`, e nasce `googleSub String? @unique`.
+Migration `20260929100000_google_login`.
+
+**Perché.** L'accesso con Google. Chi si iscrive con Google non sceglie una password: dargliene una
+casuale vorrebbe dire un segreto che nessuno conosce ma che `login` continua a verificare, e il NULL
+dice la verità — questo conto non si apre con una password. Il servizio lo tratta come una password
+sbagliata, dopo la stessa verifica fittizia del ramo «utente inesistente», perché il tempo di
+risposta non dica quali conti sono solo Google.
+
+`googleSub` è il `sub` dell'ID token: l'unico campo che Google garantisce stabile. L'indirizzo di un
+account Google può cambiare, e serve solo la prima volta, per collegare un conto che esisteva già con
+la password (e solo se Google lo dichiara verificato). Unico, perché due conti con lo stesso account
+Google sarebbero due porte con la stessa chiave; Postgres ammette più NULL in un indice unico, cioè
+tutti i conti che con Google non c'entrano.
+
+Un conto nasce sempre con almeno una delle due: la porta (`AuthRepository.createUser`) lo dice nel
+tipo, un'unione di due forme. Non c'è un vincolo `CHECK` nel database: il solo percorso che crea
+utenti è il servizio, e il tipo lo tiene.
+
+**Cosa ne discende.** I quattro gesti protetti — cambiare la password, scollegare gli altri
+dispositivi, chiuderne uno, cancellare il conto — accettano come prova d'identità la password
+*oppure* un ID token di Google firmato da meno di cinque minuti per l'account collegato. Senza, un
+conto solo Google non potrebbe cancellarsi.
 
 ---
 

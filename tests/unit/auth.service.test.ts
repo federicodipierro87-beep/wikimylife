@@ -1139,7 +1139,14 @@ describe("me", () => {
 
     const user = await harness.service.me(session.user.id);
     expect(user).toEqual(session.user);
-    expect(Object.keys(user).sort()).toEqual(["createdAt", "email", "id", "locale"]);
+    expect(Object.keys(user).sort()).toEqual([
+      "createdAt",
+      "email",
+      "hasGoogle",
+      "hasPassword",
+      "id",
+      "locale",
+    ]);
   });
 
   it("e' UNAUTHORIZED se l'utente non esiste piu'", async () => {

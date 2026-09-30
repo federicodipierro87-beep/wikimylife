@@ -30,12 +30,35 @@ export class PrismaAuthRepository implements AuthRepository {
     return this.#prisma.user.findUnique({ where: { id } });
   }
 
-  async createUser(input: {
-    email: string;
-    passwordHash: string;
-    locale: string;
-  }): Promise<UserRecord> {
-    return this.#prisma.user.create({ data: input });
+  async findUserByGoogleSub(sub: string): Promise<UserRecord | null> {
+    return this.#prisma.user.findUnique({ where: { googleSub: sub } });
+  }
+
+  async createUser(
+    input: Parameters<AuthRepository["createUser"]>[0],
+  ): Promise<UserRecord> {
+    return this.#prisma.user.create({
+      data: {
+        email: input.email,
+        passwordHash: input.passwordHash ?? null,
+        googleSub: input.googleSub ?? null,
+        locale: input.locale,
+      },
+    });
+  }
+
+  async linkGoogle(input: { userId: string; googleSub: string }): Promise<UserRecord | null> {
+    // `updateMany` e non `update`: la seconda condizione — nessun `sub` ancora —
+    // deve stare nella stessa scrittura, e `update` accetta nella `where` solo
+    // campi unici. Zero righe vuol dire «era gia' collegato».
+    const { count } = await this.#prisma.user.updateMany({
+      where: { id: input.userId, googleSub: null },
+      data: { googleSub: input.googleSub },
+    });
+    if (count === 0) {
+      return null;
+    }
+    return this.#prisma.user.findUnique({ where: { id: input.userId } });
   }
 
   async createRefreshToken(input: NewRefreshToken): Promise<RefreshTokenRecord> {

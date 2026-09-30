@@ -61,6 +61,21 @@ export function parseOrigins(raw: string): readonly string[] {
     .filter((origine) => origine !== "");
 }
 
+/**
+ * Separa `GOOGLE_CLIENT_IDS`, scartando i vuoti.
+ *
+ * Non `parseOrigins`: quella toglie la barra finale, che per un'origine e' un
+ * errore di battitura e per un client id sarebbe una modifica silenziosa del
+ * valore. Qui una virgola di troppo non deve diventare un destinatario vuoto, e
+ * basta.
+ */
+export function parseClientIds(raw: string): readonly string[] {
+  return raw
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id !== "");
+}
+
 const baseSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
@@ -152,6 +167,26 @@ const baseSchema = z.object({
    * piccoli fanno bene, e sta dentro una richiesta con qualcuno che aspetta.
    */
   REDACTION_MODEL: z.string().default("claude-haiku-4-5-20251001"),
+
+  /**
+   * L'accesso con Google. Spento di default, come la redazione assistita, e
+   * per una ragione simile: accenderlo vuol dire far parlare questo server con
+   * Google a ogni accesso, e dirlo nella pagina della privacy. Dev'essere una
+   * scelta scritta, non l'effetto di una variabile dimenticata.
+   *
+   * `google` verifica i token con le chiavi pubbliche di Google e vuole
+   * `GOOGLE_CLIENT_IDS`. `fake` accetta i token di `tokenGoogleFinto` e serve
+   * allo sviluppo e ai test: in produzione e' rifiutato qui sotto.
+   */
+  GOOGLE_AUTH_PROVIDER: z.enum(["nessuno", "fake", "google"]).default("nessuno"),
+  /**
+   * I client OAuth di cui si accettano i token, separati da virgola: uno per
+   * il sito oggi, uno per piattaforma quando arriveranno le app. Non sono
+   * segreti — il sito lo scrive nel proprio HTML — ma sono la lista di chi puo'
+   * presentarsi qui con un'identita' di Google, e un nome in piu' e' una porta
+   * in piu'.
+   */
+  GOOGLE_CLIENT_IDS: z.string().default(""),
 
   OPENAI_API_KEY: optionalText,
   ANTHROPIC_API_KEY: optionalText,
@@ -279,6 +314,13 @@ const envSchema = baseSchema.superRefine((env, ctx) => {
     }
   }
 
+  // Senza client id il verificatore vero non saprebbe per chi e' un token, e
+  // `jwtVerify` con una lista vuota non controllerebbe il destinatario affatto:
+  // passerebbe il token di qualunque sito del mondo con un pulsante di Google.
+  if (env.GOOGLE_AUTH_PROVIDER === "google" && parseClientIds(env.GOOGLE_CLIENT_IDS).length === 0) {
+    manca("GOOGLE_CLIENT_IDS", "obbligatoria con GOOGLE_AUTH_PROVIDER=google");
+  }
+
   if (env.NODE_ENV !== "production") {
     return;
   }
@@ -323,6 +365,9 @@ const envSchema = baseSchema.superRefine((env, ctx) => {
     ["EXTRACTION_PROVIDER", env.EXTRACTION_PROVIDER],
     ["EMBEDDING_PROVIDER", env.EMBEDDING_PROVIDER],
     ["REDACTION_PROVIDER", env.REDACTION_PROVIDER],
+    // Il piu' pericoloso dei cinque: il Google finto apre qualunque conto a
+    // chiunque sappia scrivere un JSON, senza firma.
+    ["GOOGLE_AUTH_PROVIDER", env.GOOGLE_AUTH_PROVIDER],
   ] as const) {
     if (valore === "fake") {
       manca(nome, `in produzione non puo' essere "fake"`);
@@ -337,6 +382,14 @@ export interface AuthConfig {
   readonly accessTokenTtlSeconds: number;
   readonly refreshTokenTtlSeconds: number;
   readonly signupEnabled: boolean;
+  /**
+   * `nessuno` spegne la rotta; con `google` la lista dei client id e' non
+   * vuota, perche' `envSchema` lo pretende.
+   */
+  readonly google: {
+    readonly provider: "nessuno" | "fake" | "google";
+    readonly clientIds: readonly string[];
+  };
   /** Millisecondi e conteggio, gia' convertiti per il middleware. */
   readonly rateLimit: { readonly windowMs: number; readonly max: number };
 }
@@ -440,6 +493,10 @@ function toConfig(env: Env): AppConfig {
       accessTokenTtlSeconds: env.ACCESS_TOKEN_TTL_MIN * 60,
       refreshTokenTtlSeconds: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60,
       signupEnabled: env.SIGNUP_ENABLED,
+      google: {
+        provider: env.GOOGLE_AUTH_PROVIDER,
+        clientIds: parseClientIds(env.GOOGLE_CLIENT_IDS),
+      },
       rateLimit: {
         windowMs: env.AUTH_RATE_LIMIT_WINDOW_SEC * 1000,
         max: env.AUTH_RATE_LIMIT_MAX,

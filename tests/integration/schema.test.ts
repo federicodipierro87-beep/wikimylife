@@ -226,6 +226,38 @@ describe("vincoli che il dominio da' per scontati", () => {
     expect(rows.map((r) => r.indexname)).toContain("User_email_key");
   });
 
+  it("il sub di Google e' unico, e ammette tanti conti senza Google", async () => {
+    // Due conti con lo stesso account Google sarebbero due porte con la stessa
+    // chiave. L'opposto conta altrettanto: tutti i conti a sola password hanno
+    // `googleSub` NULL, e un indice unico che non ammettesse piu' NULL
+    // impedirebbe la seconda iscrizione.
+    // Questo file non svuota il database fra un caso e l'altro: le righe che
+    // scrive le toglie da se', anche quando un'asserzione cade.
+    const indirizzi = ["a@schema.test", "b@schema.test", "c@schema.test", "d@schema.test"];
+    try {
+      await prisma.user.create({ data: { email: "a@schema.test", passwordHash: "x" } });
+      await prisma.user.create({ data: { email: "b@schema.test", passwordHash: "x" } });
+      await prisma.user.create({ data: { email: "c@schema.test", googleSub: "sub-schema" } });
+
+      await expect(
+        prisma.user.create({ data: { email: "d@schema.test", googleSub: "sub-schema" } }),
+      ).rejects.toMatchObject({ code: "P2002" });
+    } finally {
+      await prisma.user.deleteMany({ where: { email: { in: indirizzi } } });
+    }
+  });
+
+  it("un conto puo' nascere senza password", async () => {
+    try {
+      const creato = await prisma.user.create({
+        data: { email: "g@schema.test", googleSub: "sub-schema-g" },
+      });
+      expect(creato.passwordHash).toBeNull();
+    } finally {
+      await prisma.user.deleteMany({ where: { email: "g@schema.test" } });
+    }
+  });
+
   it("il tokenHash del refresh token e' unico", async () => {
     // Senza questo vincolo la reuse detection avrebbe una condizione di corsa:
     // due richieste simultanee potrebbero inserire lo stesso hash.
@@ -389,6 +421,7 @@ describe("storia delle migration", () => {
       "20260906120000_recording_next_attempt_at",
       "20260907100000_rate_limit_bucket",
       "20260922100000_delete_account_cascade",
+      "20260929100000_google_login",
     ]);
     expect(rows.every((r) => r.finished_at !== null && r.rolled_back_at === null)).toBe(true);
   });

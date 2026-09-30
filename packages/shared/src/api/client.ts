@@ -40,6 +40,7 @@ import {
   type DeleteAccountResponse,
   type HealthResponse,
   type LoginRequest,
+  type GoogleLoginRequest,
   type MeResponse,
   type OpenSessionsResponse,
   type PublicUser,
@@ -152,6 +153,8 @@ export interface ApiClient {
   health(): Promise<HealthResponse>;
   signup(input: SignupRequest): Promise<AuthSession>;
   login(input: LoginRequest): Promise<AuthSession>;
+  /** Entra, o si iscrive, con l'ID token che ha consegnato il pulsante di Google. */
+  loginWithGoogle(input: GoogleLoginRequest): Promise<AuthSession>;
   me(): Promise<PublicUser>;
   /** Ruota esplicitamente. Di norma ci pensa il client da solo su 401. */
   refresh(): Promise<AuthSession>;
@@ -471,8 +474,16 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
        * rotazione inutile, e poi, al secondo rifiuto identico, la sessione
        * svuotata. Cioe' chi sbaglia la password attuale verrebbe buttato fuori
        * dall'account che stava proteggendo.
+       *
+       * `GOOGLE_TOKEN_INVALID` e' la stessa cosa per chi conferma con Google
+       * invece che con la password: la conferma nel corpo era scaduta, la
+       * sessione no. Senza questa riga chi aspetta qualche minuto fra «Accedi con
+       * Google» e «Cancella tutto per sempre» verrebbe buttato fuori dall'app,
+       * invece di sentirsi dire di confermare di nuovo.
        */
-      const sbagliatoIlCorpo = error.code === ErrorCode.INVALID_CREDENTIALS;
+      const sbagliatoIlCorpo =
+        error.code === ErrorCode.INVALID_CREDENTIALS ||
+        error.code === ErrorCode.GOOGLE_TOKEN_INVALID;
 
       const recoverable =
         opts.auth &&
@@ -578,6 +589,23 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         {
           method: "POST",
           path: "/api/auth/login",
+          body: input,
+          schema: authSessionSchema,
+          auth: false,
+        },
+        false,
+      );
+      return persist(session);
+    },
+
+    // Senza rotazione e senza `auth`, come `login`: chi chiama non ha ancora una
+    // sessione, e un 401 qui vuol dire che Google non ha confermato niente, non
+    // che un access token e' scaduto.
+    async loginWithGoogle(input: GoogleLoginRequest): Promise<AuthSession> {
+      const session = await send(
+        {
+          method: "POST",
+          path: "/api/auth/google",
           body: input,
           schema: authSessionSchema,
           auth: false,

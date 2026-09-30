@@ -19,6 +19,17 @@ export const errorCodeValues = [
    */
   "TOKEN_REUSED",
 
+  // Accesso con Google. Tre codici e non INVALID_CREDENTIALS per tutti, perche'
+  // il rimedio e' diverso per ognuno e nessuno dei tre e' «riscrivi la
+  // password»: il primo dice che questo server Google non lo conosce (la
+  // schermata non deve mostrare il pulsante), il secondo che Google non ha
+  // confermato niente (si riprova), il terzo che l'account Google esiste ma
+  // non garantisce l'indirizzo, e con un indirizzo non garantito non si apre ne'
+  // si collega nessun conto.
+  "GOOGLE_DISABLED",
+  "GOOGLE_TOKEN_INVALID",
+  "GOOGLE_EMAIL_UNVERIFIED",
+
   // Risorse
   "NOT_FOUND",
   "CONFLICT",
@@ -45,6 +56,9 @@ export const ErrorCode = {
   TOKEN_INVALID: "TOKEN_INVALID",
   TOKEN_EXPIRED: "TOKEN_EXPIRED",
   TOKEN_REUSED: "TOKEN_REUSED",
+  GOOGLE_DISABLED: "GOOGLE_DISABLED",
+  GOOGLE_TOKEN_INVALID: "GOOGLE_TOKEN_INVALID",
+  GOOGLE_EMAIL_UNVERIFIED: "GOOGLE_EMAIL_UNVERIFIED",
   NOT_FOUND: "NOT_FOUND",
   CONFLICT: "CONFLICT",
   PAYLOAD_TOO_LARGE: "PAYLOAD_TOO_LARGE",

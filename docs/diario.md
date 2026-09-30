@@ -1226,3 +1226,84 @@ Nove: **7 cadute, 2 controlli vivi**; una saltata al primo giro (il testo
 ### I numeri
 
 **1430** test unit + web su 54 file. CSS da 2 a 5 kB compressi.
+
+## Giro: entrare con Google
+
+La richiesta: login e registrazione con Google. Tre domande all'utente, tre
+risposte: **server e web adesso, app native dopo**; **un solo interruttore**
+(`SIGNUP_ENABLED` chiude anche Google); **collegamento automatico** di un conto
+con la password quando Google garantisce l'indirizzo.
+
+### Cosa è cambiato
+
+- D12: `passwordHash` facoltativo, `googleSub` unico. Migrazione scritta a mano.
+- `POST /api/auth/google` con l'ID token del pulsante di Google Identity
+  Services, verificato con `jose` contro il JWKS di Google (nessuna libreria di
+  Google). Verificatore dietro una porta, finto per sviluppo e test,
+  `GOOGLE_AUTH_PROVIDER` come gli altri fornitori, `fake` vietato in produzione.
+- I quattro gesti protetti accettano **la password oppure** un token Google dello
+  stesso account firmato da meno di cinque minuti: altrimenti un conto solo
+  Google non potrebbe cancellarsi (5.1.1(v)).
+- Web: `google.tsx` con un contesto (finto nei test), pulsante sotto il modulo
+  d'accesso, «Accedi con Google» al posto del campo password per chi non ce
+  l'ha. Spento dentro Capacitor: Google rifiuta le WebView.
+- CSP: Google solo nei quattro percorsi `gsi/`. `Referrer-Policy` da
+  `no-referrer` a `strict-origin-when-cross-origin`, letto sulla documentazione di
+  Google e non ricordato.
+
+### Il classificatore dei permessi
+
+Ha fermato la riscrittura di `revokeSessionRequestSchema` leggendola come «tolta
+la password da un gesto protetto». Riscritta per esteso, con le due varianti in
+chiaro invece che dietro un aiutante `conProva`, è passata; per coerenza sono
+state scritte per esteso anche le altre tre. La forma esplicita è anche più
+leggibile per chi rivede un cambiamento di sicurezza.
+
+### Tre difetti trovati dai test nuovi, non dalla lettura
+
+1. `changePassword` restituiva l'utente letto *prima* del cambio: chi si dava una
+   password per la prima volta riceveva `hasPassword: false`. Trovato dal primo
+   test che lo guardava.
+2. Il login su un conto senza password: il test contava le verifiche dell'hasher
+   ma non guardava *quale* hash. Togliere il ramo della verifica fittizia
+   sopravviveva, e con argon2 vero (`verify` su un hash nullo risponde `false`
+   subito) il tempo avrebbe detto quali conti sono solo Google. Trovato da una
+   mutazione sopravvissuta.
+3. Il client trattava `401 GOOGLE_TOKEN_INVALID` su un gesto autenticato come una
+   sessione scaduta: ruotava, riprovava e **svuotava la sessione**. Una conferma
+   di Google vecchia di sei minuti avrebbe buttato fuori dall'app chi stava
+   cancellando il conto. Trovato leggendo il client per capire perché una
+   mutazione sopravviveva — i test della schermata usano un client finto, e il
+   giro «ruota, riprova, svuota» succede solo in quello vero.
+
+### La precauzione scritta due volte, di nuovo
+
+Il conflitto «conto già collegato a un altro Google» è controllato nel servizio
+e nella `where` di `linkGoogle`. Da sole le due mutazioni sopravvivono, insieme
+cadono: esattamente il caso della regola. Il commento nel servizio adesso dice
+quale delle due è la garanzia.
+
+### Le mutazioni
+
+Tre giri, un runner con tre comandi (unitari, integrazione, web) e un controllo
+per ciascuno, tutti sopravvissuti.
+
+- **Primo giro** (server): 43 voci, 33 cadute, 2 saltate per gli a capo CRLF di
+  `schemas.ts`, e oltre ai due controlli 6 sopravvissute. Da quelle sono venuti
+  i difetti 2 e 3 qui sopra, e due test del client riscritti perché partivano da
+  un client vuoto, dove «non manda l'Authorization» è vero per forza.
+- **Secondo giro** (rinforzi e web): 30 voci, 20 cadute. Sopravvissute: [4] e
+  [36] da sole (cadono insieme), `allowRetry` su `loginWithGoogle` (equivalente:
+  il client ruota solo se la richiesta è autenticata), la conferma «il pulsante
+  torna dopo un rifiuto» in tre sezioni su quattro, e un avviso nascosto trovato
+  da `getByText`.
+- **Terzo giro**: i cinque casi aggiunti, e la correzione del client. Cinque
+  cadute su cinque.
+
+Dichiarate equivalenti: togliere `algorithms: ["RS256"]` dal verificatore (un
+HS256 non trova comunque una chiave RSA nel JWKS) e `allowRetry` su
+`loginWithGoogle`.
+
+### I numeri
+
+**1505** test unit + web su 57 file, **425** d'integrazione su 15 file.

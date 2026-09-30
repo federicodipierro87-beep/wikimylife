@@ -112,7 +112,7 @@ describe("signup", () => {
     await signup();
     const user = await testPrisma().user.findUniqueOrThrow({ where: { email: EMAIL } });
 
-    expect(user.passwordHash.startsWith("$argon2id$")).toBe(true);
+    expect(user.passwordHash?.startsWith("$argon2id$")).toBe(true);
     expect(user.passwordHash).not.toContain(PASSWORD);
   });
 

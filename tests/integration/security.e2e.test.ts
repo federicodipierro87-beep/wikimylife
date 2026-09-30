@@ -238,6 +238,21 @@ describe("limite dei tentativi", () => {
     expect(quarto.status).toBe(429);
   });
 
+  it("anche l'accesso con Google e' limitato, anche quando Google e' spento", async () => {
+    // Qui non c'e' niente da indovinare — un token di Google non si tira a
+    // caso — ma ogni richiesta costa una verifica RS256 e, con una chiave che il
+    // server non conosce, uno scaricamento dalle chiavi di Google. Il server di
+    // questo blocco ha Google spento: il limite viene prima di sapere se la
+    // porta esiste, e i tre 404 contano lo stesso.
+    for (let i = 0; i < 3; i += 1) {
+      const res = await call(server, "POST", "/api/auth/google", { body: { idToken: "x" } });
+      expect(res.status).toBe(404);
+    }
+
+    const quarto = await call(server, "POST", "/api/auth/google", { body: { idToken: "x" } });
+    expect(quarto.status).toBe(429);
+  });
+
   it("le due rotte con la password hanno budget separati", async () => {
     // Altrimenti chi sbaglia tre volte a scollegare i dispositivi non puo' piu'
     // cambiare la password, che e' il gesto piu' forte dei due: il limite

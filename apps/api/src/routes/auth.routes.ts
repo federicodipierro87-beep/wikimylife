@@ -1,6 +1,7 @@
 import {
   changePasswordRequestSchema,
   deleteAccountRequestSchema,
+  googleLoginRequestSchema,
   loginRequestSchema,
   logoutRequestSchema,
   refreshRequestSchema,
@@ -62,6 +63,25 @@ export function createAuthRouter(deps: {
   router.post("/login", deps.rateLimit, async (req, res) => {
     const input = parseBody(loginRequestSchema, req.body);
     const session = await deps.authService.login(input);
+    res.status(200).json(session);
+  });
+
+  /**
+   * `POST /google`: entra, o si iscrive, con un ID token di Google.
+   *
+   * Sotto `rateLimit` come `/login`, anche se qui non c'e' niente da indovinare
+   * — un token di Google non si tira a caso. La ragione e' il costo: ogni
+   * richiesta fa una verifica RS256 e, con una chiave che non conosce, uno
+   * scaricamento delle chiavi di Google. Una rotta pubblica che costa una
+   * richiesta verso terzi per ogni chiamata e' una rotta da limitare.
+   *
+   * 200 anche quando il conto nasce qui, e non 201 come `/signup`: chi chiama
+   * non ha chiesto di creare niente, ha chiesto di entrare, e la risposta e' la
+   * stessa sessione nei due casi.
+   */
+  router.post("/google", deps.rateLimit, async (req, res) => {
+    const input = parseBody(googleLoginRequestSchema, req.body);
+    const session = await deps.authService.loginWithGoogle(input);
     res.status(200).json(session);
   });
 

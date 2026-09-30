@@ -98,8 +98,12 @@ model User {
   id           String @id @default(cuid())
   email        String @unique
   /// [D4] Autenticazione email + password con argon2id.
-  passwordHash String
-  locale       String @default("it-IT")
+  /// [D12] Facoltativo: chi e' entrato solo con Google una password non ce l'ha.
+  passwordHash String?
+  /// [D12] Il `sub` del token di Google: l'identita' stabile dell'account, che
+  /// resta la stessa anche se l'utente cambia l'indirizzo di posta.
+  googleSub    String? @unique
+  locale       String  @default("it-IT")
 
   /// ## Perche' tutte e quattro cancellano a cascata
   ///

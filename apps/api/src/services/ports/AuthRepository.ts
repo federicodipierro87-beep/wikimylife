@@ -10,7 +10,10 @@
 export interface UserRecord {
   readonly id: string;
   readonly email: string;
-  readonly passwordHash: string;
+  /** `null` per chi si e' iscritto con Google e non ha mai scelto una password. */
+  readonly passwordHash: string | null;
+  /** Il `sub` dell'account Google collegato, se ce n'e' uno. */
+  readonly googleSub: string | null;
   readonly locale: string;
   readonly createdAt: Date;
 }
@@ -112,11 +115,38 @@ export interface FamilyRegistry {
 export interface AuthRepository extends FamilyRegistry {
   findUserByEmail(email: string): Promise<UserRecord | null>;
   findUserById(id: string): Promise<UserRecord | null>;
-  createUser(input: {
-    readonly email: string;
-    readonly passwordHash: string;
-    readonly locale: string;
-  }): Promise<UserRecord>;
+  findUserByGoogleSub(sub: string): Promise<UserRecord | null>;
+  /**
+   * Un conto nasce con almeno una delle due prove: la password dal modulo di
+   * iscrizione, o il `sub` dal pulsante di Google. Con nessuna delle due sarebbe
+   * un conto che nessuno puo' aprire — e che nessuno puo' cancellare.
+   */
+  createUser(
+    input:
+      | {
+          readonly email: string;
+          readonly passwordHash: string;
+          readonly googleSub?: undefined;
+          readonly locale: string;
+        }
+      | {
+          readonly email: string;
+          readonly passwordHash?: undefined;
+          readonly googleSub: string;
+          readonly locale: string;
+        },
+  ): Promise<UserRecord>;
+
+  /**
+   * Collega un account Google a un conto che esisteva gia'.
+   *
+   * Scrive solo se il conto non ha ancora un `sub`: la condizione sta nella
+   * scrittura e non in una lettura prima, perche' fra le due un secondo
+   * collegamento arrivato in parallelo vincerebbe l'altro senza che nessuno se
+   * ne accorga. Restituisce il conto aggiornato, o `null` se era gia' collegato
+   * (a questo `sub` o a un altro: chi chiama rilegge e decide).
+   */
+  linkGoogle(input: { readonly userId: string; readonly googleSub: string }): Promise<UserRecord | null>;
 
   createRefreshToken(input: NewRefreshToken): Promise<RefreshTokenRecord>;
   findRefreshTokenByHash(tokenHash: string): Promise<RefreshTokenRecord | null>;

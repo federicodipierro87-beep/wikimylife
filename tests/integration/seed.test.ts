@@ -42,7 +42,7 @@ describe("utente di prova", () => {
   it("esiste con la password hashata, mai in chiaro", async () => {
     const user = await prisma.user.findUniqueOrThrow({ where: { id: SEED_IDS.user } });
 
-    expect(user.passwordHash.startsWith("$argon2id$")).toBe(true);
+    expect(user.passwordHash?.startsWith("$argon2id$")).toBe(true);
     expect(user.passwordHash).not.toContain("wikimylife-demo-2026");
   });
 

@@ -35,6 +35,7 @@ export function creaClienteFinto(risposte: Partial<ApiClient> = {}): ApiClient {
     health: () => nonPrevista("health"),
     signup: () => nonPrevista("signup"),
     login: () => nonPrevista("login"),
+    loginWithGoogle: () => nonPrevista("loginWithGoogle"),
     me: () => nonPrevista("me"),
     refresh: () => nonPrevista("refresh"),
     logout: () => nonPrevista("logout"),

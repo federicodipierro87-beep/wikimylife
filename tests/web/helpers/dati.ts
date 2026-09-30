@@ -225,6 +225,8 @@ export function unaSessione(): AuthSession {
       email: "mario@example.com",
       locale: "it-IT",
       createdAt: "2026-01-01T10:00:00.000Z",
+      hasPassword: true,
+      hasGoogle: false,
     },
     tokens: {
       accessToken: "a",

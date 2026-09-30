@@ -23,6 +23,17 @@ export interface Session {
   readonly state: SessionState;
   login(email: string, password: string): Promise<void>;
   signup(email: string, password: string): Promise<void>;
+  /** Entra, o si iscrive, con il token del pulsante di Google. */
+  loginWithGoogle(idToken: string): Promise<void>;
+  /**
+   * Sostituisce l'utente della sessione con quello appena tornato dal server.
+   *
+   * Serve a un caso solo, ma e' un caso che si vede: chi e' entrato con Google
+   * e si da' una password riceve un utente con `hasPassword: true`, e senza
+   * questo la schermata dell'account continuerebbe a chiedergli Google fino
+   * alla prossima apertura dell'app.
+   */
+  aggiornaUtente(user: PublicUser): void;
   logout(): Promise<void>;
 }
 
@@ -74,6 +85,19 @@ export function SessionProvider({ children }: { children: React.ReactNode }): Re
     [apiClient],
   );
 
+  const loginWithGoogle = useCallback(
+    async (idToken: string): Promise<void> => {
+      // La lingua come nell'iscrizione: conta solo se il conto nasce adesso.
+      const session = await apiClient.loginWithGoogle({ idToken, locale: navigator.language });
+      setState({ kind: "attiva", user: session.user });
+    },
+    [apiClient],
+  );
+
+  const aggiornaUtente = useCallback((user: PublicUser): void => {
+    setState((prima) => (prima.kind === "attiva" ? { kind: "attiva", user } : prima));
+  }, []);
+
   const logout = useCallback(async (): Promise<void> => {
     try {
       await apiClient.logout();
@@ -86,8 +110,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }): Re
   }, [apiClient]);
 
   const value = useMemo<Session>(
-    () => ({ state, login, signup, logout }),
-    [state, login, signup, logout],
+    () => ({ state, login, signup, loginWithGoogle, aggiornaUtente, logout }),
+    [state, login, signup, loginWithGoogle, aggiornaUtente, logout],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

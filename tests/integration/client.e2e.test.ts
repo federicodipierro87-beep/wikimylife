@@ -11,7 +11,7 @@ import {
 } from "@wikimylife/shared";
 import { buildExtractionContract, createInMemorySecureStorage } from "@wikimylife/shared/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { FakeExtractionProvider } from "../../apps/api/src/providers/fake/index.js";
+import { FakeExtractionProvider, tokenGoogleFinto } from "../../apps/api/src/providers/fake/index.js";
 import { disconnectTestPrisma, resetDatabase } from "./helpers/db.js";
 import { startTestServer, type TestServer } from "./helpers/server.js";
 
@@ -76,7 +76,12 @@ beforeAll(async () => {
   // regex — e l'audio finto restituisce gli stessi byte che ha ricevuto. Un
   // provider acceso qui avrebbe messo di mezzo un finto in piu' fra il client e
   // il server, cioe' proprio la cosa che questo file esiste per togliere.
-  server = await startTestServer({ corsOrigins: ORIGINE });
+  //
+  // Google invece e' acceso, con il verificatore finto: `loginWithGoogle` e'
+  // un metodo del client come gli altri, e la guardia in fondo pretende che
+  // attraversi il ponte. Il finto sta *dietro* la rotta, non davanti al
+  // client: cio' che passa sul filo e' vero.
+  server = await startTestServer({ corsOrigins: ORIGINE, google: "fake" });
 
   const { extraction } = server.composition.providers;
   if (!(extraction instanceof FakeExtractionProvider)) {
@@ -269,6 +274,24 @@ describe("il ponte: la sessione", () => {
 
     expect(sessione.user.email).toBe(email);
     expect(secondo.client.getAccessToken()).not.toBeNull();
+  });
+
+  it("Google apre una sessione dal client vero, e la stessa conferma poi cancella il conto", async () => {
+    const cliente = creaCliente();
+    const email = emailNuova();
+    const idToken = tokenGoogleFinto({ sub: `sub-${email}`, email });
+
+    const sessione = await cliente.client.loginWithGoogle({ idToken });
+
+    expect(sessione.user).toMatchObject({ email, hasPassword: false, hasGoogle: true });
+    expect(cliente.storage.snapshot()).toEqual({
+      [AUTH_STORAGE_KEYS.refreshToken]: sessione.tokens.refreshToken,
+    });
+    // L'unione dello schema attraversa il filo: il corpo con il solo token
+    // arriva intero, e il server lo accetta come prova.
+    await expect(cliente.client.deleteAccount({ googleIdToken: idToken })).resolves.toMatchObject({
+      sessioni: 1,
+    });
   });
 
   it("un deposito precaricato ritrova l'utente senza passare dalla password", async () => {
@@ -1033,7 +1056,7 @@ describe("il ponte: guardia", () => {
     // del client da oggetto letterale a classe, che e' una riscrittura
     // plausibile — renderebbe la guardia sopra verde per sempre, e nessuno se ne
     // accorgerebbe perche' i test verdi non si rileggono.
-    expect(tuttiIMetodi()).toHaveLength(30);
+    expect(tuttiIMetodi()).toHaveLength(31);
     expect(attraversati.size).toBeGreaterThan(0);
   });
 });

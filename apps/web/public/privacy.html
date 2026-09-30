@@ -16,8 +16,10 @@
       Ogni frase su cosa esce e verso chi e' stata verificata nel codice, non
       scritta a memoria: i modelli stanno in apps/api/src/config/env.ts, cio'
       che va agli embedding in ingestion.service.ts, le coordinate verso
-      Nominatim in apps/web/src/recording/GeolocationAdapter.ts. Chi cambia uno
-      di questi file cambia anche questa pagina.
+      Nominatim in apps/web/src/recording/GeolocationAdapter.ts, l'accesso con
+      Google in apps/api/src/infra/JoseGoogleIdTokenVerifier.ts e in
+      apps/api/src/services/auth.service.ts. Chi cambia uno di questi file
+      cambia anche questa pagina.
     -->
     <link rel="stylesheet" href="/privacy.css" />
     <title>Privacy &middot; WikiMyLife</title>
@@ -25,7 +27,7 @@
   <body>
     <main>
       <h1>Privacy</h1>
-      <p class="aggiornata">Ultimo aggiornamento: 23 settembre 2026</p>
+      <p class="aggiornata">Ultimo aggiornamento: 29 settembre 2026</p>
 
       <p>
         WikiMyLife trasforma le tue note vocali in schede che puoi ritrovare. Per farlo deve
@@ -44,6 +46,11 @@
         <li>
           <strong>Il conto</strong>: l&apos;indirizzo email e la password, che non &egrave; mai
           salvata in chiaro ma solo come impronta (argon2id).
+        </li>
+        <li>
+          <strong>Se entri con Google</strong>: il codice con cui Google identifica il tuo account,
+          e l&apos;indirizzo email che Google ci conferma. Non riceviamo n&eacute; la tua password di
+          Google n&eacute; altro del tuo profilo.
         </li>
         <li>
           <strong>Le registrazioni</strong>: il file audio, quando &egrave; stato registrato, la sua
@@ -117,6 +124,14 @@
               <td>Dare un nome alla zona, fermandosi al quartiere</td>
             </tr>
             <tr>
+              <td>Google (Stati Uniti)</td>
+              <td>
+                Solo se usi &laquo;Continua con Google&raquo;: Google sa che stai entrando in
+                WikiMyLife, perch&eacute; sei tu a farti riconoscere da lui, dal tuo dispositivo
+              </td>
+              <td>Entrare senza una password, o confermare che sei tu</td>
+            </tr>
+            <tr>
               <td>Railway</td>
               <td>Tutto ci&ograve; che conserviamo</td>
               <td>Ospita il server, il database e i file audio</td>
@@ -151,7 +166,8 @@
       <h2>Cancellare tutto</h2>
       <p>
         Dall&apos;app, nella schermata del conto,
-        <strong>Cancella il conto</strong>: con la tua password si cancellano il conto, le
+        <strong>Cancella il conto</strong>: con la tua password, o confermando con Google se
+        &egrave; cos&igrave; che entri, si cancellano il conto, le
         registrazioni, le schede, i tag e le sessioni, e i file audio vengono tolti
         dall&apos;archivio nello stesso momento. Se la rimozione di un file non riesce,
         l&apos;errore viene registrato per poterlo rimuovere.

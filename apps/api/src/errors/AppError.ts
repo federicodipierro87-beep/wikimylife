@@ -93,6 +93,35 @@ export class AppError extends Error {
   }
 
   /**
+   * 404 e non 503: non e' un guasto passeggero, e' una porta che su questo
+   * server non esiste. Un 503 inviterebbe il client a riprovare, e riprovare
+   * qui non cambia niente finche' qualcuno non configura Google.
+   */
+  static googleDisabled(): AppError {
+    return new AppError({
+      code: ErrorCode.GOOGLE_DISABLED,
+      message: "L'accesso con Google non e' attivo",
+      status: 404,
+    });
+  }
+
+  static googleTokenInvalid(): AppError {
+    return new AppError({
+      code: ErrorCode.GOOGLE_TOKEN_INVALID,
+      message: "Google non ha confermato chi sei. Riprova.",
+      status: 401,
+    });
+  }
+
+  static googleEmailUnverified(): AppError {
+    return new AppError({
+      code: ErrorCode.GOOGLE_EMAIL_UNVERIFIED,
+      message: "Google non garantisce l'indirizzo di questo account: entra con email e password",
+      status: 403,
+    });
+  }
+
+  /**
    * Distinti da VALIDATION_FAILED perche' il rimedio e' diverso: qui non si
    * corregge un campo, si manda un altro file. Un client che riprovasse la
    * stessa richiesta dopo un 400 avrebbe ragione; dopo questi due, no.

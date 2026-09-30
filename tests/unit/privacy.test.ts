@@ -53,6 +53,10 @@ const TERZI: Record<string, string> = {
   "api.openai.com": "OpenAI",
   "api.anthropic.com": "Anthropic",
   "nominatim.openstreetmap.org": "Nominatim",
+  // Le chiavi pubbliche con cui l'API verifica i token del pulsante di Google.
+  "www.googleapis.com": "Google",
+  // L'emittente dei token, e il dominio da cui il sito carica il pulsante.
+  "accounts.google.com": "Google",
   // Il ripiego di `S3StorageProvider` quando manca un endpoint: AWS. In
   // produzione l'endpoint c'e' ed e' il bucket di Railway, ed e' Railway che la
   // pagina deve nominare. Se un giorno il bucket passasse davvero ad AWS, questa

@@ -26,6 +26,7 @@ interface VocaleFinto {
  *
  * Riproduce i vincoli che contano del database vero, non tutti:
  *  - email unica (case-insensitive: e' cosi' che il servizio la normalizza);
+ *  - `googleSub` unico, e il collegamento scrive solo su un conto senza `sub`;
  *  - `tokenHash` unico;
  *  - la rotazione e' atomica — qui e' banale perche' non c'e' concorrenza, ma
  *    la firma e' la stessa, quindi il servizio non sa la differenza.
@@ -59,7 +60,8 @@ export class InMemoryAuthRepository implements AuthRepository {
   seedUser(input: {
     readonly id?: string;
     readonly email: string;
-    readonly passwordHash: string;
+    readonly passwordHash: string | null;
+    readonly googleSub?: string | null;
     readonly locale?: string;
     readonly createdAt?: Date;
   }): UserRecord {
@@ -67,6 +69,7 @@ export class InMemoryAuthRepository implements AuthRepository {
       id: input.id ?? this.#nextId("user"),
       email: input.email.toLowerCase(),
       passwordHash: input.passwordHash,
+      googleSub: input.googleSub ?? null,
       locale: input.locale ?? "it-IT",
       createdAt: input.createdAt ?? new Date("2026-01-01T00:00:00.000Z"),
     };
@@ -133,16 +136,44 @@ export class InMemoryAuthRepository implements AuthRepository {
     return user === undefined ? null : { ...user };
   }
 
-  async createUser(input: {
-    readonly email: string;
-    readonly passwordHash: string;
-    readonly locale: string;
-  }): Promise<UserRecord> {
+  async findUserByGoogleSub(sub: string): Promise<UserRecord | null> {
+    for (const user of this.#users.values()) {
+      if (user.googleSub === sub) {
+        return { ...user };
+      }
+    }
+    return null;
+  }
+
+  async createUser(
+    input: Parameters<AuthRepository["createUser"]>[0],
+  ): Promise<UserRecord> {
     const existing = await this.findUserByEmail(input.email);
     if (existing !== null) {
       throw new Error(`email gia' presente: ${input.email}`);
     }
-    return this.seedUser(input);
+    if (input.googleSub !== undefined && (await this.findUserByGoogleSub(input.googleSub)) !== null) {
+      throw new Error(`googleSub gia' presente: ${input.googleSub}`);
+    }
+    return this.seedUser({
+      email: input.email,
+      passwordHash: input.passwordHash ?? null,
+      googleSub: input.googleSub ?? null,
+      locale: input.locale,
+    });
+  }
+
+  async linkGoogle(input: { userId: string; googleSub: string }): Promise<UserRecord | null> {
+    const user = this.#users.get(input.userId);
+    if (user === undefined || user.googleSub !== null) {
+      return null;
+    }
+    if ((await this.findUserByGoogleSub(input.googleSub)) !== null) {
+      throw new Error(`googleSub gia' presente: ${input.googleSub}`);
+    }
+    const aggiornato: UserRecord = { ...user, googleSub: input.googleSub };
+    this.#users.set(user.id, aggiornato);
+    return { ...aggiornato };
   }
 
   async createRefreshToken(input: NewRefreshToken): Promise<RefreshTokenRecord> {

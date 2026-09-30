@@ -291,6 +291,36 @@ describe("netlify", () => {
     expect(csp).not.toContain("unsafe-eval");
   });
 
+  it("la CSP ammette lo script, lo stile e il riquadro del pulsante di Google", () => {
+    const csp = scalare(NETLIFY, "Content-Security-Policy") ?? "";
+    expect(csp).toMatch(/script-src [^;]*https:\/\/accounts\.google\.com\/gsi\/client/);
+    expect(csp).toMatch(/style-src [^;]*https:\/\/accounts\.google\.com\/gsi\/style/);
+    expect(csp).toMatch(/frame-src [^;]*https:\/\/accounts\.google\.com\/gsi\//);
+  });
+
+  it("e ammette Google solo li': ogni volta che il dominio compare, e' seguito da /gsi/", () => {
+    // L'opposto del caso sopra. `accounts.google.com` ospita molto altro, e un
+    // `script-src https://accounts.google.com` intero lascerebbe caricare
+    // dentro questa pagina qualunque script di quel dominio.
+    const csp = scalare(NETLIFY, "Content-Security-Policy") ?? "";
+    const occorrenze = [...csp.matchAll(/accounts\.google\.com(\S*)/g)].map((m) => m[1] ?? "");
+    expect(occorrenze.length).toBeGreaterThan(0);
+    for (const coda of occorrenze) {
+      expect(coda.startsWith("/gsi/")).toBe(true);
+    }
+    expect(csp).not.toMatch(/\*\.google/);
+  });
+
+  it("il referrer verso i terzi e' al massimo l'origine, mai il percorso", () => {
+    // Il pulsante di Google vuole un referrer, e la sua documentazione chiede
+    // `strict-origin-when-cross-origin`. I valori che mandano il percorso a un
+    // altro dominio — `unsafe-url`, `no-referrer-when-downgrade` — non devono
+    // entrare per far funzionare un pulsante.
+    expect(["strict-origin-when-cross-origin", "strict-origin", "no-referrer"]).toContain(
+      scalare(NETLIFY, "Referrer-Policy"),
+    );
+  });
+
   it("la CSP lascia passare i blob, che servono al player", () => {
     // Il player scarica l'audio con `fetch` — quell'URL vuole un header
     // Authorization che un `src` non puo' portare — e lo passa a `<audio>` come

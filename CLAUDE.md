@@ -252,8 +252,8 @@ rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
 deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
-**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1430 test**
-unit + web su 54 file, **405** d'integrazione su 14 file, albero pulito.
+**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1505 test**
+unit + web su 57 file, **425** d'integrazione su 15 file, albero pulito.
 
 Il giro in corso è il guscio nativo: un'app vera per iOS e Android, con dentro il
 web già costruito, perché il cartello del microfono lo chieda il sistema una
@@ -280,6 +280,13 @@ La **fase 2 è verde**: `apps/mobile/ios` (Swift Package Manager, niente
 CocoaPods), le frasi dei permessi in `Info.plist`, e il job `ios` su
 `macos-latest` che compila senza firma — riuscito al primo colpo. La fase 0 è
 chiusa anche sul sito: `privacy.html` misurata il 25 settembre 2026.
+
+In mezzo, un giro a parte: **si entra con Google** (`POST /api/auth/google`, ID
+token verificato con `jose` contro il JWKS; server e web, non le app native, dove
+Google rifiuta le WebView). Tutto provato con il verificatore finto: **nessun
+token vero di Google è ancora passato di qui**, perché il client OAuth va creato a
+mano dall'utente (README, «Entrare con Google») e poi servono `GOOGLE_CLIENT_IDS`
+su Railway e `VITE_GOOGLE_CLIENT_ID` su Netlify.
 
 ### Il prossimo passo: le misure che mancano
 
