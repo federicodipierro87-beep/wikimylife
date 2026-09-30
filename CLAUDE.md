@@ -292,8 +292,10 @@ su Railway e `VITE_GOOGLE_CLIENT_ID` su Netlify.
 
 1. Lo stato della CI si legge da
    `https://api.github.com/repos/federicodipierro87-beep/wikimylife/actions/runs`
-   (il filtro `head_sha` vuole lo SHA **intero**); i log vogliono un token, e
-   `gh auth login` lo deve fare l'utente.
+   (il filtro `head_sha` vuole lo SHA **intero**). `gh` è autenticato: i log si
+   leggono con `gh run view <id> --log-failed`. **Un rosso si apre subito**: il
+   job `integrazione` è rimasto rosso sedici giorni per un'immagine sparita da
+   Docker Hub, scritto qui come «va aperto il log» senza che nessuno lo aprisse.
 2. `CORS_ORIGINS` su Railway è
    `https://wikimylife.netlify.app,https://localhost,capacitor://localhost`
    dal 28 settembre 2026, verificato con un preflight sull'API dopo il deploy.
@@ -302,8 +304,9 @@ su Railway e `VITE_GOOGLE_CLIENT_ID` su Netlify.
    chiaro, che stampa le chiavi.
 3. **Sul telefono Android dell'utente**: login, registrazione, chiudere e
    riaprire, registrazione. La promessa: il cartello del microfono una volta sola.
-4. Il job `integrazione` fallisce sul passo del bucket **da prima del guscio
-   nativo** (run di `0fc6215`): va aperto il log.
+4. Il bucket di sviluppo e test è `pgsty/minio`, un fork: `minio/minio` e
+   `minio/mc` non esistono più su Docker Hub. Docker serve solo lì; in
+   produzione non c'è, e l'utente vuole che resti così.
 
 Poi la fase 3, TestFlight, che aspetta l'iscrizione all'**Apple Developer
 Program** (99 $/anno): la verifica d'identità è la cosa più lenta del percorso.

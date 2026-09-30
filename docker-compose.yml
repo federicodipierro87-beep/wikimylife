@@ -29,8 +29,27 @@ services:
   # un container serve davvero — FakeStorageProvider impagina e conta i byte,
   # ma non ha una firma da sbagliare, non ha un segnalibro opaco da rimandare
   # indietro e non ha un XML da interpretare.
+  #
+  # ## Perche' `pgsty/minio` e non `minio/minio`
+  #
+  # MinIO ha smesso di pubblicare le immagini della versione libera, e a
+  # settembre 2026 `minio/minio` su Docker Hub non esiste piu': ne' il tag
+  # fissato qui prima, ne' il repository (anche `minio/mc` e' sparito). Il job
+  # d'integrazione e' rosso dal 14 settembre (`bf1a9ce`) con «pull access
+  # denied», e per sedici giorni nessuno ha letto il log.
+  #
+  # `pgsty/minio` e' il fork mantenuto da Pigsty, e l'immagine e' costruita come
+  # quella di prima: stesso `docker-entrypoint.sh`, `curl` in /usr/bin (serve
+  # all'healthcheck) e `mc` come collegamento a `mcli` (serve a storage-init).
+  # Lo si e' letto dalla configurazione dell'immagine sul registro, non dalla
+  # sua pagina. Scartati: `bitnamilegacy/minio`, congelata ad agosto 2025, e un
+  # server S3 diverso (RustFS, Garage), che cambierebbe cosa provano i test di
+  # `storage.s3.e2e` e `sweep.s3.e2e` insieme all'immagine.
+  #
+  # Riguarda solo sviluppo e test: in produzione il bucket e' quello nativo di
+  # Railway, e nessun container di questo file ci arriva.
   storage:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     container_name: wikimylife-storage
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -65,7 +84,7 @@ services:
   # vorrebbe dire cancellare gli audio veri di chi sta provando l'app —
   # esattamente cio' che DATABASE_URL_TEST esiste per impedire dall'altra parte.
   storage-init:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     container_name: wikimylife-storage-init
     depends_on:
       storage:

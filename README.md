@@ -63,7 +63,12 @@ previsto, non un guasto.
 > `docker-compose.yml` e allinea `DATABASE_URL` e `DATABASE_URL_TEST`.
 
 `docker compose up -d` tira su due cose: il Postgres con pgvector e un MinIO, che
-parla il protocollo S3 e fa da bucket. I bucket sono due — `wikimylife` per lo
+parla il protocollo S3 e fa da bucket. L'immagine è `pgsty/minio`, un fork della
+comunità, perché quella ufficiale da settembre 2026 su Docker Hub non c'è più; il
+commento in `docker-compose.yml` spiega perché proprio quella. Docker serve solo
+qui, per sviluppare e far girare i test: il repository non ha un Dockerfile, in
+produzione API e worker sono due comandi npm che Railway costruisce e avvia da
+sé, e il bucket è quello nativo di Railway. I bucket sono due — `wikimylife` per lo
 sviluppo e `wikimylife-test` per la suite d'integrazione, che lo svuota fra un
 file e l'altro — e li crea un container che muore subito dopo, per cui vederlo
 `exited` in `docker compose ps` è normale. La console sta su
@@ -4393,13 +4398,22 @@ Non installate, e il perché:
   prima che l'API lo applicasse: rileggere il pannello non bastava. Resta
   fuori il resto della catena: che il login dall'APK riesca lo dice il
   telefono, e nessun test di questo repo sa se quella variabile è ancora così.
-- **I log della CI non si leggono da qui.** Lo stato dei job si legge dall'API
-  pubblica di GitHub, i log no: vogliono un token, e `gh` su questa macchina non
-  è autenticato. Il job `integrazione` fallisce sul passo «il bucket dei test»
-  già dalla run di `0fc6215`, prima del guscio nativo, e il motivo sta in un log
-  che da qui non si apre. E un avviso che per ora non rompe niente: GitHub
-  segnala che `actions/checkout@v4` e `actions/setup-node@v4` sono scritte per
-  Node 20, deprecato sui runner, e oggi le fa girare su Node 24 d'ufficio.
+- **Il bucket dei test sta su un fork di MinIO, mantenuto da un progetto solo.**
+  Dal 14 settembre 2026 (`bf1a9ce`) il job `integrazione` è stato rosso sul
+  passo «il bucket dei test», per una ragione che col codice non c'entrava:
+  MinIO ha ritirato da Docker Hub sia `minio/minio` sia `minio/mc`, e il pull
+  rispondeva «pull access denied». Nessuno l'ha visto per sedici giorni,
+  perché i log vogliono un token e `gh` qui non era ancora autenticato: adesso
+  lo è, e il log si legge con `gh run view <id> --log-failed`. Il compose usa
+  `pgsty/minio`, il fork di Pigsty, che ha la stessa struttura dell'immagine di
+  prima (entrypoint, `curl` e `mc`): con quello i 425 casi d'integrazione
+  passano. Restano due cose. Se anche Pigsty smette di pubblicare, si ricade
+  nello stesso guasto, e l'uscita non è un'altra immagine: è un server S3
+  diverso, che cambia cosa provano i test di storage. E niente avvisa quando la
+  CI diventa rossa: lo si scopre solo andando a guardare. Più un avviso che per
+  ora non rompe niente: GitHub segnala che `actions/checkout@v4` e
+  `actions/setup-node@v4` sono scritte per Node 20, deprecato sui runner, e oggi
+  le fa girare su Node 24 d'ufficio.
 - **L'APK è firmato con una chiave di debug, e l'identità dell'app è già
   decisa.** La chiave la crea Gradle sul runner, e niente garantisce che sia la
   stessa fra due run: può servire disinstallare prima di installare la

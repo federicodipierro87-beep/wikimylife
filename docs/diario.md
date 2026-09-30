@@ -1307,3 +1307,50 @@ HS256 non trova comunque una chiave RSA nel JWKS) e `allowRetry` su
 ### I numeri
 
 **1505** test unit + web su 57 file, **425** d'integrazione su 15 file.
+
+---
+
+## Giro: la CI rossa per sedici giorni
+
+Il job `integrazione` era rosso dal 14 settembre 2026 (`bf1a9ce`; l'ultimo verde
+è del 7), e la memoria di lavoro lo registrava come «fallisce sul passo del
+bucket, va aperto il log». Il log, aperto con `gh run view --log-failed`
+(`gh` risultava autenticato, contro quanto diceva la memoria di lavoro),
+diceva una riga sola:
+
+```
+storage Error pull access denied for minio/minio, repository does not exist
+```
+
+MinIO ha ritirato le immagini della versione libera: Docker Hub risponde `404`
+per tutto il repository `minio/minio`, non solo per il tag fissato, e anche
+`minio/mc` è sparito. In locale non si vedeva perché l'immagine era già nella
+cache di Docker.
+
+### La scelta
+
+`pgsty/minio`, il fork di Pigsty, fissato a `RELEASE.2026-08-04T00-00-00Z`.
+Prima di sceglierlo si è letta la configurazione dell'immagine dal registro
+(manifesto e storia dei livelli, senza scaricarla): stesso
+`docker-entrypoint.sh`, `curl` in `/usr/bin` per l'healthcheck, `mc` come
+collegamento a `mcli` per `storage-init`. Si sostituisce quindi senza toccare
+altro. Scartati: `bitnamilegacy/minio`, congelata ad agosto 2025; `chainguard/minio`,
+di cui non si sapeva se avesse `curl`; RustFS, che è un server diverso e avrebbe
+cambiato cosa provano `storage.s3.e2e` e `sweep.s3.e2e`.
+
+L'utente ha chiesto di non avere Docker in produzione: così è già, e lo era
+prima. Il repository non ha Dockerfile, e il compose serve solo a sviluppo e
+test.
+
+### Verificato
+
+In locale il passo della CI rifatto a mano (compose, `docker wait`, codice
+d'uscita 0) e poi `npm run test:integration` contro il fork: **425** su 425, su
+un volume scritto dalla versione vecchia di MinIO.
+
+### La lezione
+
+Un difetto noto della forma «fallisce, va aperto il log» è rimasto nella memoria
+per più giri senza che nessuno lo aprisse, e la causa era a una riga di
+distanza. Un rosso in CI si apre subito, anche quando sembra estraneo al lavoro
+in corso.
