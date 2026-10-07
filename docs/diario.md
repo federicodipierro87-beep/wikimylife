@@ -1354,3 +1354,9 @@ Un difetto noto della forma «fallisce, va aperto il log» è rimasto nella memo
 per più giri senza che nessuno lo aprisse, e la causa era a una riga di
 distanza. Un rosso in CI si apre subito, anche quando sembra estraneo al lavoro
 in corso.
+
+### La CI, dopo
+
+La run 36696197487 su `590673d` è verde su tutti e cinque i job, la prima dal 7
+settembre. Sulla stessa run GitHub avvisa che dal 19 ottobre 2026
+`ubuntu-latest` diventa Ubuntu 26: annotato in `CLAUDE.md` fra i prossimi passi.

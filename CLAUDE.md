@@ -253,7 +253,10 @@ deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
 **Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1505 test**
-unit + web su 57 file, **425** d'integrazione su 15 file, albero pulito.
+unit + web su 57 file, **425** d'integrazione su 15 file, albero pulito. **La CI
+è verde su tutti e cinque i job** dalla run 36696197487 (`590673d`, 30 settembre
+2026), la prima dal 7 settembre: l'integrazione era rossa per l'immagine di
+MinIO sparita, si veda il punto 4 qui sotto.
 
 Il giro in corso è il guscio nativo: un'app vera per iOS e Android, con dentro il
 web già costruito, perché il cartello del microfono lo chieda il sistema una
@@ -307,6 +310,11 @@ su Railway e `VITE_GOOGLE_CLIENT_ID` su Netlify.
 4. Il bucket di sviluppo e test è `pgsty/minio`, un fork: `minio/minio` e
    `minio/mc` non esistono più su Docker Hub. Docker serve solo lì; in
    produzione non c'è, e l'utente vuole che resti così.
+5. **Dal 19 ottobre 2026 `ubuntu-latest` passa a Ubuntu 26** (avviso di GitHub
+   sulla run di `590673d`), e `actions/checkout@v4` e `actions/setup-node@v4`
+   sono scritte per Node 20, deprecato: oggi girano su Node 24 d'ufficio. Non
+   rompono niente adesso; la prima run dopo il 19 va guardata, e se cade lì la
+   causa è probabilmente il runner e non il codice.
 
 Poi la fase 3, TestFlight, che aspetta l'iscrizione all'**Apple Developer
 Program** (99 $/anno): la verifica d'identità è la cosa più lenta del percorso.
