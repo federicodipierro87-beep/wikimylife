@@ -209,9 +209,29 @@ toccare una riga di codice.
 ```
 BOZZA_AUDIO ──claim──> IN_ELABORAZIONE ──┬──> ESTRATTO            crea la Procedure
      ▲                                   ├──> DUPLICATO_SOSPETTO  [D9] non crea niente
-     │                                   └──> ESTRAZIONE_FALLITA  dopo 2 tentativi
+     │                                   ├──> ESTRAZIONE_FALLITA  dopo 2 tentativi
+     │                                   └──> (di nuovo in coda)  worker morto: 15 min di silenzio
      └──── errore STT, o POST /retry ────────────────────────────────┘
 ```
+
+**Un worker morto non si porta via la riga.** Un redeploy che arriva al
+`SIGKILL`, o un processo finito senza memoria, lascia la sua registrazione in
+`IN_ELABORAZIONE`, e da lì prima non usciva più: `claimNext` non la vede, `/retry`
+e la `DELETE` la rifiutano apposta. Adesso ogni `processNext` comincia cercando le
+righe in volo che tacciono da più di `SOGLIA_INTERROTTA_MS` — un quarto d'ora — e
+le rimette in coda con il codice `elaborazione.interrotta`. «Tacere» si misura su
+`updatedAt`, che ogni stadio della pipeline rinfresca scrivendo sulla riga. Il
+giro perso conta come un tentativo, con il suo backoff e il suo posto sotto il
+tetto dei tre: un audio che uccide il worker a ogni ripresa esce dalla coda invece
+di girare per sempre. Il rilascio è un compare-and-swap con il tempo nel `WHERE`,
+così un worker che si rifà vivo fra la ricerca e il rilascio si tiene la riga.
+
+La soglia vale solo perché un worker vivo ha un silenzio massimo, e ce l'ha solo
+perché ogni chiamata esterna ha un timeout: fra due scritture ci sono al più un
+`get` dallo storage e una chiamata a un modello, due minuti ciascuno. Il timeout
+dello storage (`STORAGE_TIMEOUT_MS`) è nato per questo: prima un bucket che non
+rispondeva poteva fermare il worker per il tempo che decideva la rete. Un test
+tiene la soglia ad almeno il doppio di quella somma, e sotto la mezz'ora.
 
 **La validazione della §5 è codice, non un secondo giro di LLM.**
 `services/validation/extractionValidation.ts`: passi rinumerati se l'ordine non è
@@ -1734,7 +1754,8 @@ ed è dichiarata anche fra i difetti noti: la 5.1.1(v) vuole un gesto che
 cancellare le righe sotto un worker che ci sta scrivendo, cioè farlo schiantare
 su una chiave sparita per un caso che passa da solo. Il numero sta nel messaggio
 perché cambia cosa si sta aspettando: «uno» è un istante, «dodici» è il momento
-di andare a prendere un caffè.
+di andare a prendere un caffè. «Passa da solo» vale anche per il vocale il cui
+worker è morto a metà, ma dopo il quarto d'ora del recupero e non subito.
 
 **L'ordine dentro il servizio è la sicurezza**, come nelle altre rotte che
 accettano una password: rilegge l'utente (401 se non c'è più), verifica la
@@ -4040,25 +4061,29 @@ Non installate, e il perché:
   scadenza da custodire), e mezza implementazione sarebbe peggio di nessuna:
   un reset per mail fatto male è la porta di servizio da cui si entra
   nell'account senza saperne la password.
-- **Un vocale incastrato in `IN_ELABORAZIONE` blocca la cancellazione del conto,
-  e non c'è nessun modo di sbloccarla dall'app.** Il `409` è voluto: cancellare le
-  righe sotto un worker che ci sta scrivendo lo farebbe schiantare su una chiave
-  sparita, per un caso che di solito passa da solo in qualche minuto. Il prezzo
-  dichiarato è che la linea guida **5.1.1(v)** vuole un gesto che *funziona*, e
-  qui esiste un istante in cui risponde «riprova» — l'attenuante è che il
-  messaggio dice quanti sono e che finiscono da soli. Il residuo vero però non è
-  quell'istante: è il vocale che in `IN_ELABORAZIONE` **non ci entra per un
-  minuto, ci resta**, perché il worker è stato ucciso a metà lavoro. Quella riga
-  non la recupera nessuno, ed è un difetto che c'era già prima di questa rotta:
-  `claimNext` pesca solo fra le `BOZZA_AUDIO`, quindi il worker non la riprende;
-  `requeue` — cioè `POST /retry` — rifiuta esplicitamente l'`IN_ELABORAZIONE`,
-  per non avere due elaborazioni sulla stessa riga; e la `DELETE` di una
-  registrazione la rifiuta a sua volta. La scopa non c'entra: gira da sola nel
-  ciclo del worker, ma guarda i file del bucket, non le righe ferme. Quello che
-  la cancellazione del conto aggiunge è che adesso quel vicolo cieco **si porta
-  dietro anche l'uscita**: prima si perdeva un vocale, adesso non si può più
-  andarsene. Il rimedio è un recupero delle righe in volo da troppo tempo, che
-  non esiste in nessuna forma.
+- **Un vocale abbandonato da un worker morto trattiene tutto per un quarto
+  d'ora.** Il vicolo cieco non c'è più: una riga in `IN_ELABORAZIONE` che tace
+  da più di `SOGLIA_INTERROTTA_MS` torna in coda al giro successivo del worker
+  (si veda «Un worker morto non si porta via la riga»), e
+  `auth.e2e.test.ts` prova che dopo quel giro il conto si cancella. Ma per quel
+  quarto d'ora l'elenco dei sospesi dice «La sto ascoltando…» di un vocale che
+  non ascolta nessuno, la `DELETE` risponde `409`, e la cancellazione del conto risponde
+  «finiscono da soli, riprova fra poco» — vero, ma solo dopo un'attesa che la
+  frase non dice. La **5.1.1(v)** vuole un gesto che *funziona*, e qui esiste
+  ancora una finestra in cui non funziona: più stretta di prima, non chiusa.
+  Restano anche tre presupposti della sicurezza del recupero, che nessun test può
+  garantire. Primo, che un worker vivo non taccia mai un quarto d'ora: è vero
+  finché ogni chiamata esterna ha un timeout, e un test difende la soglia
+  contro quelli di oggi, ma un processo congelato dalla piattaforma o un event
+  loop bloccato tacciono quanto vogliono. Secondo, che gli orologi delle
+  macchine concordino: `updatedAt` non ha un default nel database, lo scrive
+  Prisma con l'ora della macchina che fa la scrittura, e lo confronta con la sua
+  l'altra replica che cerca le righe ferme. Terzo, che se quei presupposti
+  saltano, niente ripara il danno: un worker che si risveglia dopo che la sua
+  riga è stata ripresa da un altro scrive la sua scheda lo stesso, perché
+  `persistProcedure` aggiorna la registrazione per id e non chiede chi l'abbia
+  presa. Servirebbe un gettone di presa, scritto da `claim` e controllato a ogni
+  scrittura, e oggi non c'è.
 - **La cancellazione del conto non ha una seconda conferma, e non si annulla.**
   Due tocchi e la password, e l'archivio non c'è più: nessun periodo di grazia,
   nessuna mail, nessun cestino. È coerente con il resto del prodotto — anche

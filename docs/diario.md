@@ -1360,3 +1360,66 @@ in corso.
 La run 36696197487 su `590673d` è verde su tutti e cinque i job, la prima dal 7
 settembre. Sulla stessa run GitHub avvisa che dal 19 ottobre 2026
 `ubuntu-latest` diventa Ubuntu 26: annotato in `CLAUDE.md` fra i prossimi passi.
+
+---
+
+## Giro: il vocale che un worker morto lasciava in volo
+
+Dal README, fra i difetti noti: un vocale in `IN_ELABORAZIONE` il cui worker è
+stato ucciso a metà non usciva più da lì. `claimNext` pesca solo fra le
+`BOZZA_AUDIO`, `/retry` e la `DELETE` rifiutano l'`IN_ELABORAZIONE` apposta, e
+da quando esiste la cancellazione del conto quel vicolo cieco bloccava anche
+l'uscita (5.1.1(v) di Apple).
+
+### La scelta
+
+Il recupero sta all'inizio di `processNext`, non in un ciclo a parte nel
+`index.ts` del worker: lì nessun test l'avrebbe eseguito, e una ricerca per giro
+su righe che di solito sono zero non costa niente. Una riga è abbandonata se
+tace — `updatedAt`, che ogni stadio rinfresca — da più di
+`SOGLIA_INTERROTTA_MS`, un quarto d'ora. Il rilascio è un compare-and-swap con il
+tempo nel `WHERE`, e il giro perso conta come tentativo, passando per la stessa
+funzione (`ricaduta`) dei fallimenti normali. Senza il conteggio, un audio che
+uccide il worker a ogni ripresa girerebbe per sempre.
+
+Scartati: usare `lastErrorAt`, che `claim` scrive, come ora della presa. Misura
+l'inizio del lavoro e non l'ultimo segno di vita, quindi avrebbe chiesto una
+soglia pari alla pipeline intera invece che allo stadio più lungo. E un gettone
+di presa controllato a ogni scrittura: è la cura vera per il worker che si
+risveglia tardi, ma tocca ogni metodo del repository. Resta dichiarato fra i
+difetti noti.
+
+### Il timeout che mancava
+
+La soglia è sicura solo se un worker vivo ha un silenzio massimo, e cercandolo
+è venuto fuori che `S3StorageProvider` chiamava `fetch` **senza nessun timeout**.
+I fornitori di modelli ce l'hanno da sempre, lo storage no. Adesso c'è
+`STORAGE_TIMEOUT_MS` (due minuti), e un test tiene
+`SOGLIA_INTERROTTA_MS >= 2 × (storage + chiamata a modello più lunga)` e
+`<= 30 min`.
+
+### Una frase falsa trovata strada facendo
+
+Il commento di `deleteAccount` diceva che la riparazione del vocale incastrato
+sarebbe stata «la scopa». La scopa guarda il bucket, non le righe: era la stessa
+affermazione falsa già corretta nel README dal giro della cancellazione del
+conto, sopravvissuta in un commento del codice.
+
+### Le mutazioni
+
+Venticinque, con un controllo per ciascuno dei due comandi (unitario e
+integrazione): tutti e due vivi. **Ventidue cadute.** Il filtro sullo stato e
+quello sul tempo sono scritti due volte, nella ricerca e nel `WHERE` del
+rilascio, e ognuno è stato mutato in tre modi (insieme, e uno per volta): sei
+cadute su sei. **Una viva, dichiarata equivalente**: passare `adesso` invece
+di `olderThan` a `releaseStalled`. Con orologi concordi una scrittura arrivata
+dopo la ricerca ha comunque un `updatedAt` posteriore ad `adesso`; la
+differenza esiste solo con orologi sfasati, che sono già un residuo dichiarato.
+Il commento accanto alla chiamata lo dice.
+
+### I numeri
+
+**1517** test unit + web su 58 file, **431** d'integrazione su 15 file.
+`guards.test.ts` è andato in timeout in tre run intere su tre, **anche
+sull'albero pulito** (`git stash`, quattro rossi, tutti `Test timed out in
+5000ms`), e da solo passa: non è più «ogni tanto».

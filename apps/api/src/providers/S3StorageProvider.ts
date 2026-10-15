@@ -65,16 +65,47 @@ function sha256Hex(data: Uint8Array): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
+/**
+ * Quanto si aspetta un bucket prima di dargli per perso, per ogni richiesta.
+ *
+ * Per anni non c'e' stato, e la ragione per metterlo non e' la richiesta
+ * singola ma chi c'e' dietro. Il worker elabora un vocale alla volta: un `get`
+ * che non riceve mai risposta lo ferma tutto, e per il recupero delle righe
+ * rimaste in `IN_ELABORAZIONE` un worker fermo e uno morto sono indistinguibili
+ * — la riga torna in coda, un'altra replica la elabora, e se un giorno quel
+ * `get` risponde il primo worker riprende da dove era e scrive una seconda
+ * scheda. La soglia di quel recupero (`SOGLIA_INTERROTTA_MS`) e' difesa da un
+ * test proprio contro la somma di questo valore e del timeout di trascrizione:
+ * senza un limite qui, quella somma non avrebbe un massimo.
+ *
+ * Due minuti come gli altri timeout dei fornitori, e non meno, perche' copre
+ * anche il corpo: `AbortSignal.timeout` interrompe pure la lettura dei byte, e
+ * un audio arriva a 25 MB. Fra due servizi in un centro dati sono pochi
+ * secondi; fra una regione americana e un bucket ad Amsterdam, che e' come gira
+ * oggi la produzione, sono di piu', ma non due minuti.
+ */
+export const STORAGE_TIMEOUT_MS = 120_000;
+
 export class S3StorageProvider implements StorageProvider {
   readonly name = "s3";
   readonly #config: S3Config;
   readonly #origin: string;
   readonly #prefix: string;
   readonly #now: () => Date;
+  readonly #timeoutMs: number;
 
-  constructor(config: S3Config, now: () => Date = () => new Date()) {
+  /**
+   * `timeoutMs` e' un parametro solo perche' un test possa provare che il
+   * timeout scatta senza aspettare due minuti veri.
+   */
+  constructor(
+    config: S3Config,
+    now: () => Date = () => new Date(),
+    timeoutMs: number = STORAGE_TIMEOUT_MS,
+  ) {
     this.#config = config;
     this.#now = now;
+    this.#timeoutMs = timeoutMs;
 
     const base =
       config.endpoint ?? `https://s3.${config.region}.amazonaws.com`;
@@ -127,6 +158,7 @@ export class S3StorageProvider implements StorageProvider {
     const risposta = await fetch(url, {
       method,
       headers,
+      signal: AbortSignal.timeout(this.#timeoutMs),
       ...(body === undefined ? {} : { body: body.data }),
     });
 

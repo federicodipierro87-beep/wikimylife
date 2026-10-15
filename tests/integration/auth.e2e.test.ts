@@ -7,6 +7,7 @@ import {
   type OpenSessionsResponse,
 } from "@wikimylife/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { SOGLIA_INTERROTTA_MS } from "../../apps/api/src/services/ingestion.service.js";
 import { disconnectTestPrisma, resetDatabase, testPrisma } from "./helpers/db.js";
 import { call, startTestServer, type TestServer } from "./helpers/server.js";
 
@@ -1570,6 +1571,39 @@ describe("cancellare il proprio conto", () => {
       server.composition.providers.storage.exists("audio/mio.webm"),
     ).resolves.toBe(true);
     expect((await refresh(mio.refreshToken)).status).toBe(200);
+  });
+
+  it("un vocale abbandonato da un worker morto trattiene il conto per un giro, non per sempre", async () => {
+    // Il 409 dice «finiscono da soli». Per un vocale il cui worker e' stato
+    // ucciso, prima non era vero: nessuno lo toglieva da `IN_ELABORAZIONE`, e
+    // la 5.1.1(v) restava un gesto che non funzionava mai piu'.
+    const mio = await conRoba(EMAIL, "audio/mio.webm");
+    const fermo = await testPrisma().recording.create({
+      data: {
+        userId: mio.userId,
+        audioUrl: "audio/abbandonato.webm",
+        mimeType: "audio/webm",
+        durationMs: 5_000,
+        recordedAt: new Date("2026-03-01T10:00:00.000Z"),
+        status: "IN_ELABORAZIONE",
+      },
+    });
+    await testPrisma().$executeRaw`
+      UPDATE "Recording" SET "updatedAt" = ${new Date(Date.now() - SOGLIA_INTERROTTA_MS - 60_000)}
+      WHERE "id" = ${fermo.id}
+    `;
+    const cancella = () =>
+      call(server, "POST", CANCELLA, {
+        accessToken: mio.accessToken,
+        body: { currentPassword: PASSWORD },
+      });
+    expect((await cancella()).status).toBe(409);
+
+    await server.composition.ingestionService.processNext();
+
+    const res = await cancella();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await testPrisma().user.findUnique({ where: { id: mio.userId } })).toBeNull();
   });
 
   it("la password sbagliata non cancella niente", async () => {

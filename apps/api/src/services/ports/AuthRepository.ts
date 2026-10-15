@@ -326,8 +326,9 @@ export interface AuthRepository extends FamilyRegistry {
    * solo aspettando. Il prezzo e' dichiarato ed e' scomodo: la 5.1.1(v) di
    * Apple vuole un gesto che *funziona*, e qui esiste un istante in cui non
    * funziona. La mitigazione e' che il messaggio dica quanti sono e che passa
-   * da se'; il residuo — un utente che riprova e trova lo stesso muro perche'
-   * un vocale e' rimasto incastrato — e' nei difetti noti.
+   * da se'. Lo fa anche per un vocale rimasto incastrato da un worker morto,
+   * ma dopo un quarto d'ora di silenzio e non subito: e' il residuo che sta
+   * nei difetti noti.
    *
    * Resta una finestra che nessuna transazione chiude: fra il `SELECT` che
    * conta e il `COMMIT`, un worker puo' prendersi un vocale in `BOZZA_AUDIO` e

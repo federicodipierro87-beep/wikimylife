@@ -9,13 +9,14 @@ import type {
   RecordingJob,
   RecordingRepository,
   SimilarProcedure,
+  StalledRecording,
   UserVocabulary,
 } from "../../apps/api/src/services/ports/RecordingRepository.js";
 
 /**
  * `RecordingRepository` in memoria.
  *
- * Riproduce i tre vincoli del database che la pipeline puo' davvero
+ * Riproduce i vincoli del database che la pipeline puo' davvero
  * osservare — e nessun altro, perche' riprodurre Postgres a mano finirebbe per
  * testare la copia invece dell'originale:
  *
@@ -31,6 +32,9 @@ import type {
  *  4. `deleteForUser` archivia la scheda derivata solo se ha davvero cancellato
  *     la riga. E' l'atomicita' della transazione vera ridotta all'unica cosa
  *     che un test puo' osservare: che dal 409 non esca una scheda nel cestino.
+ *  5. `releaseStalled` ricontrolla che la riga sia ancora ferma, come il
+ *     `WHERE` dell'originale: e' cio' che rende provabile «un worker che si
+ *     rifa' vivo non si vede rubare la riga».
  */
 
 interface SeededProcedure {
@@ -304,6 +308,34 @@ export class InMemoryRecordingRepository implements RecordingRepository {
       retryCount: row.retryCount + 1,
       updatedAt: failure.at,
     });
+  }
+
+  /** Strettamente prima di `olderThan`, come il `lt` dell'originale. */
+  #ferma(row: RecordingDetail, olderThan: Date): boolean {
+    return (
+      row.status === RecordingStatus.IN_ELABORAZIONE &&
+      row.updatedAt.getTime() < olderThan.getTime()
+    );
+  }
+
+  async findStalled(olderThan: Date, limit: number): Promise<readonly StalledRecording[]> {
+    return [...this.#recordings.values()]
+      .filter((r) => this.#ferma(r, olderThan))
+      .sort((a, b) => a.updatedAt.getTime() - b.updatedAt.getTime())
+      .slice(0, limit)
+      .map((r) => ({ id: r.id, userId: r.userId, retryCount: r.retryCount, updatedAt: r.updatedAt }));
+  }
+
+  async releaseStalled(id: string, olderThan: Date, failure: RecordingFailure): Promise<boolean> {
+    // La condizione si ricontrolla qui, come nel `WHERE` dell'originale: senza,
+    // il caso «il worker si e' rifatto vivo fra la ricerca e il rilascio»
+    // passerebbe contro un finto che rilascia comunque.
+    const row = this.#recordings.get(id);
+    if (row === undefined || !this.#ferma(row, olderThan)) {
+      return false;
+    }
+    await this.markFailed(id, failure);
+    return true;
   }
 
   async findForUser(userId: string, id: string): Promise<RecordingDetail | null> {

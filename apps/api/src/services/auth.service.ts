@@ -763,9 +763,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
      * istante in cui risponde «riprova». L'alternativa era cancellare sotto un
      * worker che sta scrivendo, cioe' farlo schiantare su una chiave sparita
      * per un caso che passa da solo. Il messaggio dice quanti sono e che si
-     * risolve da se'; il residuo — un vocale incastrato in `IN_ELABORAZIONE`
-     * che non esce mai da li' e blocca la cancellazione per sempre — e' nei
-     * difetti noti, e la sua riparazione e' la scopa, non questa rotta.
+     * risolve da se', ed e' vero anche per il vocale il cui worker e' morto a
+     * meta': il worker successivo lo rimette in coda dopo
+     * `SOGLIA_INTERROTTA_MS` di silenzio (`ingestion.service.ts`). Quel
+     * quarto d'ora e' il prezzo residuo, ed e' nei difetti noti.
      *
      * ## Perche' l'audio si toglie dopo, e non dentro
      *

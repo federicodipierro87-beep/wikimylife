@@ -23,9 +23,11 @@ import {
   FakeStorageProvider,
   FakeTranscriptionProvider,
 } from "../../apps/api/src/providers/fake/index.js";
+import { PrismaRecordingRepository } from "../../apps/api/src/infra/PrismaRecordingRepository.js";
 import {
   IngestionError,
   MAX_EXTRACTION_ATTEMPTS,
+  SOGLIA_INTERROTTA_MS,
   type IngestionOutcome,
 } from "../../apps/api/src/services/ingestion.service.js";
 import { disconnectTestPrisma, resetDatabase } from "./helpers/db.js";
@@ -974,6 +976,129 @@ describe("fallimenti", () => {
     expect(res.status).toBe(404);
     expect(errorCode(res.body)).toBe("NOT_FOUND");
     expect(await server.prisma.procedure.count()).toBe(1);
+  });
+});
+
+/**
+ * Il worker ucciso a meta' lavoro, contro Postgres.
+ *
+ * In memoria si provano le decisioni; qui le due cose che sono SQL. La prima e'
+ * il `WHERE` del rilascio, che e' un compare-and-swap e vale solo se lo scrive
+ * il database. La seconda e' che `updatedAt` sia davvero un segno di vita:
+ * lo scrive Prisma da solo, e se un giorno non lo scrivesse su `updateMany` —
+ * che e' come `claim` prende la riga — ogni vocale rimasto in attesa piu' della
+ * soglia verrebbe dato per abbandonato un istante dopo essere stato preso.
+ */
+describe("le righe abbandonate da un worker morto", () => {
+  /** Fa tacere la riga da `ms` millisecondi, senza aspettarli. */
+  async function invecchia(id: string, ms: number): Promise<void> {
+    // SQL grezzo: con il client Prisma, `updatedAt` lo riscriverebbe lui.
+    await server.prisma.$executeRaw`
+      UPDATE "Recording" SET "updatedAt" = ${new Date(Date.now() - ms)} WHERE "id" = ${id}
+    `;
+  }
+
+  async function inVolo(id: string): Promise<void> {
+    await server.prisma.recording.update({
+      where: { id },
+      data: { status: RecordingStatus.IN_ELABORAZIONE },
+    });
+  }
+
+  const repo = (): PrismaRecordingRepository => new PrismaRecordingRepository(server.prisma);
+  const sogliaDaAdesso = (): Date => new Date(Date.now() - SOGLIA_INTERROTTA_MS);
+
+  const FALLIMENTO = {
+    status: RecordingStatus.BOZZA_AUDIO,
+    code: IngestionError.elaborazioneInterrotta,
+    message: "rilascio di prova",
+    at: new Date(),
+    nextAttemptAt: null,
+  } as const;
+
+  it("oltre la soglia torna in coda con il giro contato, e poi diventa una scheda", async () => {
+    const { token } = await signup();
+    const state = await carica(token);
+    await inVolo(state.id);
+    await invecchia(state.id, SOGLIA_INTERROTTA_MS + 60_000);
+
+    // Rilasciata ma non presa: il giro perso ha il suo backoff come ogni altro.
+    expect(await server.composition.ingestionService.processNext()).toBeNull();
+
+    const dopo = await stato(token, state.id);
+    expect(dopo.status).toBe(RecordingStatus.BOZZA_AUDIO);
+    expect(dopo.lastError?.code).toBe(IngestionError.elaborazioneInterrotta);
+    expect(dopo.retryCount).toBe(1);
+    expect(dopo.nextAttemptAt).not.toBeNull();
+
+    await scadeAttesa(state.id);
+    stt.enqueue("eccomi");
+    llm.enqueue(buildExtractionContract());
+    expect((await elabora()).kind).toBe("ESTRATTO");
+  });
+
+  it("una riga appena presa non e' abbandonata, anche se era in coda da ore", async () => {
+    // E' la riga che ha aspettato il backoff di un'ora: il suo `updatedAt` e'
+    // vecchio fino all'istante in cui `claim` la prende.
+    const { token } = await signup();
+    const state = await carica(token);
+    await invecchia(state.id, 2 * 60 * 60_000);
+
+    expect(await repo().claim(state.id, new Date())).not.toBeNull();
+
+    expect((await repo().findStalled(sogliaDaAdesso(), 10)).map((r) => r.id)).not.toContain(
+      state.id,
+    );
+    expect(await server.composition.ingestionService.processNext()).toBeNull();
+    expect((await stato(token, state.id)).status).toBe(RecordingStatus.IN_ELABORAZIONE);
+  });
+
+  it("il rilascio perde contro un worker che ha appena scritto", async () => {
+    const { token } = await signup();
+    const state = await carica(token);
+    await inVolo(state.id);
+    await invecchia(state.id, SOGLIA_INTERROTTA_MS + 60_000);
+    const olderThan = sogliaDaAdesso();
+    expect((await repo().findStalled(olderThan, 10)).map((r) => r.id)).toContain(state.id);
+
+    // Fra la ricerca e il rilascio, il worker che sembrava morto finisce la
+    // trascrizione.
+    await repo().saveTranscript(state.id, { text: "eccomi", source: "fake", at: new Date() });
+
+    expect(await repo().releaseStalled(state.id, olderThan, FALLIMENTO)).toBe(false);
+    const dopo = await stato(token, state.id);
+    expect(dopo.status).toBe(RecordingStatus.IN_ELABORAZIONE);
+    expect(dopo.retryCount).toBe(0);
+  });
+
+  it("e vince contro uno che tace davvero", async () => {
+    const { token } = await signup();
+    const state = await carica(token);
+    await inVolo(state.id);
+    await invecchia(state.id, SOGLIA_INTERROTTA_MS + 60_000);
+
+    expect(await repo().releaseStalled(state.id, sogliaDaAdesso(), FALLIMENTO)).toBe(true);
+    expect((await stato(token, state.id)).status).toBe(RecordingStatus.BOZZA_AUDIO);
+  });
+
+  it("le righe vecchie negli altri stati non sono in volo, ne' per la ricerca ne' per il rilascio", async () => {
+    // Il filtro sullo stato e' scritto due volte, nella ricerca e nel `WHERE`
+    // del rilascio, e ognuna delle due ha il suo caso.
+    const { token } = await signup();
+    const fallita = await carica(token);
+    await server.prisma.recording.update({
+      where: { id: fallita.id },
+      data: { status: RecordingStatus.ESTRAZIONE_FALLITA },
+    });
+    await invecchia(fallita.id, SOGLIA_INTERROTTA_MS + 60_000);
+
+    expect((await repo().findStalled(sogliaDaAdesso(), 10)).map((r) => r.id)).not.toContain(
+      fallita.id,
+    );
+    expect(await repo().releaseStalled(fallita.id, sogliaDaAdesso(), FALLIMENTO)).toBe(false);
+    const dopo = await stato(token, fallita.id);
+    expect(dopo.status).toBe(RecordingStatus.ESTRAZIONE_FALLITA);
+    expect(dopo.retryCount).toBe(0);
   });
 });
 

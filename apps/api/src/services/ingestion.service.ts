@@ -14,7 +14,11 @@ import {
 import type { Logger } from "../logger.js";
 import { oggettoMancante, richiestaRifiutata } from "./ingestion/definitivo.js";
 import type { Clock } from "./ports/Clock.js";
-import type { RecordingJob, RecordingRepository } from "./ports/RecordingRepository.js";
+import type {
+  RecordingFailure,
+  RecordingJob,
+  RecordingRepository,
+} from "./ports/RecordingRepository.js";
 import {
   motivoDelRifiuto,
   normalizeSteps,
@@ -58,6 +62,7 @@ export const IngestionError = {
   embeddingFallito: "embedding.fallito",
   contrattoNonConforme: "contratto.non_conforme",
   persistenzaFallita: "persistenza.fallita",
+  elaborazioneInterrotta: "elaborazione.interrotta",
 } as const;
 
 /**
@@ -132,6 +137,54 @@ export function ritardoDopo(attempt: number): number {
   return RITARDI_RITENTATIVO[indice] ?? 0;
 }
 
+/**
+ * Dopo quanto silenzio una riga in `IN_ELABORAZIONE` si considera abbandonata.
+ *
+ * ## Il vicolo cieco che chiude
+ *
+ * Un worker ucciso a meta' lavoro — un redeploy che arriva al SIGKILL, un
+ * container sfrattato, un processo finito senza memoria — lascia la sua riga in
+ * `IN_ELABORAZIONE`, e da li' prima non usciva piu': `claimNext` pesca solo
+ * fra le `BOZZA_AUDIO`, `/retry` rifiuta cio' che e' in volo per non avere due
+ * elaborazioni sulla stessa riga, la `DELETE` lo rifiuta per non cancellarla
+ * sotto chi la sta leggendo. Ognuno dei tre rifiuti era giusto da solo; messi
+ * insieme facevano un vocale perso e, da quando esiste, un conto che non si
+ * poteva piu' cancellare.
+ *
+ * ## Perche' un quarto d'ora
+ *
+ * Il rischio di una soglia troppo bassa non e' un tentativo sprecato: e'
+ * rimettere in coda la riga di un worker *vivo* ma lento, che un altro worker
+ * riprende mentre il primo e' ancora li' — e quando il primo finisce scrive una
+ * scheda, e quando finisce il secondo ne scrive un'altra. Quindi la soglia
+ * deve stare sopra il silenzio piu' lungo che un worker vivo puo' fare, e quel
+ * silenzio ha un massimo solo perche' ogni chiamata esterna ha un timeout: fra
+ * due scritture sulla riga c'e' al piu' un `get` dallo storage e una
+ * trascrizione, cioe' quattro minuti con i timeout di oggi. Il resto e'
+ * margine, per un database lento o un processo sotto pressione.
+ *
+ * Il rischio di una soglia troppo alta e' l'attesa di chi non puo' fare
+ * niente: per tutto quel tempo l'elenco dei sospesi dice «La sto ascoltando…», e la
+ * cancellazione del conto risponde «riprova fra poco». Oltre la mezz'ora
+ * quella frase smette di essere vera.
+ *
+ * Il valore sta qui e non accanto ai timeout perche' e' una regola di prodotto
+ * — quanto aspettare prima di dichiarare morto qualcuno — e il servizio non
+ * importa i provider. La relazione con i timeout la tiene un test, che la
+ * guarda da tutti e due i lati.
+ */
+export const SOGLIA_INTERROTTA_MS = 15 * 60_000;
+
+/**
+ * Quante righe abbandonate si rimettono in coda a ogni giro.
+ *
+ * Non per prudenza sul numero — ogni worker ne lascia al piu' una — ma perche'
+ * la ricerca gira prima di ogni `processNext`, e un tetto la tiene costante
+ * anche il giorno in cui si accumulano, per esempio dopo un guasto che ha
+ * ucciso i worker in ciclo.
+ */
+const RILASCI_PER_GIRO = 10;
+
 export type IngestionOutcome =
   /** Nessun lavoro fatto: un altro worker aveva gia' preso questa riga. */
   | { readonly kind: "SALTATO"; readonly recordingId: string }
@@ -168,7 +221,13 @@ export interface IngestionDeps {
 export interface IngestionService {
   /** Elabora una registrazione specifica. Non lancia mai: l'esito e' il valore. */
   processRecording(recordingId: string): Promise<IngestionOutcome>;
-  /** Prende la prossima in attesa. `null` se la coda e' vuota. */
+  /**
+   * Prende la prossima in attesa. `null` se la coda e' vuota.
+   *
+   * Prima rimette in coda le righe abbandonate da un worker morto
+   * (`SOGLIA_INTERROTTA_MS`): non le elabora, quindi non compaiono nel valore
+   * restituito, solo nel registro.
+   */
   processNext(): Promise<IngestionOutcome | null>;
 }
 
@@ -196,6 +255,53 @@ class StageFailure extends Error {
     this.status = params.status;
     this.issues = params.issues ?? [];
   }
+}
+
+/**
+ * Dove finisce una riga dopo un tentativo andato male, e con che messaggio.
+ *
+ * Una funzione sola per i due modi di fallire — lo stadio che lancia, e il
+ * worker che sparisce — perche' il tetto e il backoff sono una regola sola: una
+ * riga recuperata che seguisse conti suoi sarebbe il buco da cui un audio
+ * velenoso gira per sempre.
+ */
+function ricaduta(
+  retryCount: number,
+  failure: {
+    readonly code: string;
+    readonly message: string;
+    readonly status: typeof RecordingStatus.BOZZA_AUDIO | typeof RecordingStatus.ESTRAZIONE_FALLITA;
+  },
+  adesso: Date,
+): { readonly failure: RecordingFailure; readonly attempt: number; readonly esaurita: boolean } {
+  // `retryCount` e' quello con cui la riga e' stata presa: questo tentativo
+  // non e' ancora stato contato, e lo contera' chi scrive l'esito.
+  const attempt = retryCount + 1;
+  const esaurita =
+    failure.status === RecordingStatus.BOZZA_AUDIO && attempt >= MAX_INGESTION_ATTEMPTS;
+
+  // Il codice resta quello vero: la UI deve poter dire *cosa* e' andato
+  // storto, non solo che si e' smesso di provare. Cambia solo lo stato, ed
+  // e' cio' che toglie la riga dalla coda.
+  const status = esaurita ? RecordingStatus.ESTRAZIONE_FALLITA : failure.status;
+  const message = esaurita
+    ? `${failure.message} Interrotto dopo ${String(attempt)} tentativi: riprovare dalla scheda della registrazione.`
+    : failure.message;
+
+  // Solo chi torna in coda ha un prossimo tentativo. Per gli altri stati la
+  // colonna resta `null`, che e' anche cio' che `claimNext` legge come
+  // "prendibile subito": una riga rimessa in coda a mano non deve ereditare
+  // l'attesa decisa per il ciclo automatico.
+  const nextAttemptAt =
+    status === RecordingStatus.BOZZA_AUDIO
+      ? new Date(adesso.getTime() + ritardoDopo(attempt))
+      : null;
+
+  return {
+    failure: { status, code: failure.code, message, at: adesso, nextAttemptAt },
+    attempt,
+    esaurita,
+  };
 }
 
 function describe(error: unknown): string {
@@ -491,45 +597,16 @@ export function createIngestionService(deps: IngestionDeps): IngestionService {
               status: RecordingStatus.BOZZA_AUDIO,
             });
 
-      // `retryCount` e' quello con cui la riga e' stata presa: questo tentativo
-      // non e' ancora stato contato, e lo contera' `markFailed`.
-      const attempt = job.retryCount + 1;
-      const esaurita =
-        failure.status === RecordingStatus.BOZZA_AUDIO && attempt >= MAX_INGESTION_ATTEMPTS;
-
-      // Il codice resta quello vero: la UI deve poter dire *cosa* e' andato
-      // storto, non solo che si e' smesso di provare. Cambia solo lo stato, ed
-      // e' cio' che toglie la riga dalla coda.
-      const status = esaurita ? RecordingStatus.ESTRAZIONE_FALLITA : failure.status;
-      const message = esaurita
-        ? `${failure.message} Interrotto dopo ${String(attempt)} tentativi: riprovare dalla scheda della registrazione.`
-        : failure.message;
-
-      const adesso = clock.now();
-      // Solo chi torna in coda ha un prossimo tentativo. Per gli altri stati la
-      // colonna resta `null`, che e' anche cio' che `claimNext` legge come
-      // "prendibile subito": una riga rimessa in coda a mano non deve ereditare
-      // l'attesa decisa per il ciclo automatico.
-      const nextAttemptAt =
-        status === RecordingStatus.BOZZA_AUDIO
-          ? new Date(adesso.getTime() + ritardoDopo(attempt))
-          : null;
-
-      await repo.markFailed(job.id, {
-        status,
-        code: failure.code,
-        message,
-        at: adesso,
-        nextAttemptAt,
-      });
+      const esito = ricaduta(job.retryCount, failure, clock.now());
+      await repo.markFailed(job.id, esito.failure);
 
       logger.error("elaborazione fallita", {
         recordingId: job.id,
         code: failure.code,
-        status,
-        attempt,
-        esaurita,
-        nextAttemptAt: nextAttemptAt?.toISOString() ?? null,
+        status: esito.failure.status,
+        attempt: esito.attempt,
+        esaurita: esito.esaurita,
+        nextAttemptAt: esito.failure.nextAttemptAt?.toISOString() ?? null,
         message: failure.message,
       });
 
@@ -537,9 +614,63 @@ export function createIngestionService(deps: IngestionDeps): IngestionService {
         kind: "FALLITO",
         recordingId: job.id,
         code: failure.code,
-        status,
+        status: esito.failure.status,
         issues: failure.issues,
       };
+    }
+  }
+
+  /**
+   * Rimette in coda le righe che un worker ha preso e non ha mai restituito.
+   *
+   * Il giro perso conta come un tentativo fallito, con il suo backoff e il suo
+   * posto sotto il tetto, e non come un giro gratis. La ragione e' l'unico
+   * caso in cui la stessa riga si ferma due volte: un audio che fa morire il
+   * worker — troppa memoria per decodificarlo, per dire — lo ucciderebbe a
+   * ogni ripresa, e senza il conteggio quel ciclo non avrebbe fine.
+   *
+   * Gira prima di ogni `processNext` e non in un ciclo suo, perche' cosi' il
+   * recupero esiste ovunque esista un worker, senza una riga in piu' nel suo
+   * `index.ts` che nessun test eseguirebbe. Costa una ricerca per giro, su un
+   * indice che comincia con `status`, fra righe che di solito sono zero.
+   */
+  async function rilasciaInterrotte(): Promise<void> {
+    const adesso = clock.now();
+    const olderThan = new Date(adesso.getTime() - SOGLIA_INTERROTTA_MS);
+    const ferme = await repo.findStalled(olderThan, RILASCI_PER_GIRO);
+
+    for (const riga of ferme) {
+      const esito = ricaduta(
+        riga.retryCount,
+        {
+          code: IngestionError.elaborazioneInterrotta,
+          message:
+            "Il lavoro su questa registrazione si e' fermato a meta' senza un esito: " +
+            "il processo che la elaborava e' stato chiuso.",
+          status: RecordingStatus.BOZZA_AUDIO,
+        },
+        adesso,
+      );
+      // `olderThan` e non `adesso`, anche se con orologi concordi le due sono
+      // equivalenti — una mutazione che passa `adesso` sopravvive, ed e'
+      // dichiarata: una scrittura arrivata dopo la ricerca ha comunque un
+      // `updatedAt` posteriore ad `adesso`. Smettono di esserlo quando
+      // l'orologio di chi scrive e' indietro rispetto a questo, e allora la
+      // condizione piu' stretta e' quella che sbaglia di meno.
+      const rilasciata = await repo.releaseStalled(riga.id, olderThan, esito.failure);
+      // `false` vuol dire che qualcuno ha toccato la riga fra la ricerca e
+      // adesso: il worker che si credeva morto, o un'altra replica che l'ha
+      // gia' recuperata. In tutti e due i casi non c'e' niente da fare, e
+      // niente da scrivere nel registro.
+      if (rilasciata) {
+        logger.warn("registrazione abbandonata rimessa in coda", {
+          recordingId: riga.id,
+          silenzioDal: riga.updatedAt.toISOString(),
+          status: esito.failure.status,
+          attempt: esito.attempt,
+          esaurita: esito.esaurita,
+        });
+      }
     }
   }
 
@@ -553,6 +684,7 @@ export function createIngestionService(deps: IngestionDeps): IngestionService {
     },
 
     async processNext(): Promise<IngestionOutcome | null> {
+      await rilasciaInterrotte();
       const job = await repo.claimNext(clock.now());
       if (job === null) {
         return null;

@@ -16,12 +16,19 @@ import {
   FakeStorageProvider,
   FakeTranscriptionProvider,
 } from "../../apps/api/src/providers/fake/index.js";
-import { ProviderHttpError } from "../../apps/api/src/providers/http.js";
+import {
+  EMBEDDING_TIMEOUT_MS,
+  EXTRACTION_TIMEOUT_MS,
+  ProviderHttpError,
+  TRANSCRIPTION_TIMEOUT_MS,
+} from "../../apps/api/src/providers/http.js";
+import { STORAGE_TIMEOUT_MS } from "../../apps/api/src/providers/S3StorageProvider.js";
 import {
   IngestionError,
   MAX_EXTRACTION_ATTEMPTS,
   MAX_INGESTION_ATTEMPTS,
   RITARDI_RITENTATIVO,
+  SOGLIA_INTERROTTA_MS,
   createIngestionService,
   ritardoDopo,
   type IngestionService,
@@ -864,6 +871,138 @@ describe("i fallimenti che riprovare non cambierebbe", () => {
     await h.repo.requeue(USER, id, h.clock.now());
 
     expect(await h.repo.claimNext(h.clock.now())).toMatchObject({ id });
+  });
+});
+
+/**
+ * Il worker ucciso a meta' lavoro.
+ *
+ * Prima non c'era nessuna uscita: `claimNext` non guarda le `IN_ELABORAZIONE`,
+ * `/retry` e la `DELETE` le rifiutano. Questi casi provano l'uscita e insieme
+ * il suo pericolo opposto, che e' strappare la riga a un worker vivo.
+ */
+describe("le righe abbandonate da un worker morto", () => {
+  /** Una riga presa da un worker che da `silenzioMs` non scrive piu'. */
+  async function ferma(silenzioMs: number, overrides: Partial<RecordingDetail> = {}): Promise<string> {
+    return seedConAudio({
+      status: RecordingStatus.IN_ELABORAZIONE,
+      updatedAt: new Date(START.getTime() - silenzioMs),
+      ...overrides,
+    });
+  }
+
+  it("oltre la soglia torna in coda da sola", async () => {
+    const id = await ferma(SOGLIA_INTERROTTA_MS + 1000);
+
+    await h.service.processNext();
+
+    const dopo = h.repo.snapshot(id);
+    expect(dopo.status).toBe(RecordingStatus.BOZZA_AUDIO);
+    expect(dopo.lastErrorCode).toBe(IngestionError.elaborazioneInterrotta);
+  });
+
+  it("sotto la soglia resta a chi la sta elaborando", async () => {
+    // Un worker vivo che sta aspettando Whisper tace anche per minuti. Strappargli
+    // la riga vorrebbe dire due elaborazioni, e alla fine due schede.
+    const id = await ferma(SOGLIA_INTERROTTA_MS - 1000);
+
+    await h.service.processNext();
+
+    const dopo = h.repo.snapshot(id);
+    expect(dopo.status).toBe(RecordingStatus.IN_ELABORAZIONE);
+    expect(dopo.lastErrorCode).toBeNull();
+    expect(dopo.retryCount).toBe(0);
+  });
+
+  it("il giro perso conta come un tentativo, con il suo backoff", async () => {
+    const id = await ferma(SOGLIA_INTERROTTA_MS + 1000);
+
+    await h.service.processNext();
+
+    expect(h.repo.snapshot(id).retryCount).toBe(1);
+    expect(attesaDi(id)).toBe(RITARDI_RITENTATIVO[0]);
+  });
+
+  it("e all'ultimo tentativo concesso esce dalla coda invece di ripartire", async () => {
+    // E' cio' che ferma l'audio velenoso: uno che uccide il worker a ogni
+    // ripresa sarebbe ripreso per sempre, se il giro perso non contasse.
+    const id = await ferma(SOGLIA_INTERROTTA_MS + 1000, { retryCount: MAX_INGESTION_ATTEMPTS - 1 });
+
+    await h.service.processNext();
+
+    const dopo = h.repo.snapshot(id);
+    expect(dopo.status).toBe(RecordingStatus.ESTRAZIONE_FALLITA);
+    expect(dopo.nextAttemptAt).toBeNull();
+    expect(dopo.lastErrorMessage).toContain("tentativi");
+  });
+
+  it("chi guarda la registrazione legge cosa e' successo", async () => {
+    const id = await ferma(SOGLIA_INTERROTTA_MS + 1000);
+
+    await h.service.processNext();
+
+    expect(h.repo.snapshot(id).lastErrorMessage).toContain("si e' fermato a meta'");
+  });
+
+  it("scaduta l'attesa, il worker la porta a scheda", async () => {
+    const id = await ferma(SOGLIA_INTERROTTA_MS + 1000);
+    expect(await h.service.processNext()).toBeNull();
+
+    h.clock.advanceSeconds(RITARDI_RITENTATIVO[0] / 1000);
+    h.extraction.enqueue(buildExtractionContract());
+
+    expect(await h.service.processNext()).toMatchObject({ kind: "ESTRATTO", recordingId: id });
+  });
+
+  it("le altre righe vecchie non si toccano: e' lo stato a dire chi e' in volo", async () => {
+    const sospetta = await ferma(SOGLIA_INTERROTTA_MS + 1000, {
+      status: RecordingStatus.DUPLICATO_SOSPETTO,
+    });
+    const fallita = await ferma(SOGLIA_INTERROTTA_MS + 1000, {
+      status: RecordingStatus.ESTRAZIONE_FALLITA,
+    });
+
+    await h.service.processNext();
+
+    expect(h.repo.snapshot(sospetta).status).toBe(RecordingStatus.DUPLICATO_SOSPETTO);
+    expect(h.repo.snapshot(fallita).status).toBe(RecordingStatus.ESTRAZIONE_FALLITA);
+    expect(h.repo.snapshot(fallita).retryCount).toBe(0);
+  });
+
+  it("un worker che si rifa' vivo fra la ricerca e il rilascio si tiene la riga", async () => {
+    const id = await ferma(SOGLIA_INTERROTTA_MS + 1000);
+    const cerca = h.repo.findStalled.bind(h.repo);
+    h.repo.findStalled = async (olderThan, limit) => {
+      const trovate = await cerca(olderThan, limit);
+      // Il worker che si credeva morto arriva alla fine della trascrizione
+      // esattamente adesso.
+      await h.repo.saveTranscript(id, { text: "eccomi", source: "fake", at: h.clock.now() });
+      return trovate;
+    };
+
+    await h.service.processNext();
+
+    const dopo = h.repo.snapshot(id);
+    expect(dopo.status).toBe(RecordingStatus.IN_ELABORAZIONE);
+    expect(dopo.retryCount).toBe(0);
+  });
+
+  it("la soglia sta sopra il silenzio piu' lungo di un worker vivo, e sotto la mezz'ora", () => {
+    // Fra due scritture sulla riga un worker vivo fa al piu' un `get` dallo
+    // storage piu' una chiamata a un modello, e ognuna ha un timeout. Il doppio
+    // e' margine per un database lento; sotto, un worker vivo puo' vedersi
+    // rubare la riga e la scheda nasce due volte.
+    const chiamataPiuLunga = Math.max(
+      TRANSCRIPTION_TIMEOUT_MS,
+      EXTRACTION_TIMEOUT_MS,
+      EMBEDDING_TIMEOUT_MS,
+    );
+    expect(SOGLIA_INTERROTTA_MS).toBeGreaterThanOrEqual(
+      2 * (STORAGE_TIMEOUT_MS + chiamataPiuLunga),
+    );
+    // Per tutto quel tempo l'elenco dice «La sto ascoltando…» e la cancellazione
+    // del conto «riprova fra poco». Oltre la mezz'ora non e' piu' fra poco.
+    expect(SOGLIA_INTERROTTA_MS).toBeLessThanOrEqual(30 * 60_000);
   });
 });
 

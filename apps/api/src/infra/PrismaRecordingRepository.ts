@@ -17,6 +17,7 @@ import type {
   RecordingJob,
   RecordingRepository,
   SimilarProcedure,
+  StalledRecording,
   UserVocabulary,
 } from "../services/ports/RecordingRepository.js";
 
@@ -433,6 +434,35 @@ export class PrismaRecordingRepository implements RecordingRepository {
         retryCount: { increment: 1 },
       },
     });
+  }
+
+  async findStalled(olderThan: Date, limit: number): Promise<readonly StalledRecording[]> {
+    return this.#prisma.recording.findMany({
+      where: { status: RecordingStatus.IN_ELABORAZIONE, updatedAt: { lt: olderThan } },
+      orderBy: { updatedAt: "asc" },
+      take: limit,
+      select: { id: true, userId: true, retryCount: true, updatedAt: true },
+    });
+  }
+
+  async releaseStalled(id: string, olderThan: Date, failure: RecordingFailure): Promise<boolean> {
+    // Stessi campi di `markFailed`, e non una chiamata a `markFailed`: quella e'
+    // un `update` per id, senza condizioni, ed e' giusto cosi' per il worker
+    // che scrive l'esito del proprio lavoro. Qui chi scrive non sta lavorando
+    // sulla riga, e la condizione e' tutto cio' che separa un recupero da un
+    // furto.
+    const released = await this.#prisma.recording.updateMany({
+      where: { id, status: RecordingStatus.IN_ELABORAZIONE, updatedAt: { lt: olderThan } },
+      data: {
+        status: failure.status,
+        lastErrorCode: failure.code,
+        lastErrorMessage: failure.message.slice(0, 2000),
+        lastErrorAt: failure.at,
+        nextAttemptAt: failure.nextAttemptAt,
+        retryCount: { increment: 1 },
+      },
+    });
+    return released.count === 1;
   }
 
   async findForUser(userId: string, id: string): Promise<RecordingDetail | null> {

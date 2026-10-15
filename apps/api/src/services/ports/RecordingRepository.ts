@@ -116,6 +116,15 @@ export interface RecordingFailure {
   readonly nextAttemptAt: Date | null;
 }
 
+/** Cio' che serve per decidere dove rimettere una riga rimasta a meta'. */
+export interface StalledRecording {
+  readonly id: string;
+  readonly userId: string;
+  /** Con questo si decide se il giro perso era l'ultimo concesso. */
+  readonly retryCount: number;
+  readonly updatedAt: Date;
+}
+
 /**
  * Cosa e' successo alla riga, per chi deve decidere se cancellare l'oggetto.
  *
@@ -207,6 +216,32 @@ export interface RecordingRepository {
   persistProcedure(input: PersistProcedureInput): Promise<string>;
 
   markFailed(id: string, failure: RecordingFailure): Promise<void>;
+
+  /**
+   * Le righe in `IN_ELABORAZIONE` che non danno segni di vita da prima di
+   * `olderThan`, dalla piu' ferma.
+   *
+   * «Segno di vita» e' `updatedAt`, e la promessa che lo rende tale sta in
+   * questa interfaccia e non in chi la usa: `claim`, `saveTranscript`,
+   * `saveExtraction`, `markDuplicate`, `persistProcedure` e `markFailed` lo
+   * rinfrescano tutti. Un worker vivo scrive sulla riga a ogni stadio; una riga
+   * che tace da molto piu' di quanto duri lo stadio piu' lungo e' di un worker
+   * che non c'e' piu'.
+   */
+  findStalled(olderThan: Date, limit: number): Promise<readonly StalledRecording[]>;
+
+  /**
+   * `markFailed`, ma solo se la riga e' ancora ferma: `true` se l'ha scritta.
+   *
+   * La condizione si ripete nel `WHERE` invece di fidarsi di `findStalled`
+   * perche' fra le due chiamate possono succedere due cose, e tutte e due
+   * devono vincere sul recupero: il worker che si credeva morto scrive la sua
+   * trascrizione (e allora non era morto), oppure un'altra replica ha gia'
+   * recuperato la riga e un terzo worker l'ha ripresa (e allora e' di nuovo
+   * `IN_ELABORAZIONE`, ma con un `updatedAt` di adesso). E' lo stesso
+   * compare-and-swap di `claim`, con il tempo al posto dello stato.
+   */
+  releaseStalled(id: string, olderThan: Date, failure: RecordingFailure): Promise<boolean>;
 
   findForUser(userId: string, id: string): Promise<RecordingDetail | null>;
 
