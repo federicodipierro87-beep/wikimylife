@@ -3686,7 +3686,11 @@ capire quale dispositivo scollegare.
 
 Le voci scadute si eliminano ogni 500 richieste, dentro la richiesta stessa: un
 `setInterval` terrebbe vivo l'event loop e un processo che non muore su `SIGTERM`
-viene ucciso dalla piattaforma dopo il timeout, ogni singolo deploy.
+viene ucciso dalla piattaforma dopo il timeout, ogni singolo deploy. Ma cinquecento
+richieste contate per processo, e azzerate a ogni deploy, con il traffico di
+oggi possono voler dire settimane: per questo le toglie anche il worker, a tempo,
+ogni dieci minuti (`apps/worker/src/pulizie.ts`). Le due pulizie convivono, e
+quella dell'API resta per quando il worker è fermo.
 
 #### Una riga, e una sola istruzione
 
@@ -4482,14 +4486,20 @@ Non installate, e il perché:
   nativa ha adesso le sue icone, generate dallo stesso script; chi installa la
   PWA da Chrome su Android vede ancora quella del manifest, che resta da
   sistemare.
-- **Gli indirizzi IP restano nel database senza una scadenza garantita.** La
-  pagina della privacy dice che la riga del limite dei tentativi «viene
-  cancellata alla pulizia successiva», ed è vero; ma la pulizia parte ogni
-  cinquecento richieste alle rotte limitate, contate per processo e azzerate a
-  ogni deploy. Con il traffico di oggi un indirizzo in `RateLimitBucket` può
-  restarci settimane. Quelle righe non sono legate a un conto, quindi
-  cancellare il proprio conto non le tocca. La cura è una pulizia a tempo — nel
-  ciclo del worker, dove già gira la scopa — e non una a contatore.
+- **Che gli indirizzi IP spariscano in dieci minuti dipende da una riga che
+  nessun test esegue.** La pulizia a tempo adesso c'è: il worker toglie le
+  finestre scadute di `RateLimitBucket` ogni `PULIZIA_IP_OGNI_MS` (dieci minuti),
+  quindi un indirizzo resta nel database al più una decina di minuti dopo
+  l'ultimo tentativo, invece delle settimane che poteva durare con la sola
+  pulizia dell'API, una richiesta ogni cinquecento contate per processo. Quando
+  tocca, e che cosa succede se fallisce, sta in `apps/worker/src/pulizie.ts` ed
+  è provato; la chiamata vera, `await puliziaIp.forse()` dentro il ciclo di
+  `apps/worker/src/index.ts`, no, perché quel file finisce con un `await main()`
+  e non si importa. Toglierla per sbaglio non farebbe cadere niente. E la
+  promessa vale finché il worker gira: se è fermo, resta solo la pulizia
+  dell'API, che è quella di prima. Quelle righe non sono legate a un conto, e
+  cancellare il proprio conto continua a non toccarle — ma adesso se ne vanno
+  da sole in pochi minuti.
 - **L'elenco dei terzi si controlla dagli URL, e vede solo quelli scritti per
   intero.** `privacy.test.ts` trova gli host negli URL che aprono un letterale.
   Un indirizzo costruito a pezzi, o scritto su una riga che comincia come un

@@ -252,8 +252,8 @@ rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
 deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
-**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1517 test**
-unit + web su 58 file, **431** d'integrazione su 15 file, albero pulito. **La CI
+**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1537 test**
+unit + web su 60 file, **431** d'integrazione su 15 file, albero pulito. **La CI
 è verde su tutti e cinque i job** dalla run 36696197487 (`590673d`, 30 settembre
 2026), la prima dal 7 settembre: l'integrazione era rossa per l'immagine di
 MinIO sparita, si veda il punto 4 qui sotto.
@@ -359,9 +359,8 @@ non fidandosi del pannello.
 `account.test.tsx` («manda la password attuale e la nuova») vanno in timeout su
 una `findBy*` quando la macchina è occupata; `guards.test.ts` cammina l'albero del
 repo con il timeout di 5s di default e dentro `npm test` intero ogni tanto lo
-sfora — dal 15 ottobre 2026 in tre run intere su tre, anche sull'albero
-pulito, quindi non è più «ogni tanto», e il rimedio (un timeout suo) è un
-giro da fare. Nessuno dei tre è stato introdotto dal lavoro recente. **Chi vede rosso lì
+sfora — il 15 ottobre 2026 in tre run intere di fila, anche sull'albero
+pulito, e verde alla quarta: il rimedio (un timeout suo) è un giro da fare. Nessuno dei tre è stato introdotto dal lavoro recente. **Chi vede rosso lì
 rifaccia girare il file da solo** prima di cercare la causa altrove — ma non
 prima di aver escluso di averli rotti davvero, il che vuol dire rifare girare la
 suite **con** le modifiche e vederla verde due volte, non solo sull'albero pulito.

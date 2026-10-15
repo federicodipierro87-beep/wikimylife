@@ -1,6 +1,7 @@
 import { loadConfig } from "@wikimylife/api/config";
 import { createLogger } from "@wikimylife/api/logger";
 import { compose } from "@wikimylife/api";
+import { PULIZIA_IP_OGNI_MS, creaPuliziaPeriodica } from "./pulizie.js";
 import { creaSonno } from "./sonno.js";
 import { toccaCancellare, toccaSpazzare } from "./sweepSchedule.js";
 
@@ -46,6 +47,11 @@ import { toccaCancellare, toccaSpazzare } from "./sweepSchedule.js";
  * repliche e' quindi soltanto una scorsa del bucket pagata due volte — voci di
  * `LIST` sulla fattura, niente di piu' — e chi vuole evitarlo tiene la scopa
  * accesa su una replica sola.
+ *
+ * FA ANCHE UNA SECONDA PULIZIA, piu' piccola: toglie dal limite dei tentativi
+ * le finestre scadute, cioe' gli indirizzi IP che non servono piu' a contare
+ * niente (`pulizie.ts`). Due repliche la fanno due volte, ed e' innocuo: e' una
+ * `DELETE` di righe scadute, e la seconda non ne trova.
  */
 
 const POLL_INTERVAL_MS = 5_000;
@@ -150,6 +156,17 @@ async function main(): Promise<void> {
     }
   };
 
+  const puliziaIp = creaPuliziaPeriodica({
+    ogniMs: PULIZIA_IP_OGNI_MS,
+    adesso: () => Date.now(),
+    lavoro: () => composition.rateLimitStore.purgeExpired(Date.now()),
+    onErrore: (error) => {
+      logger.error("pulizia dei tentativi non riuscita, riprovo al prossimo intervallo", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    },
+  });
+
   // La prima e' un intervallo dopo l'avvio e non all'avvio: un worker che si
   // riavvia in ciclo passerebbe la scopa a ogni riavvio, e la scopa e' la cosa
   // che non deve girare piu' spesso di quanto le si e' detto.
@@ -176,6 +193,10 @@ async function main(): Promise<void> {
       logger.error("giro di elaborazione interrotto", {
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+
+    if (running) {
+      await puliziaIp.forse();
     }
 
     if (

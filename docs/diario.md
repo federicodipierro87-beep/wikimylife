@@ -1480,3 +1480,25 @@ senza titolo continua a leggere che manca il titolo.
 Le mutazioni: quattro cadute su quattro, controllo vivo. Nel riscrivere il
 difetto noto ho messo «soglia di 0.6» per la confidenza, a memoria: è 0.5, e
 l'ha trovato il `grep` fatto prima del commit e non dopo.
+
+---
+
+## Giro: gli indirizzi IP che potevano restare settimane
+
+Dal README: la pagina della privacy dice che la riga del limite dei tentativi
+«viene cancellata alla pulizia successiva», e la pulizia partiva ogni
+cinquecento richieste alle rotte limitate, contate per processo e azzerate a
+ogni deploy. Adesso le toglie anche il worker, ogni dieci minuti
+(`PULIZIA_IP_OGNI_MS`), da un modulo puro (`pulizie.ts`) costruito come
+`sweepSchedule.ts`, perché `index.ts` non si importa. A differenza della scopa
+passa subito all'avvio e anche con la coda piena: è una `DELETE` su un indice.
+
+Il residuo dichiarato è la riga che chiama la pulizia dentro il ciclo: nessun
+test la esegue, e toglierla non farebbe cadere niente. Le mutazioni sul modulo:
+otto cadute su otto, controllo vivo.
+
+### I numeri, a fine dei tre giri
+
+**1537** test unit + web su 60 file, **431** d'integrazione su 15 file. La suite
+intera questa volta è verde anche su `guards.test.ts`, dopo tre run rosse di
+fila per timeout poche ore prima.

@@ -36,6 +36,7 @@ import {
 } from "./providers/fake/index.js";
 import { createAuthService, type AuthService } from "./services/auth.service.js";
 import type { GoogleIdTokenVerifier } from "./services/ports/GoogleIdTokenVerifier.js";
+import type { RateLimitStore } from "./services/ports/RateLimitStore.js";
 import { createIngestionService, type IngestionService } from "./services/ingestion.service.js";
 import {
   createProceduresService,
@@ -96,6 +97,12 @@ export interface Composition {
    * worker, che lo fa da solo solo se `SWEEP_MODE` glielo dice.
    */
   readonly storageSweepService: StorageSweepService;
+  /**
+   * Lo stesso deposito che il limite dei tentativi usa dentro l'app HTTP,
+   * esposto per il worker: e' lui a togliere a tempo le finestre scadute, cioe'
+   * gli indirizzi IP che la pagina della privacy promette di non tenere.
+   */
+  readonly rateLimitStore: RateLimitStore;
   readonly providers: Providers;
   /**
    * Chi verifica i token di Google, o `undefined` se l'accesso con Google e'
@@ -392,6 +399,7 @@ export function compose(config: AppConfig, overrides?: {
     searchService,
     ingestionService,
     storageSweepService,
+    rateLimitStore,
     providers,
     google,
     app,
