@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 /**
  * Le tre regole che nessun compilatore fa rispettare, verificate leggendo i
@@ -153,8 +153,21 @@ function read(file: string): { path: string; text: string; lines: string[] } {
   return { path: relative(ROOT, file).split(sep).join("/"), text, lines: text.split(/\r?\n/) };
 }
 
+/**
+ * Una camminata sola per file, condivisa dai casi che la usano.
+ *
+ * Prima ogni caso rifaceva tutto — `readdir`, lettura e `stripComments` di ogni
+ * sorgente del repository — e i casi erano cinque: dieci secondi e mezzo per il
+ * file da solo, fra uno e tre per caso, e dentro `npm test` intero, con gli
+ * altri file a contendersi il disco, il timeout di cinque secondi saltava quasi
+ * a ogni run. Alzare il timeout avrebbe nascosto il conto invece di pagarlo una
+ * volta. I sorgenti non cambiano mentre il file gira, quindi condividerli non
+ * puo' far vedere a un caso qualcosa che un altro non vedrebbe.
+ */
+let camminata: ReturnType<typeof read>[] | undefined;
+
 function repoSources(): ReturnType<typeof read>[] {
-  return [
+  camminata ??= [
     ...collectSources(join(ROOT, "packages")),
     ...collectSources(join(ROOT, "apps")),
     ...collectSources(join(ROOT, "prisma")),
@@ -162,11 +175,31 @@ function repoSources(): ReturnType<typeof read>[] {
   ]
     .filter((f) => resolve(f) !== SELF)
     .map(read);
+  return camminata;
 }
 
+let camminataShared: ReturnType<typeof read>[] | undefined;
+
 function sharedSources(): ReturnType<typeof read>[] {
-  return collectSources(join(ROOT, "packages", "shared", "src")).map(read);
+  camminataShared ??= collectSources(join(ROOT, "packages", "shared", "src")).map(read);
+  return camminataShared;
 }
+
+/**
+ * Le due camminate si fanno qui, con un timeout loro, e non dentro il primo
+ * caso che le chiede.
+ *
+ * Il conto e' lo stesso, ma pagato in un posto che lo dichiara: dentro un caso
+ * costava fino a tre secondi da solo, e il caso che si trovava primo andava in
+ * timeout al posto di tutti. Sessanta secondi sono dieci volte cio' che serve su
+ * una macchina carica; oltre, non e' un disco lento ma un albero che e'
+ * cresciuto di qualcosa che non doveva essere camminato — `IGNORED_DIRS` qui
+ * sopra — ed e' giusto che fallisca.
+ */
+beforeAll(() => {
+  repoSources();
+  sharedSources();
+}, 60_000);
 
 /** Righe di sole importazioni escluse: i falsi positivi vengono quasi tutti da li'. */
 function offendingLines(

@@ -353,17 +353,21 @@ non fidandosi del pannello.
   S3_SECRET_ACCESS_KEY_TEST=wikimylife-segreto npm run test:integration
   ```
 
-### Tre test che traballano sotto carico, e non è colpa di chi li vede rossi
+### Due test che traballano sotto carico, e non è colpa di chi li vede rossi
 
 `list.test.tsx` («cambiare ambito riporta alla prima pagina») e
 `account.test.tsx` («manda la password attuale e la nuova») vanno in timeout su
-una `findBy*` quando la macchina è occupata; `guards.test.ts` cammina l'albero del
-repo con il timeout di 5s di default e dentro `npm test` intero ogni tanto lo
-sfora — il 15 ottobre 2026 in tre run intere di fila, anche sull'albero
-pulito, e verde alla quarta: il rimedio (un timeout suo) è un giro da fare. Nessuno dei tre è stato introdotto dal lavoro recente. **Chi vede rosso lì
-rifaccia girare il file da solo** prima di cercare la causa altrove — ma non
-prima di aver escluso di averli rotti davvero, il che vuol dire rifare girare la
-suite **con** le modifiche e vederla verde due volte, non solo sull'albero pulito.
+una `findBy*` quando la macchina è occupata. Nessuno dei due è stato introdotto
+dal lavoro recente. **Chi vede rosso lì rifaccia girare il file da solo** prima
+di cercare la causa altrove — ma non prima di aver escluso di averli rotti
+davvero, il che vuol dire rifare girare la suite **con** le modifiche e vederla
+verde due volte, non solo sull'albero pulito.
+
+Il terzo era `guards.test.ts`, e non traballava: rifaceva cinque volte la
+camminata dell'intero repository, una per caso. Adesso la fa una volta sola in
+un `beforeAll` con un timeout suo (15 ottobre 2026). Se torna rosso, la causa
+probabile è una cartella generata nuova che va aggiunta a `IGNORED_DIRS`, non il
+disco lento.
 
 ---
 

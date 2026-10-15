@@ -1502,3 +1502,20 @@ otto cadute su otto, controllo vivo.
 **1537** test unit + web su 60 file, **431** d'integrazione su 15 file. La suite
 intera questa volta è verde anche su `guards.test.ts`, dopo tre run rosse di
 fila per timeout poche ore prima.
+
+---
+
+## Giro: `guards.test.ts` non traballava, rifaceva il lavoro
+
+Il CLAUDE.md lo elencava fra i test che «ogni tanto» vanno in timeout sotto
+carico, e il 15 ottobre è andato rosso in tre run intere di fila, anche
+sull'albero pulito. Misurato da solo: 10,5 secondi, e cinque casi che ciascuno
+rifacevano `readdir`, lettura e `stripComments` dell'intero repository, fra 1,3
+e 3,1 secondi l'uno. Non era instabile: era lento cinque volte.
+
+La cura scartata era alzare il timeout, che avrebbe nascosto il conto invece di
+pagarlo una volta. Adesso le due camminate (repository e `packages/shared`) si
+fanno una volta in un `beforeAll` con sessanta secondi dichiarati, e il file
+scende a 4,6 secondi senza nessun caso sopra i 300 ms. Prova che la cache non ha
+accecato niente: un `any` messo a mano in `apps/worker/src/pulizie.ts` fa cadere
+il caso giusto. Suite intera verde due volte di fila.
