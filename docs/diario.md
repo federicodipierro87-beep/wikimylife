@@ -1462,3 +1462,21 @@ di dipendenze era sbagliato al primo colpo: passava a `useCallback` sempre la
 stessa funzione, e `useCallback` restituisce la funzione che riceve, quindi la
 richiesta non cambiava mai identità. Le schermate passano una freccia nuova a
 ogni render, e il test adesso fa lo stesso.
+
+---
+
+## Giro: il vocale vuoto che si sentiva dire «manca il titolo»
+
+Dal README: di un'estrazione rifiutata si leggeva la regola bloccante, e nel
+caso vero — un vocale senza parlato, `NON_CLASSIFICABILE` — la bloccante è il
+titolo mancante, cioè il sintomo. Il difetto noto diceva «mostrare le `issues`
+è il lavoro che manca». Non è stato preso alla lettera: i messaggi delle issue
+parlano di campi, e decidere nel web quale regola spieghi quale sarebbe stata
+una regola di dominio nel frontend, che il brief vieta. La cura sta in
+`motivoDelRifiuto`: `meta.tipo_non_procedura`, non bloccante, prende il posto
+della frase sul titolo, ma solo accanto a `titolo.mancante`. Una procedura vera
+senza titolo continua a leggere che manca il titolo.
+
+Le mutazioni: quattro cadute su quattro, controllo vivo. Nel riscrivere il
+difetto noto ho messo «soglia di 0.6» per la confidenza, a memoria: è 0.5, e
+l'ha trovato il `grep` fatto prima del commit e non dopo.

@@ -253,12 +253,14 @@ Due scelte dentro quella funzione, ed è la seconda quella che conta.
 
 *Solo le bloccanti.* Una regola non bloccante, per definizione, non è il motivo
 per cui ci si è fermati: con quella sola la scheda sarebbe nata in `DA_RIVEDERE`.
-Elencarla accanto a quella che blocca la farebbe sembrare colpevole. Il prezzo è
-che a volte si legge il sintomo invece della causa — un'estrazione
-`NON_CLASSIFICABILE` non ha titolo, quindi blocca su `titolo.mancante` mentre
-`meta.tipo_non_procedura`, che spiegherebbe il perché, resta non bloccante e
-muto. Mitigato dal fatto che la trascrizione grezza si stampa comunque sotto il
-messaggio (§3): di solito è lei a raccontare il resto.
+Elencarla accanto a quella che blocca la farebbe sembrare colpevole. Con
+un'eccezione, che è la causa di una bloccante: un'estrazione `NON_CLASSIFICABILE`
+(o una nota) non ha titolo, quindi blocca su `titolo.mancante`, e
+`meta.tipo_non_procedura` — non bloccante — è il perché. In quel caso, e solo
+accanto a quella bloccante, la frase sul titolo è sostituita da «In questo vocale
+non ho riconosciuto una procedura, e senza una procedura non c'è un titolo da
+dare alla scheda.» Una procedura vera rimasta senza titolo continua invece a
+leggere che manca il titolo: dirle «non era una procedura» sarebbe falso.
 
 *I messaggi di Zod non si citano mai.* Le issue del primo livello portano
 `zodIssue.message`, e senza un `errorMap` — non ce n'è uno — quella è prosa
@@ -4162,18 +4164,20 @@ Non installate, e il perché:
   meno. Allungare l'elenco richiede di misurare fallimenti veri, non di
   indovinarli: finché non ci sono, ogni aggiunta rischia di togliere i tentativi
   automatici a chi ne aveva bisogno.
-- **Di un'estrazione rifiutata si legge la regola che ha bloccato, non sempre la
-  causa.** Il messaggio adesso nomina il motivo, ma nomina solo le regole
-  *bloccanti*, e in `domainIssues` ce n'è una sola: `titolo.mancante`. Quando il
-  modello classifica `NON_CLASSIFICABILE` — il caso vero: un vocale senza parlato,
-  con Whisper che allucina — il titolo manca *perché* non è stata riconosciuta una
-  procedura, e quello che si legge è il sintomo. La causa esiste, è calcolata, ed è
-  già nel contratto: `RecordingState.issues` le porta tutte, bloccanti e non,
-  ricalcolate da `rawExtraction` a ogni lettura. Nessuna schermata le mostra —
-  `issues` non compare in tutto `apps/web/src`, verificato — quindi oggi quel campo
-  viaggia per il solo `tests/integration/recordings.e2e.test.ts`. Mostrarle è il
-  lavoro che manca; finché non c'è, la trascrizione stampata sotto il messaggio è
-  l'unica cosa che racconta il resto.
+- **Di un'estrazione si legge perché si è fermata, non che cosa le manca.** Il
+  caso vero — un vocale senza parlato, classificato `NON_CLASSIFICABILE` — adesso
+  dice la causa invece del sintomo (si veda «Solo le bloccanti» più su). Restano
+  due cose. La prima è che la frase si scrive su `lastErrorMessage` quando la
+  registrazione fallisce: quelle fallite prima di questo cambiamento continuano a
+  dire «Il titolo è assente o vuoto» finché qualcuno non preme «Riprova», perché
+  il messaggio è conservato e non ricalcolato. La seconda è più larga: le regole
+  **non** bloccanti non le vede nessuno. `RecordingState.issues` le porta tutte,
+  ricalcolate da `rawExtraction` a ogni lettura, ma nessuna schermata le mostra —
+  `issues` non compare in tutto `apps/web/src`, verificato — quindi una scheda
+  nasce `DA_RIVEDERE` senza che niente dica *che cosa* rivedere: la confidenza
+  bassa, i passi rinumerati, una valuta che non è un codice ISO. Mostrarle vuole
+  prima tradurle — i loro messaggi parlano di campi, come «Confidenza 0.4 sotto
+  la soglia di 0.5» — e quella traduzione è dominio, quindi server.
 - **La metà assistita della §9 non è provata contro un modello vero.** Il
   contratto, la verifica delle impronte, il rifiuto delle allucinazioni e il
   degrado hanno i loro test, ma tutti contro un fake che risponde ciò che il

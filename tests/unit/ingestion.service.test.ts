@@ -306,7 +306,8 @@ describe("estrazione non conforme — un solo retry", () => {
 
     const messaggio = h.repo.snapshot(id).lastErrorMessage;
     expect(messaggio).not.toBeNull();
-    expect(messaggio).toContain("Il titolo e' assente");
+    // La causa, non il sintomo: il titolo manca perche' non c'era una procedura.
+    expect(messaggio).toContain("non ho riconosciuto una procedura");
     // Il conteggio resta, ma in coda: dice che non e' stata sfortuna.
     expect(messaggio).toContain(`${String(MAX_EXTRACTION_ATTEMPTS)} volte`);
     // E non usa «stesso esito», che negli altri stadi marca tutt'altro.

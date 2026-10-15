@@ -283,6 +283,16 @@ export function validateExtraction(raw: unknown): ExtractionVerdict {
 const FORMA_ILLEGGIBILE = "Il modello ha risposto in un formato che non so leggere.";
 
 /**
+ * Il titolo che manca perche' non c'era una procedura da intitolare.
+ *
+ * Non dice quale dei due tipi il modello abbia scelto — nota o
+ * non classificabile — perche' per chi ha registrato la differenza non cambia
+ * niente da fare: in tutti e due i casi il vocale non raccontava una procedura.
+ */
+const NESSUNA_PROCEDURA =
+  "In questo vocale non ho riconosciuto una procedura, e senza una procedura non c'e' un titolo da dare alla scheda.";
+
+/**
  * Traduce un verdetto RIFIUTATA nella frase che leggera' chi ha registrato.
  *
  * ## Perche' esiste
@@ -302,12 +312,24 @@ const FORMA_ILLEGGIBILE = "Il modello ha risposto in un formato che non so legge
  * fermati: la scheda con quella sola sarebbe nata in `DA_RIVEDERE`. Elencarla
  * accanto a quella che blocca farebbe sembrare che bloccasse anche lei.
  *
- * Il prezzo e' che a volte si legge il sintomo invece della causa: un'estrazione
- * classificata `NON_CLASSIFICABILE` non ha titolo, quindi blocca su
- * `titolo.mancante` mentre `meta.tipo_non_procedura` — che spiega il perche' —
- * resta non bloccante e muta. E' un prezzo accettato: la trascrizione grezza si
- * stampa comunque sotto il messaggio (§3), e di solito da sola racconta il
- * resto.
+ * ## L'unica non bloccante che parla
+ *
+ * Con la regola di sopra presa alla lettera si leggeva il sintomo invece della
+ * causa. Il caso vero, arrivato dalla produzione: un vocale senza parlato,
+ * Whisper che inventa una frase, il modello che classifica `NON_CLASSIFICABILE`
+ * e lascia il titolo a `null`. Blocca `titolo.mancante`, e chi aveva registrato
+ * leggeva «Il titolo e' assente o vuoto» — vero, ma e' come dire a qualcuno che
+ * la sua lettera non e' partita perche' mancava il francobollo, quando la busta
+ * era vuota. `meta.tipo_non_procedura` spiega il perche', e resta non bloccante
+ * da sola (una nota con un titolo diventa una scheda `DA_RIVEDERE`), quindi
+ * parla solo accanto al titolo che manca: e' la causa di quella bloccante, non
+ * un motivo a parte. Al posto della frase sul titolo, non accanto: dirle tutte
+ * e due vorrebbe dire spiegare due volte la stessa cosa, una delle quali in
+ * termini di campi.
+ *
+ * La regola sta qui e non nell'interfaccia perche' e' di dominio: quale regola
+ * spieghi quale e' una cosa che sa la validazione, e il web stampa la frase
+ * che riceve.
  *
  * ## Perche' i messaggi di Zod non si citano
  *
@@ -323,9 +345,14 @@ const FORMA_ILLEGGIBILE = "Il modello ha risposto in un formato che non so legge
 export function motivoDelRifiuto(issues: readonly ExtractionIssue[]): string {
   const bloccanti = issues.filter((i) => i.blocking);
   const nostre = bloccanti.filter((i) => i.rule !== ExtractionRule.contrattoNonConforme);
+  const nonProcedura = issues.some((i) => i.rule === ExtractionRule.tipoNonProcedura);
 
   if (nostre.length > 0) {
-    return nostre.map((i) => i.message).join(" ");
+    return nostre
+      .map((i) =>
+        nonProcedura && i.rule === ExtractionRule.titoloMancante ? NESSUNA_PROCEDURA : i.message,
+      )
+      .join(" ");
   }
 
   if (bloccanti.length > 0) {

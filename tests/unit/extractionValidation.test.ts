@@ -433,11 +433,11 @@ describe("motivoDelRifiuto", () => {
     expect(motivoDelRifiuto(verdict.issues)).toBe(bloccante?.message);
   });
 
-  it("tace sulle regole non bloccanti, che non hanno fermato niente", () => {
+  it("nel caso vero dalla produzione dice la causa, e tace sulle altre non bloccanti", () => {
     // L'estrazione vera arrivata dalla produzione: quindici secondi senza
     // parlato, Whisper che allucina, e il modello che risponde onestamente
     // NON_CLASSIFICABILE con tutto a null. Quattro regole rilevate, una sola
-    // blocca.
+    // blocca — il titolo — e una spiega perche': non c'era una procedura.
     const verdict = validateExtraction(
       buildExtractionContract({
         titolo: null,
@@ -458,10 +458,56 @@ describe("motivoDelRifiuto", () => {
     expect(verdict.issues.length).toBeGreaterThan(1);
     expect(verdict.issues.filter((i) => i.blocking)).toHaveLength(1);
 
-    expect(motivo).toContain("titolo");
+    expect(motivo).toContain("non ho riconosciuto una procedura");
+    // Al posto del sintomo, non accanto: la stessa cosa detta due volte, una in
+    // termini di campi.
+    expect(motivo).not.toContain("assente o vuoto");
     expect(motivo).not.toContain("NON_CLASSIFICABILE");
     expect(motivo).not.toContain("passo");
     expect(motivo).not.toContain("Confidenza");
+  });
+
+  it("vale anche per una nota senza titolo", () => {
+    const verdict = validateExtraction(
+      buildExtractionContract({
+        titolo: null,
+        _meta: {
+          confidenzaGlobale: 0.9,
+          campiIncerti: [],
+          domandeSuggerite: [],
+          contieneDatiSensibili: false,
+          tipoRilevato: DetectedType.NOTA_SEMPLICE,
+        },
+      }),
+    );
+
+    expect(motivoDelRifiuto(verdict.issues)).toContain("non ho riconosciuto una procedura");
+  });
+
+  it("una procedura senza titolo resta una procedura senza titolo", () => {
+    // L'errore opposto: dire «non era una procedura» a chi l'aveva raccontata,
+    // solo perche' il modello non ha saputo intitolarla.
+    const verdict = validateExtraction(buildExtractionContract({ titolo: null }));
+
+    const motivo = motivoDelRifiuto(verdict.issues);
+    expect(motivo).toContain("assente o vuoto");
+    expect(motivo).not.toContain("riconosciuto");
+  });
+
+  it("il tipo sbagliato non sostituisce una bloccante che non e' il titolo", () => {
+    // Spiega il titolo che manca, e nient'altro: accanto a un guaio diverso non
+    // e' la causa di niente.
+    const motivo = motivoDelRifiuto([
+      { rule: "altra.regola", path: "x", message: "Un altro guaio.", blocking: true },
+      {
+        rule: ExtractionRule.tipoNonProcedura,
+        path: "_meta.tipoRilevato",
+        message: "Il testo e' stato classificato NOTA_SEMPLICE, non PROCEDURA.",
+        blocking: false,
+      },
+    ]);
+
+    expect(motivo).toBe("Un altro guaio.");
   });
 
   it("unisce due bloccanti invece di fermarsi alla prima", () => {

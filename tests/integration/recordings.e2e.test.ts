@@ -921,7 +921,7 @@ describe("fallimenti", () => {
     const messaggio = dopo.lastError?.message ?? null;
 
     expect(messaggio).not.toBeNull();
-    expect(messaggio).toContain("Il titolo e' assente");
+    expect(messaggio).toContain("non ho riconosciuto una procedura");
     // Le tre non bloccanti ci sono, nel contratto, e restano fuori dalla frase:
     // e' la differenza fra «ecco perche' mi sono fermato» e «ecco tutto».
     expect(dopo.issues.filter((i) => !i.blocking).length).toBeGreaterThan(0);
