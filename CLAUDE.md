@@ -262,9 +262,20 @@ dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
 **Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1559 test**
 unit + web su 62 file, **431** d'integrazione su 15 file, albero pulito. **La CI
-è verde su tutti e cinque i job** dalla run 36696197487 (`590673d`, 30 settembre
-2026), la prima dal 7 settembre: l'integrazione era rossa per l'immagine di
-MinIO sparita, si veda il punto 4 qui sotto.
+è verde su tutti e cinque i job**: l'ultima run guardata è la 38743854967 su
+`7e028c8` (15 ottobre 2026), e dopo il deploy `/health` risponde e il bundle di
+Netlify contiene `wikimylife-bozze`, cioè serve la versione nuova.
+
+**Il 15 ottobre 2026 si è lavorato sui difetti noti, non sul guscio** (l'utente
+ha messo in pausa Apple e Android). Sei giri, tutti in produzione: il worker
+rimette in coda i vocali rimasti `IN_ELABORAZIONE` da un worker morto
+(`SOGLIA_INTERROTTA_MS`, con un timeout nuovo su S3); il polling dei sospesi usa
+`aggiorna()` di `useAsync` e non smonta più i riquadri; un vocale senza
+procedura dice la causa e non «manca il titolo»; il worker toglie a tempo gli
+indirizzi IP del limite dei tentativi; `guards.test.ts` cammina il repo una volta
+sola; e **le bozze**: ogni secondo registrato finisce su IndexedDB, e una
+registrazione interrotta dallo schermo bloccato si recupera al prossimo avvio. Il
+racconto, con le mutazioni di ognuno, è in coda a `docs/diario.md`.
 
 Il giro in corso è il guscio nativo: un'app vera per iOS e Android, con dentro il
 web già costruito, perché il cartello del microfono lo chieda il sistema una
@@ -301,6 +312,14 @@ su Railway e `VITE_GOOGLE_CLIENT_ID` su Netlify.
 
 ### Il prossimo passo: le misure che mancano
 
+0. **Le bozze su un telefono vero**, che è l'unica prova che conta e che nessun
+   test può fare: registrare una ventina di secondi, bloccare lo schermo,
+   chiudere l'app, riaprirla dopo almeno mezzo minuto. Gli esiti dicono cose
+   diverse: niente in lavorazione vuol dire che il telefono non ha consegnato
+   i pezzi prima di sospendere la pagina; un errore vuol dire che Whisper non
+   accetta il file troncato; una scheda corta vuol dire che la parte detta a
+   schermo spento non è mai stata registrata. Qualunque esito, va riscritta la
+   voce «Uno schermo bloccato a metà registrazione…» del README.
 1. Lo stato della CI si legge da
    `https://api.github.com/repos/federicodipierro87-beep/wikimylife/actions/runs`
    (il filtro `head_sha` vuole lo SHA **intero**). `gh` è autenticato: i log si
