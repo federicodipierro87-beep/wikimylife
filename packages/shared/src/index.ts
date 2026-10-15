@@ -15,6 +15,7 @@ export * from "./providers/redaction.js";
 export * from "./adapters/recorder.js";
 export * from "./adapters/location.js";
 export * from "./adapters/uploadQueue.js";
+export * from "./adapters/recordingDraft.js";
 export * from "./adapters/secureStorage.js";
 
 export * from "./api/schemas.js";

@@ -31,7 +31,7 @@ interface StoredRecording extends QueuedRecording {
   readonly seq: number;
 }
 
-function promisify<T>(request: IDBRequest<T>): Promise<T> {
+export function promisify<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = (): void => {
       resolve(request.result);
@@ -50,7 +50,7 @@ function promisify<T>(request: IDBRequest<T>): Promise<T> {
  * si risolvesse sulla `put`, l'interfaccia direbbe «salvato» e il file non ci
  * sarebbe.
  */
-function committed(tx: IDBTransaction): Promise<void> {
+export function committed(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = (): void => {
       resolve();

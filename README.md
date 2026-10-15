@@ -4257,11 +4257,16 @@ Non installate, e il perché:
   Misurarlo davvero si potrebbe — la coda conosce durata e byte di ogni
   registrazione che ci è passata — ma vorrebbe dire tenere una media che al primo
   avvio non esiste ancora, cioè proprio quando serve.
-- **Un audio non salvato vive solo finché l'app è aperta.** Se IndexedDB rifiuta
-  la scrittura, la registrazione resta in memoria con tre uscite accanto, ma
-  chiudere la scheda prima di sceglierne una la perde comunque. Non c'è modo di
-  fare altrimenti: il posto durevole che avrebbe dovuto accoglierla è
-  esattamente quello che ha detto di no.
+- **Un audio non salvato sopravvive alla chiusura solo se ci sono le sue bozze.**
+  Se IndexedDB rifiuta la scrittura in coda, la registrazione resta in memoria
+  con tre uscite accanto. Chiudere la scheda prima di sceglierne una adesso non
+  la perde per forza: se i pezzi di un secondo erano entrati nelle bozze mentre
+  si registrava, al prossimo avvio il recupero la ricompone e riprova a metterla
+  in coda. Ma il rifiuto che l'ha fermata è quasi sempre lo spazio, e lo stesso
+  disco pieno può aver rifiutato anche le bozze: in quel caso la memoria è
+  l'unico posto, e chiudere la perde ancora. E una bozza che la coda continua a
+  rifiutare resta lì, riprovata a ogni avvio, senza che nessuna schermata la
+  nomini.
 - **L'audio si scarica passando dall'API.** `GET /api/recordings/:id/audio` legge
   da S3 e ristreamma: semplice, autenticato con lo stesso token di tutto il
   resto, e paga la banda due volte. Un URL prefirmato eviterebbe il doppio salto,
@@ -4571,27 +4576,29 @@ Non installate, e il perché:
   e l'impostazione per sito del browser. **Nessuna delle due è ancora misurata**,
   e finché non lo è l'app non le consiglia — un riquadro che spiega come si fa
   una cosa che non si è visto funzionare è peggio di nessun riquadro.
-- **Se lo schermo si blocca a metà registrazione, la registrazione sparisce, e
-  non lo dice nessuno.** I pezzi che `MediaRecorder` consegna vivono in un array
-  dentro `MediaRecorderAdapter` (`session.chunks`) e diventano un `Blob` solo
-  alla `stop()`: finché non si preme «Ferma», l'intero racconto sta in memoria
-  nella scheda del browser e da nessun'altra parte. Su iOS una scheda con lo
-  schermo bloccato viene sospesa e poi, sotto pressione di memoria, scaricata —
-  quindi il caso vero è chi accende il registratore, si mette il telefono in
-  tasca e parla per venti minuti: riaccende lo schermo e non trova niente, senza
-  nessun errore, perché dal punto di vista dell'app quella pagina non è mai
-  esistita. Il taglio a un secondo (`recorder.start(1000)`) limita ciò che si
-  perde a un guasto *del registratore*, non a uno della pagina che lo contiene.
-  Non c'è nessun `visibilitychange`, nessun `pagehide`, nessun Wake Lock —
-  verificato, in `apps/web/src` e in `packages/shared/src` non compare nessuno
-  dei quattro — e non ci sarebbe comunque una cura completa: un Wake Lock tiene
-  acceso lo schermo, che è l'opposto di ciò che vuole chi mette il telefono in
-  tasca, e scrivere i pezzi in IndexedDB mentre arrivano ridurrebbe la perdita
-  senza toglierla, perché la ripresa dopo lo sfratto è comunque un'altra
-  schermata da progettare. La cura vera è un registratore nativo, cioè un
-  processo che il sistema non sospende; è il motivo principale per cui esiste il
-  guscio, e finché non c'è **questo è il modo più facile di perdere del lavoro
-  in tutta l'applicazione**.
+- **Uno schermo bloccato a metà registrazione non perde più tutto, ma quanto si
+  salva non è misurato.** Ogni pezzo di un secondo che `MediaRecorder` consegna
+  finisce in una bozza su IndexedDB appena arriva (`recording/bozze.ts`,
+  `IndexedDbBozze.ts`), e al prossimo avvio una bozza che tace da mezzo minuto
+  diventa una registrazione in coda, da sola. Prima l'intero racconto stava in
+  un array in memoria, e una scheda scaricata da iOS se lo portava via senza un
+  errore. I residui sono parecchi, e il primo è il più grosso: **nessuno l'ha
+  provato su un telefono vero.** Non si sa quanti pezzi consegni un
+  `MediaRecorder` in una pagina sospesa a schermo spento — può darsi che la
+  parte detta dopo il blocco non sia mai stata registrata — né se Whisper
+  accetti un webm o un mp4 troncato a metà, senza la chiusura che lo `stop()`
+  scriverebbe. Poi: `IndexedDbBozze` non lo esegue nessun test, perché in
+  `jsdom` `indexedDB` non esiste (le decisioni sono provate contro un archivio in
+  memoria, il collegamento con il `CaptureProvider` vero); una registrazione
+  recuperata non ha posizione e non sa se era offline; se la pagina muore fra
+  la coda e la cancellazione della bozza, il recupero la rimette in coda con lo
+  stesso id — innocuo se è ancora lì, un vocale caricato due volte se nel
+  frattempo era partito; e nessuna schermata dice «ho ritrovato una
+  registrazione interrotta»: la si vede comparire fra quelle in lavorazione.
+  Due schede aperte, una delle quali sospesa per più di mezzo minuto mentre
+  registra, possono produrre un mezzo vocale recuperato e uno intero. La cura
+  vera resta un registratore nativo, cioè un processo che il sistema non
+  sospende; questa salva ciò che il browser ha fatto in tempo a consegnare.
 
 ---
 

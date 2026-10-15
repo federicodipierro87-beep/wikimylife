@@ -1519,3 +1519,55 @@ fanno una volta in un `beforeAll` con sessanta secondi dichiarati, e il file
 scende a 4,6 secondi senza nessun caso sopra i 300 ms. Prova che la cache non ha
 accecato niente: un `any` messo a mano in `apps/worker/src/pulizie.ts` fa cadere
 il caso giusto. Suite intera verde due volte di fila.
+
+---
+
+## Giro: le bozze, per lo schermo che si blocca a metà racconto
+
+Dal README, «il modo più facile di perdere del lavoro in tutta l'applicazione»:
+l'intero racconto stava in un array dentro `MediaRecorderAdapter` fino allo
+`stop()`, e una pagina scaricata da iOS a schermo bloccato se lo portava via
+senza un errore. La cura vera è il registratore nativo (fase 4, in pausa);
+questa è la mitigazione che si può fare dal web.
+
+### Come
+
+`MediaRecorderAdapter.start()` accetta un `onPezzo`, e ogni secondo che il
+browser consegna finisce in una bozza su un IndexedDB separato
+(`wikimylife-bozze`, per non alzare la versione di quello della coda). Allo stop
+riuscito la bozza si butta; se la coda rifiuta l'audio resta, perché è l'unica
+copia su disco. All'avvio una bozza che tace da `SILENZIO_BOZZA_MS` (mezzo
+minuto) diventa una registrazione in coda, con l'id della bozza.
+
+### Una corsa trovata scrivendo, prima che la trovasse un telefono
+
+L'ultimo pezzo arriva quando i suoi byte sono pronti, e può finire su disco
+*dopo* che lo stop ha buttato la bozza: resterebbe un secondo d'audio senza
+intestazione, recuperato mezzo minuto dopo come un vocale illeggibile. Le
+scritture di una registrazione stanno quindi in fila (`creaScrittoreBozza`), la
+cancellazione in fondo, e i pezzi dopo la chiusura si ignorano.
+
+### Le mutazioni
+
+Ventotto, con i due controlli vivi. Ventiquattro cadute. Due vive, dichiarate
+nel codice: il `chiudi()` dopo uno stop fallito (la finestra che protegge è fra
+due microtask) e la guardia sul doppio recupero (scatta solo in `StrictMode`,
+che il montaggio di prova non usa). Il controllo del comando web è stato saltato
+al primo giro perché il testo da sostituire compariva due volte, e rifatto da
+solo: «saltata non è caduta».
+
+### La suite intera, e la macchina
+
+Cinque run intere rosse, da 3 a 35 casi, tutti timeout o `findBy*` scadute in
+file che con le bozze non c'entrano (`account`, `search`, `login`, `list`); da
+soli passano, e l'albero pulito nello stesso momento ne aveva uno. La CPU era al
+100%. Quattordici processi `tail -f | grep` rimasti appesi da sessioni dell'8 e
+del 12 ottobre su un altro progetto sono stati chiusi con il permesso
+dell'utente, ma il carico vero era una compilazione C++ in corso (`cl.exe`) di
+un'altra sessione. La lezione: prima di leggere una suite rossa per timeout,
+guardare chi sta usando la CPU — con il tempo **misurato su un intervallo**,
+non quello accumulato, che mi ha indicato prima i colpevoli sbagliati.
+
+Finita la compilazione, con Godot ancora acceso, due run intere ancora rosse
+per timeout; con `--maxWorkers=2` due run verdi di fila, **1559** test su 62
+file. È la prova che serviva: le modifiche non rompono niente, la contesa sì.

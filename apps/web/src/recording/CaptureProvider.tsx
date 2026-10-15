@@ -1,7 +1,9 @@
 import type { Coordinates, QueuedRecording } from "@wikimylife/shared";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useApi } from "../api";
+import { creaScrittoreBozza, recuperaBozze, type ScrittoreBozza } from "./bozze";
 import { GeolocationAdapter } from "./GeolocationAdapter";
+import { IndexedDbBozze } from "./IndexedDbBozze";
 import { IndexedDbUploadQueue } from "./IndexedDbUploadQueue";
 import { MediaRecorderAdapter } from "./MediaRecorderAdapter";
 import { motivoDi, nomeFileDi, spazioEsaurito } from "./salvataggio";
@@ -57,6 +59,23 @@ import { createUploader, type Uploader } from "./uploader";
  * `useRef` e non variabili di modulo: due montaggi in `StrictMode` non devono
  * condividere un `MediaRecorder` a meta' registrazione, e un giorno un test
  * potra' iniettarne altri senza toccare l'ordine degli import.
+ *
+ * ## La bozza, mentre si registra
+ *
+ * La promessa qui sopra valeva dallo stop in poi. Prima dello stop l'audio
+ * stava tutto in memoria, e su un telefono che blocca lo schermo la pagina
+ * puo' essere scaricata a meta' racconto: si riaccendeva lo schermo e non c'era
+ * niente, senza un errore. Adesso ogni pezzo di un secondo finisce in una bozza
+ * su IndexedDB appena il registratore lo consegna (`bozze.ts`), e all'avvio
+ * le bozze abbandonate diventano registrazioni in coda. Allo stop riuscito, o
+ * annullando, la bozza si butta; se la coda rifiuta l'audio, resta, perche' e'
+ * l'unica copia su disco.
+ *
+ * Non e' la cura vera: quella e' un registratore nativo, che il sistema non
+ * sospende. Questa salva i pezzi che il registratore ha consegnato prima che la
+ * pagina morisse. Cosa consegni un `MediaRecorder` dentro una pagina sospesa,
+ * a schermo spento, non e' misurato: puo' darsi che quella parte di racconto
+ * non sia mai stata registrata, e allora non c'e' niente da salvare.
  *
  * ## Il tetto alla coda e' il rifiuto di registrare
  *
@@ -209,6 +228,20 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
   const recorder = useRef(new MediaRecorderAdapter());
   const location = useRef(new GeolocationAdapter());
   const queue = useRef(new IndexedDbUploadQueue());
+  const bozze = useRef(new IndexedDbBozze());
+  /**
+   * Chi sta scrivendo la bozza della registrazione in corso, o `null`. Vedi
+   * «## La bozza, mentre si registra».
+   */
+  const scrittore = useRef<ScrittoreBozza | null>(null);
+  /**
+   * Il recupero delle bozze si fa una volta per pagina. In `StrictMode` gli
+   * effetti girano due volte, e due recuperi in parallelo metterebbero in coda
+   * la stessa bozza due volte prima che una delle due la butti. Nessun test
+   * monta il provider in `StrictMode`, quindi togliere la guardia non fa cadere
+   * niente: dichiarato.
+   */
+  const recuperoFatto = useRef(false);
   /**
    * Quello che il GPS ha fatto in tempo a dire. Si scrive quando arriva, si
    * legge allo stop senza attendere: se non c'e' ancora, non c'e'.
@@ -258,10 +291,22 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
   );
 
   // Un giro all'avvio: e' cio' che raccoglie l'audio registrato ieri in un
-  // ascensore e mai caricato.
+  // ascensore e mai caricato. Prima le bozze, perche' un racconto interrotto da
+  // uno schermo bloccato diventi parte di quel giro e non aspetti il prossimo.
   useEffect(() => {
-    aggiornaConteggio();
-    void uploader.current.drain();
+    void (async (): Promise<void> => {
+      if (!recuperoFatto.current) {
+        recuperoFatto.current = true;
+        await recuperaBozze({
+          bozze: bozze.current,
+          coda: queue.current,
+          adesso: Date.now(),
+          lingua: navigator.language,
+        });
+      }
+      aggiornaConteggio();
+      await uploader.current.drain();
+    })();
   }, [aggiornaConteggio]);
 
   useEffect(() => {
@@ -311,7 +356,9 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
     // Il microfono per primo, e se lo nega si esce di qui senza aver chiesto
     // altro. Vedi «## Prima il microfono, e solo dopo il GPS»: l'ordine di
     // queste due istruzioni e' l'ordine dei cartelli sullo schermo.
-    await recorder.current.start();
+    const nuovo = creaScrittoreBozza({ bozze: bozze.current, id: nuovoId(), startedAt: Date.now() });
+    await recorder.current.start({ onPezzo: nuovo.pezzo });
+    scrittore.current = nuovo;
 
     // Il GPS parte adesso e deposita il risultato nel ref quando arriva.
     // Nessuno lo aspetta, ne' qui ne' allo stop.
@@ -329,11 +376,15 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
 
   const stop = useCallback(async (): Promise<string> => {
     setState({ kind: "salvataggio" });
+    const bozza = scrittore.current;
+    scrittore.current = null;
     try {
       const chunk = await recorder.current.stop();
       const { coords, label } = luogo.current;
 
-      const id = nuovoId();
+      // L'id della bozza e non uno nuovo: se la pagina muore fra la coda e la
+      // cancellazione della bozza, il recupero riscrive questa stessa riga.
+      const id = bozza?.id ?? nuovoId();
       const item = {
         id,
         audio: chunk.data,
@@ -354,7 +405,14 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
       } catch (error: unknown) {
         // Trattenere `item` e' tutto cio' che separa «l'audio non e' su disco»
         // da «l'audio non esiste piu'»: uscire di qui senza farlo lo lascerebbe
-        // al garbage collector.
+        // al garbage collector. E la bozza resta: se la pagina muore prima di
+        // una delle tre uscite, e' l'unica copia che il recupero puo' trovare.
+        // Chiusa pero', non aperta: un pezzo arrivato in ritardo dopo uno
+        // «Scarta» la ricreerebbe, e il recupero rimetterebbe in coda un
+        // secondo d'audio senza intestazione. Una mutazione che toglie questa
+        // riga sopravvive: la finestra e' fra due microtask, e nessun caso la
+        // apre. E' dichiarata, non coperta.
+        bozza?.chiudi();
         inSospeso.current = item;
         setNonSalvata({
           recordedAt: item.recordedAt,
@@ -369,6 +427,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
 
       // Da qui in poi l'audio e' salvo e l'app si puo' chiudere. Tutto cio' che
       // segue e' senza `await` di proposito.
+      void bozza?.butta();
       aggiornaConteggio();
       void uploader.current.drain();
 
@@ -379,6 +438,10 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
   }, [aggiornaConteggio]);
 
   const cancel = useCallback(async (): Promise<void> => {
+    const bozza = scrittore.current;
+    scrittore.current = null;
+    // Annullare vuol dire non averla mai fatta, anche su disco.
+    void bozza?.butta();
     await recorder.current.cancel();
     setState({ kind: "ferma" });
   }, []);
@@ -408,6 +471,8 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
     }
     inSospeso.current = null;
     setNonSalvata(null);
+    // Adesso l'audio e' nella coda: la bozza non e' piu' l'unica copia.
+    void bozze.current.discard(item.id).catch(() => undefined);
     aggiornaConteggio();
     void uploader.current.drain();
   }, [aggiornaConteggio]);
@@ -431,13 +496,19 @@ export function CaptureProvider({ children }: { children: React.ReactNode }): Re
   }, []);
 
   const scarta = useCallback((): void => {
+    const item = inSospeso.current;
     inSospeso.current = null;
     setNonSalvata(null);
+    // Scartare e' una decisione: senza questa riga il recupero rimetterebbe in
+    // coda al prossimo avvio il vocale appena buttato.
+    if (item !== null) {
+      void bozze.current.discard(item.id).catch(() => undefined);
+    }
   }, []);
 
   const svuotaCoda = useCallback(async (): Promise<void> => {
     try {
-      await queue.current.clear();
+      await Promise.all([queue.current.clear(), bozze.current.clear()]);
     } catch {
       // Vedi il commento sull'interfaccia: chi chiama ha gia' cancellato il
       // conto sul server, e un IndexedDB negato non deve far sembrare fallito

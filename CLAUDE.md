@@ -206,6 +206,14 @@ Il caso da cui viene ciascuna sta in `docs/diario.md`.
   costruisce un secondo client con il refresh token del primo nel deposito e la
   memoria vuota: è lo stato esatto dopo un riavvio del browser.
 
+- **Una suite rossa per timeout si legge dopo aver guardato la CPU.** Il 15
+  ottobre 2026 cinque run intere sono andate rosse in file estranei al lavoro,
+  per una compilazione C++ di un'altra sessione e per `tail -f | grep` rimasti
+  appesi da giorni. Il carico si misura su un intervallo (tempo di CPU prima e
+  dopo cinque secondi), non con il tempo accumulato, che indica chi ha lavorato
+  di più nella settimana e non chi sta lavorando adesso. E i `tail -f` di un
+  monitor vanno chiusi quando il monitor finisce: su Windows restano vivi.
+
 ### Dove NON vanno i test
 
 Tre piani di lavoro hanno già sbagliato indirizzo. I nomi ingannano:
@@ -252,8 +260,8 @@ rifinitura, ognuno nato da un elenco di difetti noti; poi è arrivato il primo
 deploy vero, e con lui i primi due difetti trovati dalla produzione invece che
 dai test. Il racconto di tutto questo è in `docs/diario.md`.
 
-**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1537 test**
-unit + web su 60 file, **431** d'integrazione su 15 file, albero pulito. **La CI
+**Stato all'ultimo commit**: typecheck verde sui quattro passaggi, **1559 test**
+unit + web su 62 file, **431** d'integrazione su 15 file, albero pulito. **La CI
 è verde su tutti e cinque i job** dalla run 36696197487 (`590673d`, 30 settembre
 2026), la prima dal 7 settembre: l'integrazione era rossa per l'immagine di
 MinIO sparita, si veda il punto 4 qui sotto.

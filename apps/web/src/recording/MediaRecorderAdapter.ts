@@ -1,4 +1,4 @@
-import type { RecorderAdapter, RecordingChunk } from "@wikimylife/shared";
+import type { RecorderAdapter, RecorderStartOptions, RecordingChunk } from "@wikimylife/shared";
 
 /**
  * `RecorderAdapter` su `MediaRecorder`.
@@ -71,7 +71,7 @@ export class MediaRecorderAdapter implements RecorderAdapter {
     }
   }
 
-  async start(): Promise<void> {
+  async start(options: RecorderStartOptions = {}): Promise<void> {
     if (this.#session !== null) {
       throw new Error("Registrazione gia' in corso");
     }
@@ -92,15 +92,38 @@ export class MediaRecorderAdapter implements RecorderAdapter {
     const type = preferredType();
     const recorder = new MediaRecorder(stream, type === undefined ? {} : { mimeType: type });
     const chunks: Blob[] = [];
+    const { onPezzo } = options;
+    let seq = 0;
 
     recorder.ondataavailable = (event: BlobEvent): void => {
       if (event.data.size > 0) {
         chunks.push(event.data);
+        if (onPezzo !== undefined) {
+          // Numero e ora si fissano adesso, nell'evento, e non quando i byte
+          // sono pronti: le letture di due `Blob` non promettono di finire
+          // nell'ordine in cui sono partite, e un pezzo rimesso fuori posto
+          // rende illeggibile tutto cio' che viene dopo.
+          const pezzo = { seq, at: Date.now() };
+          seq += 1;
+          const mimeType = recorder.mimeType === "" ? "audio/webm" : recorder.mimeType;
+          event.data
+            .arrayBuffer()
+            .then((buffer) => {
+              onPezzo({ ...pezzo, data: new Uint8Array(buffer), mimeType });
+            })
+            .catch(() => {
+              // Un pezzo che non si e' potuto leggere manca solo dalla bozza:
+              // la registrazione in memoria ce l'ha, e allo stop arriva intera.
+            });
+        }
       }
     };
 
-    // Un pezzo al secondo invece di uno solo alla fine: se la scheda muore a
-    // meta' registrazione si perde l'ultimo secondo, non l'intero racconto.
+    // Un pezzo al secondo invece di uno solo alla fine. Da solo non salvava
+    // niente — i pezzi stavano in `chunks`, in memoria, e una scheda scaricata
+    // se li portava via tutti. E' `onPezzo` a renderlo vero: chi lo passa mette
+    // al sicuro ogni secondo appena arriva, e una scheda che muore a meta' perde
+    // l'ultimo secondo invece dell'intero racconto.
     recorder.start(1000);
     this.#session = { recorder, stream, chunks, startedAt: Date.now() };
   }
