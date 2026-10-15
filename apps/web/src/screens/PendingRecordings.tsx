@@ -53,7 +53,7 @@ export function PendingRecordings({
   onSparita: () => void;
 }): React.JSX.Element | null {
   const apiClient = useApi();
-  const { stato, ricarica } = useAsync<readonly RecordingState[]>(
+  const { stato, ricarica, aggiorna } = useAsync<readonly RecordingState[]>(
     async () => (await apiClient.listPendingRecordings()).items,
     [apiClient],
   );
@@ -101,15 +101,21 @@ export function PendingRecordings({
     stato.kind === "pronto" &&
     stato.dato.some((r) => r.status === "BOZZA_AUDIO" || r.status === "IN_ELABORAZIONE");
 
+  //
+  // `aggiorna` e non `ricarica`: il giro lo chiede l'orologio, non chi guarda.
+  // Con `ricarica` lo stato passava da `attesa` a ogni giro, la sezione
+  // restituiva `null`, e i riquadri si smontavano e rimontavano ogni cinque
+  // secondi — portandosi via la domanda «Elimina davvero» mentre qualcuno la
+  // stava leggendo, e spegnendo il polling per sempre al primo giro fallito.
   useEffect(() => {
     if (!inMovimento) {
       return;
     }
-    const timer = setInterval(ricarica, RITMO_MS);
+    const timer = setInterval(aggiorna, RITMO_MS);
     return () => {
       clearInterval(timer);
     };
-  }, [inMovimento, ricarica]);
+  }, [inMovimento, aggiorna]);
 
   if (stato.kind !== "pronto" || stato.dato.length === 0) {
     // Un errore qui non si mostra: questa sezione e' un di piu' sopra la lista

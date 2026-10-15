@@ -1423,3 +1423,42 @@ Il commento accanto alla chiamata lo dice.
 `guards.test.ts` è andato in timeout in tre run intere su tre, **anche
 sull'albero pulito** (`git stash`, quattro rossi, tutti `Test timed out in
 5000ms`), e da solo passa: non è più «ogni tanto».
+
+---
+
+## Giro: i riquadri che il polling smontava
+
+Dal README: la sezione «In lavorazione» spariva dal DOM a ogni giro di polling,
+perché `ricarica()` di `useAsync` passava da `attesa` e la sezione in `attesa`
+restituisce `null`. Con lei se ne andava la domanda «Elimina davvero».
+
+### La cura che il difetto noto proponeva, e perché non è stata presa
+
+Il README diceva «la cura sta in `useAsync`: tenere il dato vecchio mentre
+arriva il nuovo». Leggendo chi chiama `ricarica` è venuto fuori che almeno due
+schermate si **appoggiano** al passaggio per `attesa`: `RedactionScreen` dopo un
+`409` e il dettaglio dopo una modifica contano sullo smontaggio per azzerare gli
+stati locali nati dal dato vecchio. Cambiare `ricarica` le avrebbe lasciate in
+piedi a parlare di una versione superata. Quindi `ricarica` resta com'è, e
+nasce `aggiorna()`: tiene il dato finché arriva il nuovo, lo tiene anche se il
+giro fallisce, e vale solo per la stessa richiesta (un cambio di dipendenze
+passa comunque da `attesa`). La usa solo il polling.
+
+### Un secondo difetto, trovato dal primo
+
+Un `500` fra due giri faceva diventare lo stato `errore`: la sezione spariva e,
+non essendoci più niente «in movimento», il polling si spegneva **per sempre**.
+Nessun difetto noto lo diceva. Con `aggiorna` il giro fallito tiene la lista, e
+il polling continua.
+
+### Le mutazioni
+
+Dieci, con il controllo vivo. Al primo giro due vive. Una era un buco: un
+`aggiorna` fallito prima di qualunque dato avrebbe tenuto l'`attesa` per sempre,
+e adesso ha il suo caso. L'altra è dichiarata equivalente nel codice: il
+`silenzioso &&` davanti a `prima.kind === "pronto"` non cambia niente, perché
+fuori da un giro silenzioso lo stato è già `attesa`. Un caso del test sui cambi
+di dipendenze era sbagliato al primo colpo: passava a `useCallback` sempre la
+stessa funzione, e `useCallback` restituisce la funzione che riceve, quindi la
+richiesta non cambiava mai identità. Le schermate passano una freccia nuova a
+ogni render, e il test adesso fa lo stesso.

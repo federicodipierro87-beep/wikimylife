@@ -1,6 +1,6 @@
 import type { PendingRecordings as PendingRecordingsResponse } from "@wikimylife/shared";
 import { ApiError } from "@wikimylife/shared";
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PendingRecordings } from "../../apps/web/src/screens/PendingRecordings";
@@ -36,11 +36,10 @@ import { montaConApi } from "./helpers/render";
  * l'oggetto del test — lo sono due tocchi su un pulsante — e farlo scorrere
  * davvero costa qualche decimo di secondo.
  *
- * Un avanzamento per volta, e non quindici secondi in un colpo: a ogni
- * ricaricamento lo stato torna `attesa`, il timer viene spento e riacceso
- * quando i dati arrivano, e in un unico salto React non ha il tempo di
- * riaccenderlo fra un tick e l'altro. Il conteggio sarebbe giusto per il motivo
- * sbagliato.
+ * Un avanzamento per volta, e non quindici secondi in un colpo: ogni giro e'
+ * una promessa che si risolve fra un tick e l'altro, e in un unico salto il
+ * conteggio dipenderebbe da quante ne fa in tempo a risolvere React, non da
+ * quanti giri il timer ha chiesto.
  */
 
 const CINQUE_SECONDI = 5000;
@@ -179,6 +178,87 @@ describe("PendingRecordings: quando smette di chiedere", () => {
     // che funziona.
     expect(container.innerHTML).toBe("");
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("un giro fallito a meta' non spegne il polling e non fa sparire la sezione", async () => {
+    // Prima un solo `500` fra due giri faceva diventare lo stato `errore`: la
+    // sezione spariva e, non essendoci piu' niente «in movimento», il timer si
+    // spegneva per sempre. La scheda nata dopo non sarebbe mai comparsa.
+    let letture = 0;
+    const client = creaClienteFinto({
+      listPendingRecordings: () => {
+        letture += 1;
+        if (letture === 2) {
+          return Promise.reject(
+            new ApiError({ code: "INTERNAL_ERROR", message: "Il server non risponde.", status: 500 }),
+          );
+        }
+        return Promise.resolve(
+          unaRisposta([unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" })]),
+        );
+      },
+    });
+
+    const { container } = montaConApi(client, <PendingRecordings onSparita={() => {}} />);
+
+    await avanza(0);
+    await avanza(CINQUE_SECONDI);
+    expect(letture).toBe(2);
+    expect(container.querySelector(".sospesa")).not.toBeNull();
+
+    await avanza(CINQUE_SECONDI);
+    expect(letture).toBe(3);
+  });
+
+  it("un vocale che cambia stato fra due giri si vede cambiare", async () => {
+    // L'errore opposto al tenere il dato: tenerlo per sempre.
+    let letture = 0;
+    const client = creaClienteFinto({
+      listPendingRecordings: () => {
+        letture += 1;
+        return Promise.resolve(
+          unaRisposta([
+            unaRegistrazione({
+              id: "r1",
+              status: letture === 1 ? "IN_ELABORAZIONE" : "BOZZA_AUDIO",
+            }),
+          ]),
+        );
+      },
+    });
+
+    montaConApi(client, <PendingRecordings onSparita={() => {}} />);
+
+    await avanza(0);
+    expect(screen.getByText("La sto ascoltando…")).toBeTruthy();
+
+    await avanza(CINQUE_SECONDI);
+    expect(screen.queryByText("La sto ascoltando…")).toBeNull();
+  });
+
+  it("la domanda «Elimina davvero» sopravvive ai giri del polling", async () => {
+    // `fireEvent` e non `userEvent`: qui il tempo e' l'oggetto del test, e i
+    // timer finti si mescolano male con le attese di `userEvent` (si veda in
+    // testa al file). Il riquadro si guarda con `isConnected`: un riquadro
+    // smontato e rimontato mostrerebbe lo stesso testo, ma con la domanda chiusa.
+    const client = creaClienteFinto({
+      listPendingRecordings: () =>
+        Promise.resolve(unaRisposta([unaRegistrazione({ id: "r1", status: "IN_ELABORAZIONE" })])),
+    });
+
+    const { container } = montaConApi(client, <PendingRecordings onSparita={() => {}} />);
+    await avanza(0);
+    const riquadro = container.querySelector(".sospesa");
+    expect(riquadro).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Elimina" }));
+    expect(screen.getByRole("button", { name: "Elimina davvero" })).toBeTruthy();
+
+    await avanza(CINQUE_SECONDI);
+    await avanza(CINQUE_SECONDI);
+
+    expect(riquadro?.isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: "Elimina davvero" })).toBeTruthy();
   });
 });
 

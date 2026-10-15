@@ -751,7 +751,10 @@ che riporta al punto di partenza è peggio di nessun pulsante — lì la riga di
 quale scheda somiglia e suggerisce di aprire quella. Il polling parte solo se in
 lista c'è qualcosa che può muoversi da solo: una lista di sole registrazioni
 ferme non cambia finché nessuno preme niente, e continuare a chiederla sarebbe
-una richiesta ogni cinque secondi per ricevere sempre la stessa risposta.
+una richiesta ogni cinque secondi per ricevere sempre la stessa risposta. Ogni
+giro passa da `aggiorna()` e non da `ricarica()` di `useAsync`: tiene in pagina
+ciò che c'era finché non arriva il nuovo, e anche se il giro fallisce, così i
+riquadri non si smontano sotto le mani di chi li sta usando.
 
 **E quando un vocale diventa una scheda, l'elenco sotto se ne accorge.** Il
 server toglie dai sospesi tutto ciò che è `ESTRATTO`, quindi l'istante in cui
@@ -2169,7 +2172,12 @@ aperta. I casi contano i giri con i timer finti: continua finché qualcosa è in
 movimento, non parte affatto su una lista di sole registrazioni ferme, e si
 spegne *da solo* nel momento in cui l'ultima elaborazione finisce. Accanto, che
 un errore lì non produca un avviso rosso in cima a una schermata che funziona, e
-che eliminare chieda il secondo tocco.
+che eliminare chieda il secondo tocco. E che i giri non tolgano niente da sotto
+gli occhi: la conferma di «Elimina davvero» resta aperta per due giri, guardata
+con `isConnected` sul riquadro; un `500` a metà non spegne il polling; e un vocale
+che cambia stato fra due giri si vede cambiare, che è l'errore opposto.
+`useAsync.test.tsx` prova le stesse cose sull'hook, ognuna con il gemello di
+`ricarica` che deve invece passare da `attesa`.
 
 E quando avvisa chi sta sopra, che è l'altro guasto senza sintomo: un avviso che
 non parte lascia una schermata corretta e ferma, e chi guarda pensa che il vocale
@@ -3975,7 +3983,7 @@ Non installate, e il perché:
 | `eslint` | il test di guardia copre le due regole che ci interessano |
 | `uuid` `nanoid` | `crypto.randomUUID()` |
 | `react-router` | `hashchange`, trenta righe per nove schermate |
-| `@tanstack/react-query` | `useAsync`, venti righe: carica e ricarica |
+| `@tanstack/react-query` | `useAsync`, poche righe: carica, ricarica, aggiorna |
 | `vite-plugin-pwa` `workbox` | un service worker di sessanta righe |
 | `tailwind` e simili | un foglio di stile di 5 kB compressi, con due temi |
 | `lucide` e simili | otto icone in SVG, in `Icona.tsx` |
@@ -4292,20 +4300,21 @@ Non installate, e il perché:
   solo il vocale, e va bene così: quella lista mostra per costruzione ciò che non
   è ancora diventato una scheda. Ma se un giorno cambiasse filtro, quel pulsante
   tornerebbe a promettere più di quello che fa.
-- **La sezione «In lavorazione» si smonta ogni cinque secondi, e con lei le
-  domande aperte.** `ricarica()` di `useAsync` riporta lo stato ad `attesa` prima
-  di rifare la richiesta, e la sezione dei sospesi restituisce `null` quando non
-  è `pronto`: a ogni giro di polling sparisce dal DOM e ricompare un istante
-  dopo. Sullo schermo quasi non si vede — le righe tornano identiche — ma lo
-  stato locale dei riquadri no: `Sospesa` tiene in un `useState` il fatto che si
-  sia già premuto «Elimina», quindi chi preme e poi si ferma a leggere «Elimina
-  davvero» vede la domanda sparire da sola entro cinque secondi, senza aver
-  toccato niente. È il secondo tocco che si annulla da solo, cioè proprio la
-  precauzione per cui esiste. La cura sta in `useAsync`, che lo montano dodici
-  schermate: tenere il dato vecchio mentre arriva il nuovo invece di svuotarlo.
-  Non è una modifica locale a questa sezione, ed è per questo che è scritta qui
-  invece che fatta — ma il conto lo paga solo qui, perché è l'unica lista che si
-  ricarica da sola sotto le mani di chi la guarda.
+- **La sezione «In lavorazione» si smonta ancora, ma solo dopo un gesto.** Il
+  polling non la tocca più: gira con `aggiorna()` di `useAsync`, che tiene il
+  dato vecchio finché arriva il nuovo e anche se il giro fallisce, quindi la
+  domanda «Elimina davvero» resta aperta per tutto il tempo che serve a
+  leggerla, e un `500` fra due giri non spegne più il polling per sempre (prima
+  sì: lo stato diventava `errore`, niente era più «in movimento», e la scheda
+  nata dopo non compariva). I gesti però usano ancora `ricarica()`, che passa da
+  `attesa`: premere «Riprova adesso» su un vocale smonta e rimonta tutti i
+  riquadri, e una conferma aperta su un *altro* vocale si richiude da sola. È
+  raro — due vocali sospesi e due gesti a metà insieme — ed è voluto che
+  `ricarica` resti com'è: il dettaglio dopo una modifica e la redazione dopo un
+  `409` si appoggiano proprio a quello smontaggio per azzerare i propri stati
+  locali, nati dal dato vecchio. Passare i gesti ad `aggiorna` qui sarebbe una
+  riga; non è stato fatto perché un vocale appena eliminato resterebbe in
+  pagina, con i suoi pulsanti accesi, fino alla risposta.
 - **Le categorie sono un indice travestito da gruppo: non se ne vedono mai due
   insieme, e una scheda con cinque tag non ha una casa.** La riga delle chip
   filtra, e i filtri sono mutuamente esclusivi: non si può chiedere «Casa *e*
